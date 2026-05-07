@@ -1,0 +1,27 @@
+node_modules
+dist
+out
+.DS_Store
+.eslintcache
+*.log*
+.next
+website/.next
+website/node_modules
+.env
+.env.local
+website/.env.local
+build/
+*.spec
+lint_errors.txt
+src_lint_errors.txt
+temp_file.txt
+web_errors.txt
+*.tsbuildinfo
+
+# VS Code MCP secrets
+.vscode/mcp.json
+.vercel
+.env*.local
+
+# Exclude website folder (tracked in another repo)
+website/

@@ -1,0 +1,63 @@
+appId: com.security.hp
+productName: AppService
+directories:
+  buildResources: build
+files:
+  - out/**/*
+  - resources/**/*
+  - package.json
+  - node_modules/**/*
+asarUnpack:
+  - resources/**
+win:
+  executableName: AppService
+  target:
+    - nsis
+  icon: build/icon.ico
+nsis:
+  artifactName: ${productName}-Setup-${version}.${ext}
+  shortcutName: Zyro-Ai
+  uninstallDisplayName: Zyro-Ai
+  oneClick: true
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+  deleteAppDataOnUninstall: true
+  unicode: true
+  createDesktopShortcut: always
+mac:
+  category: public.app-category.productivity
+  entitlementsInherit: build/entitlements.mac.plist
+  target:
+    - target: dmg
+      arch:
+        - universal
+    - target: zip
+      arch:
+        - universal
+  extendInfo:
+    - NSCameraUsageDescription: Application requests access to the device's camera.
+    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
+    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
+    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+  notarize: false
+dmg:
+  artifactName: ${name}-${version}.${ext}
+linux:
+  target:
+    - AppImage
+    - snap
+    - deb
+  maintainer: electronjs.org
+  category: Utility
+appImage:
+  artifactName: ${name}-${version}.${ext}
+npmRebuild: false
+publish:
+  provider: github
+  owner: harshjeswani30
+  repo: Zyro-Ai-Downloads
+  releaseType: prerelease
+protocols:
+  name: zyroapp
+  schemes:
+    - zyroapp

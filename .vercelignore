@@ -1,0 +1,15 @@
+node_modules
+out
+dist
+.git
+resources
+build
+src
+electron-builder.yml
+electron.vite.config.ts
+tsconfig.node.json
+tsconfig.web.json
+tsconfig.json
+eslint.config.mjs
+setup enhance.js
+pnpm-lock.yaml

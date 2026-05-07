@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Interview Telegram Helper</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="setup-page">
+    <div class="setup-container">
+        <div class="compact-drag-handle"></div>
+        
+        <!-- Window Controls -->
+        <button class="window-control-quit circle" id="quit-app-btn" title="Quit Application">×</button>
+        <button class="window-control-compact circle" id="toggle-compact-btn" title="Compact Mode"></button>
+        
+        <!-- Sidebar -->
+        <aside class="setup-sidebar">
+            <div class="sidebar-logo">
+                <div class="logo-box">
+                    <svg class="zyro-mascot-svg svg-canvas" viewBox="0 0 400 400">
+                        <g class="mascot-group">
+                            <g class="head-base">
+                                <circle cx="200" cy="200" r="140" class="fill-bg stroke-main" />
+
+                                <g class="state-happy">
+                                    <path d="M 140 170 Q 160 140 180 170" class="stroke-main" stroke-linecap="round" />
+                                    <path d="M 220 170 Q 240 140 260 170" class="stroke-main" stroke-linecap="round" />
+                                    <path d="M 150 230 Q 200 280 250 230" class="stroke-main" stroke-linecap="round" />
+                                    <path d="M 140 220 L 150 230 M 260 220 L 250 230" class="stroke-main" stroke-linecap="round" />
+                                </g>
+
+                                <g class="state-search">
+                                    <line x1="140" y1="170" x2="180" y2="170" class="stroke-main" stroke-linecap="round" />
+                                    <line x1="220" y1="170" x2="260" y2="170" class="stroke-main" stroke-linecap="round" />
+                                    <path d="M 180 240 Q 200 245 220 240" class="stroke-main" stroke-linecap="round" />
+                                </g>
+
+                                <g class="state-found">
+                                    <circle cx="160" cy="165" r="16" class="fill-main" />
+                                    <circle cx="240" cy="165" r="16" class="fill-main" />
+                                    <ellipse cx="200" cy="250" rx="20" ry="30" class="fill-main" />
+                                </g>
+
+                                <g class="state-cool">
+                                    <path d="M 160 250 L 230 230" class="stroke-main" stroke-linecap="round" />
+                                    <path d="M 230 230 L 240 235" class="stroke-main" stroke-linecap="round" />
+                                </g>
+                            </g>
+
+                            <g class="prop-burst stroke-main" stroke-linecap="round" stroke-width="8">
+                                <line x1="200" y1="10" x2="200" y2="40" />
+                                <line x1="330" y1="70" x2="310" y2="90" />
+                                <line x1="70" y1="70" x2="90" y2="90" />
+                            </g>
+
+                            <g class="prop-mag">
+                                <circle cx="160" cy="170" r="50" class="fill-bg stroke-main" stroke-width="8" />
+                                <path d="M 130 140 A 35 35 0 0 1 180 140" stroke="#fff" stroke-width="6" fill="none" stroke-linecap="round" />
+                                <line x1="195" y1="205" x2="260" y2="270" class="stroke-main" stroke-width="16" stroke-linecap="round" />
+                                <circle cx="195" cy="205" r="10" class="fill-main" />
+                            </g>
+
+                            <g class="prop-glasses">
+                                <path d="M 120 160 L 190 160 Q 190 200 155 200 Q 120 200 120 160 Z" class="fill-main" />
+                                <path d="M 210 160 L 280 160 Q 280 200 245 200 Q 210 200 210 160 Z" class="fill-main" />
+                                <line x1="185" y1="165" x2="215" y2="165" class="stroke-main" stroke-width="6" />
+                                <line x1="120" y1="165" x2="90" y2="150" class="stroke-main" stroke-width="8" stroke-linecap="round" />
+                                <line x1="280" y1="165" x2="310" y2="150" class="stroke-main" stroke-width="8" stroke-linecap="round" />
+                                <line x1="130" y1="165" x2="150" y2="165" stroke="#fff" stroke-width="4" stroke-linecap="round" />
+                                <line x1="220" y1="165" x2="240" y2="165" stroke="#fff" stroke-width="4" stroke-linecap="round" />
+                            </g>
+                        </g>
+                    </svg>
+                </div>
+                <span class="logo-text">Interview Pro</span>
+            </div>
+
+            <nav class="sidebar-nav">
+                <button class="nav-item" id="nav-profile">
+                    <span class="nav-icon">
+                        <svg width="18" height="18" viewBox="0 0 256 256" fill="currentColor">
+                            <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24ZM74.08,197.5a64,64,0,0,1,107.84,0,87.83,87.83,0,0,1-107.84,0ZM128,120a32,32,0,1,1,32-32A32,32,0,0,1,128,120Zm56,66.41a80,80,0,0,0-112,0,88,88,0,1,1,112,0Z" />
+                        </svg>
+                    </span>
+                    <span class="nav-text">Setup</span>
+                    <div class="nav-active-glow"></div>
+                </button>
+                <button class="nav-item active" id="nav-home">
+                    <span class="nav-icon">
+                        <svg width="18" height="18" viewBox="0 0 256 256" fill="currentColor">
+                            <path d="M224,115.55V208a16,16,0,0,1-16,16H168a8,8,0,0,1-8-8V168a40,40,0,0,0-80,0v48a8,8,0,0,1-8,8H48a16,16,0,0,1-16-16V115.55a16,16,0,0,1,5.17-11.78l80-72.73a16,16,0,0,1,21.66,0l80,72.73A16,16,0,0,1,224,115.55Z" />
+                        </svg>
+                    </span>
+                    <span class="nav-text">Interview</span>
+                    <div class="nav-active-glow"></div>
+                </button>
+                <button class="nav-item" id="nav-settings">
+                    <span class="nav-icon">
+                        <svg width="18" height="18" viewBox="0 0 256 256" fill="currentColor">
+                            <path d="M128,80a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Z" />
+                            <path d="M232,128a104.16,104.16,0,0,1-9.15,42.49l23,13.29a8,8,0,0,1,2.92,10.95l-16,27.71a8,8,0,0,1-10.95,2.92l-23-13.26A104.29,104.29,0,0,1,160,230.13V256a8,8,0,0,1-8,8H104a8,8,0,0,1-8-8V230.13a104.29,104.29,0,0,1-38.79-19.03l-23,13.26a8,8,0,0,1-10.95-2.92l-16-27.71a8,8,0,0,1,2.92-10.95l23-13.29A104.16,104.16,0,0,1,24,128,104.16,104.16,0,0,1,33.15,85.51l-23-13.29a8,8,0,0,1-2.92-10.95l16-27.71A8,8,0,0,1,34.18,30.64l23,13.26A104.29,104.29,0,0,1,96,25.87V0a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8V25.87a104.29,104.29,0,0,1,38.79,19.03l23-13.26a8,8,0,0,1,10.95,2.92l16,27.71a8,8,0,0,1-2.92,10.95l-23,13.29A104.16,104.16,0,0,1,232,128Z" />
+                        </svg>
+                    </span>
+                    <span class="nav-text">Settings</span>
+                    <div class="nav-active-glow"></div>
+                </button>
+            </nav>
+
+            <footer class="sidebar-footer-enhanced">
+                <div class="sidebar-stat-grid">
+                    <div class="stat-pill-modern">
+                        <div class="spm-label">Status</div>
+                        <span class="spm-value" id="status-label">Idle</span>
+                    </div>
+                </div>
+            </footer>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="setup-main-content">
+            <header class="step-header-refined">
+                <div class="shr-left">
+                    <h1 class="shr-title" id="page-title">Home</h1>
+                    <p class="shr-desc" id="page-desc">Real-time interview capture.</p>
+                </div>
+            </header>
+
+
+            <div class="content-scrollable">
+                <!-- Home View -->
+                <div id="view-home" class="view active">
+                    <div class="recording-container">
+                        <div class="action-row-modern">
+                            <button id="record-btn" class="action-circle-btn record" title="Global Audio Capture">
+                                <span class="btn-icon">
+                                    <svg width="32" height="32" viewBox="0 0 256 256" fill="currentColor"><path d="M128,176a48.05,48.05,0,0,0,48-48V64a48,48,0,0,0-96,0v64A48.05,48.05,0,0,0,128,176ZM96,64a32,32,0,0,1,64,0v64a32,32,0,0,1-64,0ZM216,128a8,8,0,0,1-16,0,72,72,0,0,0-144,0,8,8,0,0,1-16,0,88.1,88.1,0,0,1,80-87.6V16a8,8,0,0,1,16,0V40.4A88.1,88.1,0,0,1,216,128Z"></path></svg>
+                                </span>
+                                <span class="btn-text">Listen</span>
+                                <div class="btn-glow"></div>
+                            </button>
+
+                            <button id="analyze-screen-btn" class="action-circle-btn analyze" title="Analyze Screen Visuals">
+                                <span class="btn-icon">
+                                    <svg width="32" height="32" viewBox="0 0 256 256" fill="currentColor"><path d="M208,32H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32ZM128,192a64,64,0,1,1,64-64A64.07,64.07,0,0,1,128,192Zm0-112a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Z"></path></svg>
+                                </span>
+                                <span class="btn-text">Analyze</span>
+                                <div class="btn-glow"></div>
+                            </button>
+                        </div>
+                        
+                        <div class="log-panel" id="log-panel">
+                            <div class="log-entry system">Welcome to Interview Pro. Configure your keys in Settings to begin.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Settings View -->
+                <div id="view-settings" class="view">
+                    <div class="field-group-modern">
+                        <label>Telegram Bot Token</label>
+                        <div class="input-with-icon">
+                            <input type="password" id="tg-token" placeholder="Enter Bot Token">
+                        </div>
+                    </div>
+                    <div class="field-group-modern">
+                        <label>Telegram Chat ID</label>
+                        <div class="input-with-icon">
+                            <input type="text" id="tg-chat-id" placeholder="Enter Chat ID">
+                        </div>
+                    </div>
+                    <div class="field-group-modern">
+                        <label>Groq API Key</label>
+                        <div class="input-with-icon">
+                            <input type="password" id="groq-key" placeholder="Enter Groq API Key">
+                        </div>
+                    </div>
+                    <div class="grid-2">
+                        <div class="field-group-modern">
+                            <label>Capture Source</label>
+                            <div class="input-with-icon">
+                                <select id="audio-device">
+                                    <option value="__system__">🔊 System Audio (Interviewer)</option>
+                                    <option value="default">🎙️ Microphone (Default)</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="field-group-modern">
+                            <label>AI Model (Optimized)</label>
+                            <div class="input-with-icon">
+                                <input type="text" value="Llama 3.3 70B (Versatile)" disabled style="opacity: 0.6;">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="toggle-card-modern" id="toggle-topmost">
+                        <div class="tc-info">
+                            <div class="tc-title">Always on Top</div>
+                            <p class="tc-desc">Keep this window above all other apps.</p>
+                        </div>
+                        <div class="tc-switch"><div class="tc-knob"></div></div>
+                    </div>
+
+                    <button class="save-btn" id="save-settings">Save Configuration</button>
+                    <div id="settings-status" style="margin-top: 10px; font-size: 12px; color: #10b981;"></div>
+                </div>
+
+                <!-- Profile/Resume Wizard View -->
+                <div id="view-profile" class="view">
+                    <div id="wizard-steps-container">
+                        <div class="wizard-header">
+                            <div class="wizard-tabs">
+                                <div class="wizard-tab active" data-step="1">1. Info</div>
+                                <div class="wizard-tab" data-step="2">2. Resume</div>
+                                <div class="wizard-tab" data-step="3">3. Finalize</div>
+                            </div>
+                        </div>
+
+                        <!-- Step 1: Personal Info -->
+                        <div class="wizard-content active" id="wizard-step-1">
+                            <div class="grid-2">
+                                <div class="field-group-modern">
+                                    <label>Full Name</label>
+                                    <input type="text" id="candidate-name" placeholder="Harsh">
+                                </div>
+                                <div class="field-group-modern">
+                                    <label>Target Role</label>
+                                    <input type="text" id="target-role" placeholder="Software Engineer">
+                                </div>
+                            </div>
+                            <div class="grid-2">
+                                <div class="field-group-modern">
+                                    <label>Target Company</label>
+                                    <input type="text" id="target-company" placeholder="Google / Amazon">
+                                </div>
+                                <div class="field-group-modern">
+                                    <label>Interview Language</label>
+                                    <select id="interview-language">
+                                        <option value="en-US">🇺🇸 English (US)</option>
+                                        <option value="en-GB">🇬🇧 English (UK)</option>
+                                        <option value="hi-IN">🇮🇳 Hindi</option>
+                                        <option value="es-ES">🇪🇸 Spanish</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="field-group-modern">
+                                <label>Preferred Coding Language</label>
+                                <select id="coding-language">
+                                    <option value="Python">Python</option>
+                                    <option value="Java">Java</option>
+                                    <option value="C++">C++</option>
+                                    <option value="JavaScript">JavaScript</option>
+                                    <option value="TypeScript">TypeScript</option>
+                                    <option value="Go">Go</option>
+                                </select>
+                            </div>
+                            <div class="wizard-footer">
+                                <button class="save-btn next-step" data-next="2">Next: Upload Resume</button>
+                            </div>
+                        </div>
+
+                        <!-- Step 2: Resume Manager (Modern SaaS) -->
+                        <div class="wizard-content" id="wizard-step-2">
+                            <div class="resume-manager-container">
+                                <div class="saas-dropzone" id="drop-area">
+                                    <div class="dz-content">
+                                        <div class="dz-icon">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                                            </svg>
+                                        </div>
+                                        <h3>Upload Resume</h3>
+                                        <p>Drag & drop or <span class="dz-link" id="upload-btn">browse</span></p>
+                                        <div class="dz-formats">PDF, TXT supported</div>
+                                    </div>
+                                    
+                                    <!-- Scanning Overlay -->
+                                    <div class="dz-scanning hidden" id="dz-scanning">
+                                        <div class="scan-bar"></div>
+                                        <span>AI is processing...</span>
+                                    </div>
+                                </div>
+
+                                <!-- Success File Card -->
+                                <div class="success-file-card hidden" id="file-card">
+                                    <div class="fc-info">
+                                        <div class="fc-icon">📄</div>
+                                        <div class="fc-details">
+                                            <div class="fc-name" id="display-filename">resume.pdf</div>
+                                            <div class="fc-status">Verified & Loaded</div>
+                                        </div>
+                                    </div>
+                                    <button class="fc-swap-btn" id="remove-resume-btn">
+                                        <span>Swap File</span>
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <div class="field-group-modern" style="margin-top: 20px;">
+                                <label>AI-Extracted Profile Context</label>
+                                <textarea id="resume-text" rows="8" readonly placeholder="Parsed text will appear here..."></textarea>
+                            </div>
+                            
+                            <div class="wizard-footer">
+                                <button class="save-btn prev-step" data-prev="1">Back</button>
+                                <button class="save-btn next-step" data-next="3">Next: Experience</button>
+                            </div>
+                        </div>
+
+
+                        <!-- Step 3: Experience Details -->
+                        <div class="wizard-content" id="wizard-step-3">
+                            <div class="field-group-modern">
+                                <label>Experience Level</label>
+                                <select id="experience-level">
+                                    <option value="fresher">🎓 Fresher (No full-time job yet)</option>
+                                    <option value="experienced">💼 Experienced Professional</option>
+                                </select>
+                            </div>
+                            <div id="exp-fields" style="display: none;">
+                                <div class="field-group-modern">
+                                    <label>Total Experience (e.g., 3 Years)</label>
+                                    <input type="text" id="experience-duration" placeholder="Enter years/months">
+                                </div>
+                                <div class="field-group-modern">
+                                    <label>Work History (Briefly list past companies/roles)</label>
+                                    <textarea id="work-history" rows="4" placeholder="e.g. 2 years at TCS as Frontend Dev, 1 year at Infosys..."></textarea>
+                                </div>
+                            </div>
+                            <!-- Feature Flow Visualization (Always Active) -->
+                            <div class="feature-flow-card">
+                                <div class="ff-header">Operational Flow: Auto-Answer Active</div>
+                                <div class="ff-body">
+                                    <div class="ff-step">
+                                        <div class="ff-icon">🎙️</div>
+                                        <span>Listening</span>
+                                    </div>
+                                    <div class="ff-line"></div>
+                                    <div class="ff-step">
+                                        <div class="ff-icon">⚡</div>
+                                        <span>AI Brain</span>
+                                    </div>
+                                    <div class="ff-line"></div>
+                                    <div class="ff-step">
+                                        <div class="ff-icon">📱</div>
+                                        <span>Telegram</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="wizard-footer">
+                                <button class="save-btn prev-step" data-prev="2">Back</button>
+                                <button class="save-btn" id="save-all-profile" style="background: linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%);">Complete Setup</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="profile-status" style="margin-top: 10px; font-size: 12px; color: #10b981; text-align: center;"></div>
+                </div>
+
+
+            </div>
+
+            <footer class="content-footer-enhanced">
+                <div class="footer-btn-row">
+                    <span style="font-size: 11px; color: #4b5563;">&copy; 2026 Zyro AI - Real-Time Helper</span>
+                </div>
+            </footer>
+        </main>
+    </div>
+
+    <!-- Notification Sound -->
+    <audio id="notification-sound" preload="auto">
+        <source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg">
+    </audio>
+
+    <script src="renderer.js"></script>
+</body>
+</html>

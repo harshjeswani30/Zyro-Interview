@@ -1,0 +1,134 @@
+:root {
+  --mascot-loop-duration: 12s;
+  --mascot-ease-snappy: cubic-bezier(0.8, 0, 0.2, 1);
+  --mascot-ink: #000000;
+  --mascot-stroke: #000000;
+}
+
+/* Mascot Base Styling */
+.mascot-container-inner {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.mascot-svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.mascot-stroke-main {
+  fill: none;
+  stroke-width: 12px;
+  stroke: currentColor;
+  stroke-miterlimit: 10;
+}
+
+.mascot-fill-main {
+  fill: var(--mascot-ink);
+}
+
+/* Specific for light/dark integration */
+.mascot-fill-bg {
+  fill: rgba(255, 255, 255, 0.9); /* Default light filling */
+}
+
+/* Animations */
+.mascot-group-anim {
+  animation: mascot-breathe 4s ease-in-out infinite alternate;
+}
+
+@keyframes mascot-breathe {
+  0% { transform: translateY(0px); }
+  100% { transform: translateY(-3%); }
+}
+
+/* State Toggles */
+.state-happy {
+  animation: toggle-happy var(--mascot-loop-duration) infinite step-end;
+}
+
+.state-search {
+  animation: toggle-search var(--mascot-loop-duration) infinite step-end;
+}
+
+.state-found {
+  animation: toggle-found var(--mascot-loop-duration) infinite step-end;
+}
+
+.state-cool {
+  animation: toggle-cool var(--mascot-loop-duration) infinite step-end;
+}
+
+@keyframes toggle-happy {
+  0%, 20%, 95%, 100% { opacity: 1; }
+  21%, 94% { opacity: 0; }
+}
+
+@keyframes toggle-search {
+  0%, 24%, 46%, 100% { opacity: 0; }
+  25%, 45% { opacity: 1; }
+}
+
+@keyframes toggle-found {
+  0%, 49%, 71%, 100% { opacity: 0; }
+  50%, 70% { opacity: 1; }
+}
+
+@keyframes toggle-cool {
+  0%, 74%, 96%, 100% { opacity: 0; }
+  75%, 95% { opacity: 1; }
+}
+
+/* Prop Animations */
+.prop-mag {
+  transform-origin: center center;
+  animation: animate-mag var(--mascot-loop-duration) infinite var(--mascot-ease-snappy);
+  opacity: 0;
+}
+
+@keyframes animate-mag {
+  0%, 20% { transform: translate(25%, 25%) rotate(45deg); opacity: 0; }
+  25% { transform: translate(5%, 0%) rotate(10deg); opacity: 1; }
+  35% { transform: translate(-7%, 2.5%) rotate(-15deg); opacity: 1; }
+  40% { transform: translate(2.5%, -1.25%) rotate(5deg); opacity: 1; }
+  45% { transform: translate(25%, 25%) rotate(45deg); opacity: 0; }
+  100% { transform: translate(25%, 25%) rotate(45deg); opacity: 0; }
+}
+
+.prop-burst {
+  transform-origin: center center;
+  animation: animate-burst var(--mascot-loop-duration) infinite var(--mascot-ease-snappy);
+  opacity: 0;
+}
+
+@keyframes animate-burst {
+  0%, 48% { transform: scale(0.5) rotate(-20deg); opacity: 0; }
+  50% { transform: scale(1.1) rotate(0deg); opacity: 1; }
+  55% { transform: scale(1) rotate(0deg); opacity: 1; }
+  65% { transform: scale(1) rotate(5deg); opacity: 1; }
+  70%, 100% { transform: scale(1.2) rotate(10deg); opacity: 0; }
+}
+
+.prop-glasses {
+  animation: animate-glasses var(--mascot-loop-duration) infinite var(--mascot-ease-snappy);
+  opacity: 0;
+}
+
+@keyframes animate-glasses {
+  0%, 70% { transform: translateY(-100px); opacity: 0; }
+  75%, 95% { transform: translateY(0); opacity: 1; }
+  100% { transform: translateY(-100px); opacity: 0; }
+}
+
+.mascot-head-base {
+  transform-origin: center center;
+  animation: animate-head var(--mascot-loop-duration) infinite var(--mascot-ease-snappy);
+}
+
+@keyframes animate-head {
+  0%, 48% { transform: scale(1); }
+  50%, 65% { transform: scale(1.05); }
+  70%, 100% { transform: scale(1); }
+}
