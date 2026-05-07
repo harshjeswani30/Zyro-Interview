@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+release/
+
+# Environment (contains service role key — never commit)
+.env
+
+# Logs
+*.log

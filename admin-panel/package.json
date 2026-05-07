@@ -1,0 +1,44 @@
+{
+  "name": "zyro-admin-panel",
+  "version": "1.0.0",
+  "description": "Zyro Interview Admin Panel - Coupon Management",
+  "main": "./out/main/index.js",
+  "author": "Zyro AI",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "dist": "electron-vite build && electron-builder",
+    "preview": "electron-vite preview"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.2.0",
+    "@capacitor/cli": "^8.2.0",
+    "@capacitor/core": "^8.2.0",
+    "@supabase/functions-js": "^2.99.1",
+    "@supabase/supabase-js": "^2.49.4",
+    "dotenv": "^17.3.1",
+    "framer-motion": "^12.38.0",
+    "lucide-react": "^0.468.0"
+  },
+  "devDependencies": {
+    "@electron-toolkit/tsconfig": "^1.0.1",
+    "@electron-toolkit/utils": "^3.0.0",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^35.1.5",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^3.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.7.3",
+    "vite": "^6.3.2"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "interview-telegram-helper",
+  "version": "1.0.0",
+  "description": "Production-level real-time interview help using Telegram",
+  "main": "main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win"
+  },
+  "keywords": [],
+  "author": "Zyro AI",
+  "license": "ISC",
+  "dependencies": {
+    "electron": "^31.0.0",
+    "electron-store": "^8.1.0",
+    "openai": "^4.24.1",
+    "pdf-parse": "^2.4.5"
+  },
+  "devDependencies": {
+    "electron-builder": "^24.13.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron"
+    ]
+  }
+}
