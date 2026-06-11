@@ -5,6 +5,7 @@ export interface UserProfile {
   email?: string
   full_name?: string
   sessions_balance?: number
+  phone_sessions_balance?: number
   trial_seconds_used?: number
   is_premium?: boolean
 }
@@ -15,7 +16,7 @@ interface SessionData {
   company: string
   language: string
   resumeText: string
-  groqApiKey: string
+  groqApiKey?: string
   autoAnswer: boolean
   experienceLevel: 'fresher' | 'experienced'
   experienceDuration?: string
@@ -24,6 +25,8 @@ interface SessionData {
   trial_seconds_used?: number
   isPremium?: boolean
   codingLanguage?: string
+  apiType?: 'normal' | 'gemini_live'
+  geminiApiKey?: string
 }
 
 interface Api {
@@ -73,6 +76,7 @@ interface Api {
   setZoom: (level: number) => void
   setOverlaySize: (width: number, height: number) => void
   openExternal: (url: string) => void
+  resizeMainWindow: (width: number, height: number) => Promise<void>
   // Supabase auth + profile
   supabaseLogin: (
     email: string,
@@ -82,6 +86,8 @@ interface Api {
   supabaseLogout: () => Promise<void>
   supabaseGetProfile: () => Promise<UserProfile | null>
   supabaseDeductSession: () => Promise<{ newBalance: number }>
+  supabaseDeductPhoneSession: () => Promise<{ newBalance: number }>
+  supabaseCreateRazorpayOrder: (planId: string) => Promise<any>
   supabaseUpdateTrial: (seconds: number) => Promise<void>
   supabaseLogSession: (durationSeconds: number, startedAt: string, sessionType: string) => Promise<void>
   supabaseManualSync: (accessToken: string, userId?: string) => void

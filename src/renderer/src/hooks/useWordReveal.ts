@@ -23,9 +23,8 @@ export function useWordReveal(
     const posRef     = useRef(0)
 
     useEffect(() => {
-        if (timerRef.current) clearTimeout(timerRef.current)
-
         if (!answer) {
+            if (timerRef.current) clearTimeout(timerRef.current)
             setVisibleLength(0)
             setIsStreaming(false)
             answerRef.current = ''
@@ -33,11 +32,21 @@ export function useWordReveal(
             return
         }
 
-        if (answer === answerRef.current) return
+        const prevAnswer = answerRef.current
+        if (answer === prevAnswer) return // Do not clear or restart if it's the exact same string
+
+        if (timerRef.current) clearTimeout(timerRef.current)
         answerRef.current = answer
-        posRef.current = 0
-        setVisibleLength(0)
-        setIsStreaming(true)
+
+        const isExtension = prevAnswer && answer.startsWith(prevAnswer)
+
+        if (isExtension) {
+            setIsStreaming(true)
+        } else {
+            posRef.current = 0
+            setVisibleLength(0)
+            setIsStreaming(true)
+        }
 
         const advance = () => {
             const full = answerRef.current
@@ -63,7 +72,7 @@ export function useWordReveal(
             
             if (match) {
                 next += match[0].length
-                // If it was just punctuation, maybe grab the next word too to avoid flicker
+                // If it was just punctuation, grab the next word too to avoid flicker
                 if (match[2] && next < full.length) {
                     const nextMatch = full.slice(next).match(/^[^\s\*#_`>]+/)
                     if (nextMatch) next += nextMatch[0].length

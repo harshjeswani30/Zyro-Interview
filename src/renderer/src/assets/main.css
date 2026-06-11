@@ -598,6 +598,77 @@ body {
   gap: 12px;
 }
 
+/* Modern Glassmorphic Session Balance Chip in Header */
+.header-session-badge-capsule {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(139, 92, 246, 0.06);
+  border: 1px solid rgba(139, 92, 246, 0.25);
+  border-radius: 9999px;
+  padding: 6px 14px;
+  color: white;
+  font-size: 12.5px;
+  font-weight: 600;
+  box-shadow: 0 4px 15px rgba(139, 92, 246, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  margin-right: 8px;
+}
+
+.header-session-badge-capsule:hover {
+  background: rgba(139, 92, 246, 0.12);
+  border-color: rgba(139, 92, 246, 0.45);
+  box-shadow: 0 6px 20px rgba(139, 92, 246, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  transform: translateY(-1px);
+}
+
+.badge-glow-effect {
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.15) 0%, transparent 70%);
+  opacity: 0.8;
+  pointer-events: none;
+  animation: badgeGlow 6s infinite linear;
+}
+
+@keyframes badgeGlow {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.badge-icon {
+  z-index: 1;
+  filter: drop-shadow(0 0 4px rgba(139, 92, 246, 0.4));
+}
+
+.badge-label {
+  z-index: 1;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.65);
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.badge-value {
+  z-index: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 700;
+  color: #c084fc;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 2px 8px;
+  border-radius: 9999px;
+  border: 1px solid rgba(139, 92, 246, 0.2);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
+  font-size: 12px;
+}
+
+
 .icon-btn-refined {
   background: transparent;
   border: none;
@@ -1490,9 +1561,34 @@ html.overlay-mode .overlay-root {
 }
 
 .overlay-root.is-minimized {
-  height: auto !important;
-  max-height: 84px !important;
-  overflow: hidden !important;
+  height: fit-content !important;
+  max-height: 200px !important; /* Plenty of space for the header */
+  overflow: visible !important;
+}
+
+.overlay-header-static {
+  display: flex;
+  flex-direction: column;
+  background: rgba(13, 14, 18, 0.8) !important;
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1.5px solid rgba(139, 92, 246, 0.4);
+  border-radius: 20px;
+  padding: 10px 14px;
+  gap: 8px;
+  flex-shrink: 0;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.header-row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.header-row-bottom {
+  width: 100%;
 }
 
 .status-badge {
@@ -1613,6 +1709,7 @@ html.overlay-mode .overlay-root {
 .ov-action-btn {
   width: 32px;
   height: 32px;
+  flex-shrink: 0;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.04);
   background: rgba(255, 255, 255, 0.02);
@@ -3874,12 +3971,16 @@ kbd {
 .header-transcript-area {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 0;
   height: 28px;
-  overflow-x: auto;
+  overflow: hidden;
   white-space: nowrap;
-  scrollbar-width: none;
-  padding: 0 4px;
+  padding: 0 10px; /* More padding for the mask */
+  position: relative;
+  /* Fade out effect on the left (semi-visible per user request) */
+  mask-image: linear-gradient(to right, rgba(0,0,0,0.3) 0%, black 15%);
+  -webkit-mask-image: linear-gradient(to right, rgba(0,0,0,0.3) 0%, black 15%);
 }
 
 .header-transcript-area::-webkit-scrollbar {
@@ -3887,7 +3988,7 @@ kbd {
 }
 
 .transcript-word {
-  display: inline;
+  display: inline-block;
   font-size: 13px;
   font-weight: 500;
   margin-right: 0.28em;

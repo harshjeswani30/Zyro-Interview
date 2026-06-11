@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react'
 import { parseResumePDF, refineResumeWithAI, initAI, SessionData } from '../services/aiService'
 import ZyroMascot from './ZyroMascot'
+import PhoneInterviewPanel from './PhoneInterviewPanel'
 // Lucide imports removed as we use raw SVGs for exact reference matching
 
 const STORAGE_KEY = 'interview_assistant_session'
@@ -57,6 +58,7 @@ interface UserProfile {
   id?: string
   email?: string
   sessions_balance?: number
+  phone_sessions_balance?: number
   trial_seconds_used?: number
   [key: string]: unknown
 }
@@ -76,7 +78,7 @@ export default function SetupPage({
   const [resumes, setResumes] = useState<Resume[]>([])
   const [selectedResumeId, setSelectedResumeId] = useState('')
   const [isParsing, setIsParsing] = useState(false)
-  const [step, setStep] = useState<1 | 2 | 3>(1)
+  const [step, setStep] = useState<1 | 2 | 3 | 'phone'>(1)
   const [error, setError] = useState('')
   const [autoAnswer, setAutoAnswer] = useState(true)
   const [experienceLevel, setExperienceLevel] = useState<'fresher' | 'experienced'>('fresher')
@@ -86,6 +88,10 @@ export default function SetupPage({
   const [showPaywall, setShowPaywall] = useState(false)
   const [showEmail, setShowEmail] = useState(false)
   const [refreshState, setRefreshState] = useState<'idle' | 'refreshing' | 'success'>('idle')
+  const [isPhoneCapturing, setIsPhoneCapturing] = useState(false)
+  const phoneStopCaptureRef = React.useRef<(() => void) | null>(null)
+  const [phoneHasLogs, setPhoneHasLogs] = useState(false)
+  const phoneStartCaptureRef = React.useRef<(() => void) | null>(null)
 
   // ── Auto-Update state ───────────────────────────────────────
   const [updateInfo, setUpdateInfo] = useState<{ version: string } | null>(null)
@@ -145,6 +151,14 @@ export default function SetupPage({
       unsubError()
     }
   }, [])
+
+  useEffect(() => {
+    if (step === 'phone') {
+      window.api.resizeMainWindow(1075, 731)
+    } else {
+      window.api.resizeMainWindow(768, 522)
+    }
+  }, [step])
 
   useEffect(() => {
     try {
@@ -372,14 +386,18 @@ export default function SetupPage({
               }
             ].map((t) => {
               const isCurrent = step === t.id
-              const isPast = step > t.id
-              const canClick = t.id <= step || (t.id === 2 && name && role) || (t.id === 3 && selectedResumeId)
+              const isPast = typeof step === 'number' ? step > t.id : true
+              const canClick = (typeof step === 'number' ? t.id <= step : true) || (t.id === 2 && name && role) || (t.id === 3 && selectedResumeId)
 
               return (
                 <button
                   key={t.id}
                   className={`nav-item ${isCurrent ? 'active' : ''} ${isPast ? 'past' : ''} ${!canClick ? 'locked' : ''}`}
-                  onClick={() => canClick && setStep(t.id as 1 | 2 | 3)}
+                  onClick={() => {
+                    if (canClick) {
+                      setStep(t.id as 1 | 2 | 3)
+                    }
+                  }}
                 >
                   <span className="nav-icon">{isPast ? '✓' : t.icon}</span>
                   <span className="nav-text">{t.label}</span>
@@ -387,6 +405,23 @@ export default function SetupPage({
                 </button>
               )
             })}
+
+            <button
+              className={`nav-item ${step === 'phone' ? 'active' : ''}`}
+              onClick={() => setStep('phone')}
+              style={{
+                marginTop: 'auto',
+                marginBottom: '8px'
+              }}
+            >
+              <span className="nav-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256">
+                  <path d="M222.37,180.6a16,16,0,0,1-.54,20c-7.6,8.23-16.74,14.67-27.18,19.16a73.23,73.23,0,0,1-29.62,6.24c-35.63,0-72.33-19.13-103.35-50.15S12,109.63,12,74A73.23,73.23,0,0,1,18.24,44.38c4.49-10.44,10.93-19.58,19.16-27.18a16,16,0,0,1,20-.54L83.08,38.3A16,16,0,0,1,87.4,56.6L73.61,70.39A147.3,147.3,0,0,0,121.61,118.4l13.79-13.79a16,16,0,0,1,18.3-4.32l21.64,15.68a16,16,0,0,1-3,24.63Z" />
+                </svg>
+              </span>
+              <span className="nav-text">Phone Interview</span>
+              {step === 'phone' && <div className="nav-active-glow" />}
+            </button>
           </nav>
 
           {/* ── Update Notification Card (Premium UI) ── */}
@@ -634,14 +669,54 @@ export default function SetupPage({
                 {step === 1 && 'Tell us about you'}
                 {step === 2 && 'Resume Library'}
                 {step === 3 && 'Final Check'}
+                {step === 'phone' && 'Phone Interview'}
               </h1>
               <p className="shr-desc">
                 {step === 1 && "Personalize your AI assistant's background context."}
                 {step === 2 && 'Manage and select the resume for this session.'}
                 {step === 3 && 'Review your configuration before starting.'}
+                {step === 'phone' && 'Real-time call companion'}
               </p>
             </div>
             <div className="shr-right">
+              {step === 'phone' && (
+                <div className="header-session-badge-capsule no-drag" title="Phone Sessions Balance">
+                  <div className="badge-glow-effect" />
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="#8B5CF6" viewBox="0 0 256 256" className="badge-icon">
+                    <path d="M224,48H32A16,16,0,0,0,16,64V192a16,16,0,0,0,16,16H224a16,16,0,0,0,16-16V64A16,16,0,0,0,224,48Zm0,144H32V64H224V192ZM64,128a8,8,0,0,1,8-8H96a8,8,0,0,1,0,16H72A8,8,0,0,1,64,128Zm48,0a8,8,0,0,1,8-8h64a8,8,0,0,1,0,16H120A8,8,0,0,1,112,128Z" />
+                  </svg>
+                  <span className="badge-label">Sessions Balance</span>
+                  <span className="badge-value">{userProfile?.phone_sessions_balance ?? 0}</span>
+                </div>
+              )}
+              {step === 'phone' && isPhoneCapturing && (
+                <button
+                  className="stop-capture-header-btn no-drag"
+                  onClick={() => {
+                    if (phoneStopCaptureRef.current) {
+                      phoneStopCaptureRef.current()
+                    }
+                  }}
+                >
+                  <span className="pulse-red-dot"></span>
+                  <span>Stop Capture</span>
+                </button>
+              )}
+              {step === 'phone' && !isPhoneCapturing && phoneHasLogs && (
+                <button
+                  className="resume-capture-header-btn no-drag"
+                  onClick={() => {
+                    if (phoneStartCaptureRef.current) {
+                      phoneStartCaptureRef.current()
+                    }
+                  }}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256" style={{ marginRight: 6 }}>
+                    <path d="M128,176a48.05,48.05,0,0,0,48-48V56a48,48,0,0,0-96,0v72A48.05,48.05,0,0,0,128,176ZM96,56a32,32,0,0,1,64,0v72a32,32,0,0,1-64,0Zm112,72a8,8,0,0,1-16,0,64,64,0,0,1-128,0,8,8,0,0,1-16,0,80.11,80.11,0,0,0,72,79.6V224H80a8,8,0,0,1,0-16h96a8,8,0,0,1,0,16H136v16.4A80.11,80.11,0,0,0,208,128Z" />
+                  </svg>
+                  <span>Resume Capture</span>
+                </button>
+              )}
               <button 
                 className="ov-action-btn refresh no-drag" 
                 title="Refresh Stats" 
@@ -691,6 +766,30 @@ export default function SetupPage({
           </header>
 
           <div className="content-scrollable">
+            {step === 'phone' && (
+              <div className="setup-step fade-in" style={{ height: '100%' }}>
+                <PhoneInterviewPanel
+                  name={name}
+                  role={role}
+                  company={company}
+                  language={language}
+                  experienceLevel={experienceLevel}
+                  experienceDuration={experienceDuration}
+                  workHistory={workHistory}
+                  codingLanguage={codingLanguage}
+                  selectedResumeId={selectedResumeId}
+                  resumes={resumes}
+                  userProfile={userProfile}
+                  onUpgradeClick={() => setShowPaywall(true)}
+                  onCaptureStateChange={(isCapturing, stopFn, startFn, hasLogs) => {
+                    setIsPhoneCapturing(isCapturing)
+                    phoneStopCaptureRef.current = stopFn || null
+                    phoneStartCaptureRef.current = startFn || null
+                    setPhoneHasLogs(!!hasLogs)
+                  }}
+                />
+              </div>
+            )}
             {step === 1 && (
               <div className="setup-step fade-in">
 
@@ -717,6 +816,8 @@ export default function SetupPage({
                     </div>
                     <div className="tc-switch"><div className="tc-knob" /></div>
                   </div>
+
+
 
                   <div className="field-group-modern">
                     <label>Your Full Name *</label>
@@ -1044,30 +1145,43 @@ export default function SetupPage({
                       <div className="gi-item">
                         <div className="gi-label">
                           <span className="gi-icon">🎙️</span>
-                          <span>Run / Stop</span>
+                          <span>Listen / Stop</span>
                         </div>
-                        <kbd>Alt + Space</kbd>
+                        <kbd>Ctrl + Space</kbd>
                       </div>
                       <div className="gi-item">
                         <div className="gi-label">
                           <span className="gi-icon">🔍</span>
                           <span>Screen Scan</span>
                         </div>
-                        <kbd>Alt + S</kbd>
+                        <kbd>Ctrl + S</kbd>
                       </div>
+                      <div className="gi-item">
+                        <div className="gi-label">
+                          <span className="gi-icon">🤖</span>
+                          <span>Auto-Answer</span>
+                        </div>
+                        <kbd>Ctrl + A</kbd>
+                      </div>
+                      <div className="gi-item">
+                        <div className="gi-label">
+                          <span className="gi-icon">🔍</span>
+                          <span>Zoom +/-/0</span>
+                        </div>
+                        <kbd>Ctrl + [+/-/0]</kbd>
+                      </div>
+                    </div>
+
+                    <p className="guide-title" style={{ marginTop: '16px', borderTop: '1px solid rgba(139, 92, 246, 0.1)', paddingTop: '12px' }}>
+                      Overlay Navigation (Local Focus Only)
+                    </p>
+                    <div className="guide-items">
                       <div className="gi-item">
                         <div className="gi-label">
                           <span className="gi-icon">↕️</span>
-                          <span>Scroll Up/Down</span>
+                          <span>Scroll Up / Down</span>
                         </div>
-                        <kbd>Num 8 / 2</kbd>
-                      </div>
-                      <div className="gi-item">
-                        <div className="gi-label">
-                          <span className="gi-icon">📍</span>
-                          <span>Move Overlay</span>
-                        </div>
-                        <kbd>Ctrl + Arrows</kbd>
+                        <kbd>ArrowUp / ArrowDown</kbd>
                       </div>
                     </div>
                   </div>
@@ -1122,65 +1236,67 @@ export default function SetupPage({
             )}
           </div>
 
-          <footer className="content-footer-enhanced">
-            {step === 1 && (
-              <div className="footer-btn-row">
-                <div /> {/* Spacer to push button to the right */}
-                <button
-                  className="primary-action-btn shimmer-btn"
-                  onClick={() => {
-                    if (!name || !role) {
-                      setError('Name and Role are required.')
-                      return
-                    }
-                    setError('')
-                    setStep(2)
-                  }}
-                >
-                  <div className="btn-shine" />
-                  <span>{resumes.length > 0 ? '✓ View My Library' : 'Submit'}</span>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
-                    <path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" />
-                  </svg>
-                </button>
-              </div>
-            )}
-            {step === 2 && (
-              <div className="footer-btn-row">
-                <button className="secondary-btn" onClick={() => setStep(1)}>
-                  ← Back
-                </button>
-                <button
-                  className="primary-action-btn shimmer-btn"
-                  onClick={() => setStep(3)}
-                  disabled={!selectedResumeId}
-                >
-                  <div className="btn-shine" />
-                  <span>{selectedResumeId ? 'Review & Start' : 'Select Resume'}</span>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
-                    <path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" />
-                  </svg>
-                </button>
-              </div>
-            )}
-            {step === 3 && (
-              <div className="footer-btn-row">
-                <button className="secondary-btn" onClick={() => setStep(2)}>
-                  ← Back
-                </button>
-                <button
-                  className="primary-action-btn success shimmer-btn"
-                  onClick={handleStartInterview}
-                >
-                  <div className="btn-shine" />
-                  <span>Start Interview Session</span>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
-                    <path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" />
-                  </svg>
-                </button>
-              </div>
-            )}
-          </footer>
+          {step !== 'phone' && (
+            <footer className="content-footer-enhanced">
+              {step === 1 && (
+                <div className="footer-btn-row">
+                  <div /> {/* Spacer to push button to the right */}
+                  <button
+                    className="primary-action-btn shimmer-btn"
+                    onClick={() => {
+                      if (!name || !role) {
+                        setError('Name and Role are required.')
+                        return
+                      }
+                      setError('')
+                      setStep(2)
+                    }}
+                  >
+                    <div className="btn-shine" />
+                    <span>{resumes.length > 0 ? '✓ View My Library' : 'Submit'}</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
+                      <path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+              {step === 2 && (
+                <div className="footer-btn-row">
+                  <button className="secondary-btn" onClick={() => setStep(1)}>
+                    ← Back
+                  </button>
+                  <button
+                    className="primary-action-btn shimmer-btn"
+                    onClick={() => setStep(3)}
+                    disabled={!selectedResumeId}
+                  >
+                    <div className="btn-shine" />
+                    <span>{selectedResumeId ? 'Review & Start' : 'Select Resume'}</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
+                      <path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+              {step === 3 && (
+                <div className="footer-btn-row">
+                  <button className="secondary-btn" onClick={() => setStep(2)}>
+                    ← Back
+                  </button>
+                  <button
+                    className="primary-action-btn success shimmer-btn"
+                    onClick={handleStartInterview}
+                  >
+                    <div className="btn-shine" />
+                    <span>Start Interview Session</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
+                      <path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+            </footer>
+          )}
         </section>
       </div>
     </div>

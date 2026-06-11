@@ -1,3 +1,5 @@
+process.env.UV_THREADPOOL_SIZE = '16'
+
 import {
   app,
   shell,
@@ -7,7 +9,8 @@ import {
   screen,
   desktopCapturer,
   session,
-  globalShortcut
+  globalShortcut,
+  powerSaveBlocker
 } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -36,6 +39,21 @@ autoUpdater.logger = console
 autoUpdater.autoDownload = false  // Only download when user explicitly clicks — no surprise downloads
 autoUpdater.allowPrerelease = false
 autoUpdater.channel = 'latest'
+
+// Custom fetch helper with a timeout using AbortController
+async function fetchWithTimeout(url: string, options: RequestInit & { timeout?: number }): Promise<Response> {
+  const { timeout = 15000, ...fetchOptions } = options
+  const controller = new AbortController()
+  const id = setTimeout(() => controller.abort(), timeout)
+  try {
+    return await fetch(url, {
+      ...fetchOptions,
+      signal: controller.signal
+    })
+  } finally {
+    clearTimeout(id)
+  }
+}
 
 // Retry helper — retries up to `attempts` times with exponential back-off
 // Works whether VPN is on or off: uses whatever network route the system provides.
@@ -69,12 +87,14 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3, baseDelayMs = 80
         error?.status === 429 ||
         error?.status >= 500 ||
         error?.message?.includes('fetch failed') ||
-        error?.message?.includes('network')
+        error?.message?.includes('network') ||
+        error?.name === 'AbortError' ||
+        error?.message?.includes('aborted')
 
       if (!isNetwork || i === attempts - 1) throw err
       const delay = baseDelayMs * Math.pow(2, i)
       console.warn(
-        `[AI-Gateway] Attempt ${i + 1} failed (${error.status ?? error.code}), retrying in ${delay} ms…`
+        `[AI-Gateway] Attempt ${i + 1} failed (${error.status ?? error.code ?? 'timeout/abort'}), retrying in ${delay} ms…`
       )
       await new Promise((r) => setTimeout(r, delay))
     }
@@ -189,6 +209,8 @@ async function handleProtocolUrl(url: string): Promise<void> {
 let mainWindow: BrowserWindow | null = null
 let overlayWindow: BrowserWindow | null = null
 let pendingSessionData: unknown = null
+let activeResizeInterval: NodeJS.Timeout | null = null
+let activeBlockerId: number | null = null
 
 // Guard helper: only send if the window + webContents are still alive
 function safeSend(
@@ -220,6 +242,7 @@ function createMainWindow(): void {
     frame: false,
     show: false,
     autoHideMenuBar: true,
+    backgroundColor: '#0a0b0f',
     title: 'AppService',
     icon,
     webPreferences: {
@@ -300,7 +323,8 @@ function createOverlayWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       nodeIntegration: false,
-      contextIsolation: true
+      contextIsolation: true,
+      backgroundThrottling: false // Prevents Chromium from throttling timers when overlay is out of focus
     }
   })
 
@@ -348,7 +372,10 @@ function setupIPC(): void {
   })
 
   ipcMain.handle('get-desktop-sources', async () => {
-    return await desktopCapturer.getSources({ types: ['screen', 'window'] })
+    return await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: 0, height: 0 }
+    })
   })
 
   ipcMain.handle('get-bounds', () => overlayWindow?.getBounds())
@@ -392,22 +419,6 @@ function setupIPC(): void {
     }
     pendingSessionData = sessionDataWithProfile
 
-    // Register scroll shortcuts only while interview is active
-    const regUp = globalShortcut.register('num8', () => {
-      if (!overlayWindow || overlayWindow.isDestroyed() || overlayWindow.webContents.isDestroyed())
-        return
-      overlayWindow.webContents.send('scroll-overlay', 'up')
-    })
-    const regDown = globalShortcut.register('num2', () => {
-      if (!overlayWindow || overlayWindow.isDestroyed() || overlayWindow.webContents.isDestroyed())
-        return
-      overlayWindow.webContents.send('scroll-overlay', 'down')
-    })
-    if (!regUp)
-      console.warn('[Shortcuts] num8 registration failed (key may be in use by another app)')
-    if (!regDown)
-      console.warn('[Shortcuts] num2 registration failed (key may be in use by another app)')
-
     if (!overlayWindow || overlayWindow.isDestroyed()) {
       createOverlayWindow()
       overlayWindow!.webContents.once('did-finish-load', () => {
@@ -431,6 +442,13 @@ function setupIPC(): void {
         if (!overlayWindow!.isDestroyed()) overlayWindow!.show()
       })
     }
+
+    // Prevent OS from suspending or throttling CPU while interview is active
+    if (activeBlockerId === null) {
+      activeBlockerId = powerSaveBlocker.start('prevent-app-suspension')
+      console.log('[Main] Power save blocker started, ID:', activeBlockerId)
+    }
+
     mainWindow?.hide()
     return { allowed: true }
   })
@@ -438,9 +456,16 @@ function setupIPC(): void {
   ipcMain.on('end-interview', () => {
     pendingSessionData = null
 
-    // Release scroll shortcuts so numpad works normally again
-    globalShortcut.unregister('num8')
-    globalShortcut.unregister('num2')
+    // Release only scroll shortcuts so global Alt+Space/Alt+S remain active
+    const scrollKeys = ['num8', 'num2', 'num9', 'num3', 'num7', 'num1']
+    scrollKeys.forEach((key) => globalShortcut.unregister(key))
+
+    // Stop power save blocker when interview ends
+    if (activeBlockerId !== null) {
+      powerSaveBlocker.stop(activeBlockerId)
+      console.log('[Main] Power save blocker stopped, ID:', activeBlockerId)
+      activeBlockerId = null
+    }
 
     if (overlayWindow && !overlayWindow.isDestroyed()) {
       overlayWindow.hide()
@@ -580,6 +605,66 @@ function setupIPC(): void {
     return { newBalance }
   })
 
+  ipcMain.handle('supabase-deduct-phone-session', async () => {
+    if (!supabaseUserId || !supabaseAccessToken) throw new Error('Not logged in')
+    const profileRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${supabaseUserId}&select=phone_sessions_balance`,
+      {
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
+        }
+      }
+    )
+    const rows = await profileRes.json()
+    const current = rows?.[0]?.phone_sessions_balance ?? 0
+    if (current <= 0) throw new Error('No sessions remaining')
+    const newBalance = current - 1
+    await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${supabaseUserId}`, {
+      method: 'PATCH',
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal'
+      },
+      body: JSON.stringify({ phone_sessions_balance: newBalance })
+    })
+    return { newBalance }
+  })
+
+  ipcMain.handle('supabase-create-razorpay-order', async (_e, { planId }) => {
+    if (!supabaseUserId || !supabaseAccessToken) throw new Error('Not logged in')
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/razorpay-create-order`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${supabaseAccessToken}`
+      },
+      body: JSON.stringify({
+        planId,
+        couponCode: null
+      })
+    })
+
+    if (!res.ok) {
+      let msg = `Edge function returned status ${res.status}`
+      try {
+        const body = await res.json()
+        if (body.error) msg = body.error
+      } catch (e) {
+        try {
+          const text = await res.text()
+          if (text) msg = text
+        } catch (e2) {}
+      }
+      throw new Error(msg)
+    }
+
+    return await res.json()
+  })
+
   ipcMain.handle('supabase-update-trial', async (_e, seconds) => {
     console.log(`[Supabase] Updating trial for ${supabaseUserId}: ${seconds}s`)
     if (!supabaseUserId || !supabaseAccessToken) {
@@ -681,13 +766,14 @@ function setupIPC(): void {
         const buffer = Buffer.from(base64Audio, 'base64')
         const formData = new FormData()
         formData.append('file', new Blob([buffer], { type: mimeType }), `recording.${ext}`)
-        formData.append('model', 'whisper-large-v3')
+        formData.append('model', 'whisper-large-v3-turbo')
         formData.append('language', language.split('-')[0])
+        formData.append('prompt', 'Technical interview. IMPORTANT: Ignore background noise, silence, or music. Do NOT hallucinate words like "You", "Thank you", "Subscribe", "Subtitle". If no clear speech is detected, return an empty string.')
 
         const sttHeaders: Record<string, string> = {}
         console.log(`[AI-STT] Requesting transcription...`)
         const sttRes = await withRetry(() => 
-          fetch(`${AI_GATEWAY}/gateway/stt`, { method: 'POST', headers: sttHeaders, body: formData })
+          fetchWithTimeout(`${AI_GATEWAY}/gateway/stt`, { method: 'POST', headers: sttHeaders, body: formData })
         )
         const sttData = await sttRes.json() as { text?: string }
         console.log(`[AI-STT] Received: "${sttData.text?.substring(0, 50)}..."`)
@@ -706,7 +792,7 @@ function setupIPC(): void {
 
         // Step 2: Generate answer via gateway LLM
         const llmRes = await withRetry(() => 
-          fetch(`${AI_GATEWAY}/gateway/llm`, {
+          fetchWithTimeout(`${AI_GATEWAY}/gateway/llm`, {
             method: 'POST',
             headers: gatewayHeaders(),
             body: JSON.stringify(llmPayload)
@@ -735,14 +821,18 @@ function setupIPC(): void {
         const buffer = Buffer.from(base64Audio, 'base64')
         const formData = new FormData()
         formData.append('file', new Blob([buffer], { type: mimeType }), `recording.${ext}`)
-        formData.append('model', 'whisper-large-v3')
+        formData.append('model', 'whisper-large-v3-turbo')
         formData.append('language', language.split('-')[0])
-        if (context) formData.append('prompt', context.slice(-200))
-        else formData.append('prompt', 'Technical interview. IMPORTANT: Ignore background noise, silence, or music. Do NOT hallucinate words like "You", "Thank you", "Subscribe", "Subtitle". If no clear speech is detected, return an empty string.')
+        
+        const defaultPrompt = 'Technical interview. IMPORTANT: Ignore background noise, silence, or music. Do NOT hallucinate words like "You", "Thank you", "Subscribe", "Subtitle". If no clear speech is detected, return an empty string.'
+        const finalPrompt = context 
+          ? `${defaultPrompt} Context: ${context}`
+          : defaultPrompt
+        formData.append('prompt', finalPrompt.slice(-1000))
 
         const sttHeaders: Record<string, string> = {}
         const res = await withRetry(() => 
-          fetch(`${AI_GATEWAY}/gateway/stt`, { method: 'POST', headers: sttHeaders, body: formData })
+          fetchWithTimeout(`${AI_GATEWAY}/gateway/stt`, { method: 'POST', headers: sttHeaders, body: formData })
         )
         const data = await res.json() as { text?: string }
         return data.text || ''
@@ -762,7 +852,7 @@ function setupIPC(): void {
       try {
         console.log(`[AI-LLM] Requesting answer... (Tokens: ${maxTokens})`)
         const res = await withRetry(() =>
-          fetch(`${AI_GATEWAY}/gateway/llm`, {
+          fetchWithTimeout(`${AI_GATEWAY}/gateway/llm`, {
             method: 'POST',
             headers: gatewayHeaders(),
             body: JSON.stringify({
@@ -799,7 +889,7 @@ function setupIPC(): void {
       const base64Image = primarySource.thumbnail.toDataURL()
 
       const res = await withRetry(() => 
-        fetch(`${AI_GATEWAY}/gateway/vision`, {
+        fetchWithTimeout(`${AI_GATEWAY}/gateway/vision`, {
           method: 'POST',
           headers: gatewayHeaders(),
           body: JSON.stringify({
@@ -861,6 +951,61 @@ function setupIPC(): void {
 
   ipcMain.on('set-zoom', (_event, level: number) => {
     overlayWindow?.webContents.setZoomLevel(level)
+  })
+
+  ipcMain.handle('resize-main-window', async (_event, { width, height }) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+
+    if (activeResizeInterval) {
+      clearInterval(activeResizeInterval)
+      activeResizeInterval = null
+    }
+
+    const startBounds = mainWindow.getBounds()
+    const startWidth = startBounds.width
+    const startHeight = startBounds.height
+    const deltaWidth = width - startWidth
+    const deltaHeight = height - startHeight
+    const startTime = Date.now()
+    const durationMs = 650
+
+    activeResizeInterval = setInterval(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        if (activeResizeInterval) {
+          clearInterval(activeResizeInterval)
+          activeResizeInterval = null
+        }
+        return
+      }
+
+      const elapsed = Date.now() - startTime
+      const progress = Math.min(1, elapsed / durationMs)
+
+      // easeInOutCubic easing
+      const ease = progress < 0.5
+        ? 4 * progress * progress * progress
+        : 1 - Math.pow(-2 * progress + 2, 3) / 2
+
+      const currentWidth = Math.round(startWidth + deltaWidth * ease)
+      const currentHeight = Math.round(startHeight + deltaHeight * ease)
+
+      const currentX = Math.round(startBounds.x + (startBounds.width - currentWidth) / 2)
+      const currentY = Math.round(startBounds.y + (startBounds.height - currentHeight) / 2)
+
+      mainWindow.setBounds({
+        x: currentX,
+        y: currentY,
+        width: currentWidth,
+        height: currentHeight
+      })
+
+      if (progress >= 1) {
+        if (activeResizeInterval) {
+          clearInterval(activeResizeInterval)
+          activeResizeInterval = null
+        }
+      }
+    }, 20)
   })
 
   ipcMain.on('reload-window', (): void => mainWindow?.reload())
@@ -937,56 +1082,7 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow()
   })
-
-  // Register Global Shortcuts for Click-through control
-  registerGlobalShortcuts()
 })
-
-function registerGlobalShortcuts(): void {
-  const OW = 850,
-    OH = 600,
-    pad = 12
-
-  // Movement Shortcuts
-  const move = (corner: string): void => {
-    if (!overlayWindow || overlayWindow.isDestroyed()) return
-    const s = screen.getPrimaryDisplay().workAreaSize
-    const pos: Record<string, [number, number]> = {
-      tl: [pad, pad],
-      tc: [Math.floor((s.width - OW) / 2), pad],
-      tr: [s.width - OW - pad, pad],
-      bl: [pad, s.height - OH - pad],
-      br: [s.width - OW - pad, s.height - OH - pad]
-    }
-    const [x, y] = pos[corner]
-    overlayWindow.setPosition(x, y)
-  }
-
-  globalShortcut.register('CommandOrControl+Up', () => move('tc'))
-  globalShortcut.register('CommandOrControl+Left', () => move('tl'))
-  globalShortcut.register('CommandOrControl+Right', () => move('tr'))
-  globalShortcut.register('CommandOrControl+Down', () => move('bl'))
-  globalShortcut.register('CommandOrControl+Shift+Right', () => move('br'))
-
-  // Scrolling Shortcuts — registered/unregistered dynamically in start/end-interview
-  // (see ipcMain.on 'start-interview' / 'end-interview')
-
-  // Listen / Stop toggle for manual mode
-  globalShortcut.register('Alt+Space', () => {
-    if (!overlayWindow || overlayWindow.isDestroyed() || overlayWindow.webContents.isDestroyed())
-      return
-    overlayWindow.webContents.send('toggle-listening')
-  })
-
-  // Screen Scan shortcut
-  globalShortcut.register('Alt+S', () => {
-    if (!overlayWindow || overlayWindow.isDestroyed() || overlayWindow.webContents.isDestroyed())
-      return
-    overlayWindow.webContents.send('trigger-screen-scan')
-  })
-
-  // Zooming Logic - No longer global, handled via IPC from renderer
-}
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
