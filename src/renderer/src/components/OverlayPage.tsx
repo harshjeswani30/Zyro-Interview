@@ -2,8 +2,6 @@ import React, { useState, useEffect, useCallback, useRef } from 'react'
 import {
     initAI,
     generateInterviewAnswer,
-    isSubstantiveQuestion,
-    extractCleanQuestion,
     transcribeAudioOnly,
     analyzeScreen,
     SessionData
@@ -19,8 +17,14 @@ interface CurrentQA {
     timestamp: Date
 }
 
+interface WordToken {
+    id: number
+    text: string
+}
+
 // ── WAV encoder: Float32Array PCM chunks → WAV Blob ──────────────────────────
-function encodeWAV(chunks: Float32Array[], sampleRate: number): Blob {
+function encodeWAV(chunks: Float32Array[], originalSampleRate: number): Blob {
+    const targetSampleRate = 16000
     const totalSamples = chunks.reduce((sum, c) => sum + c.length, 0)
     const merged = new Float32Array(totalSamples)
     let pos = 0
@@ -28,9 +32,29 @@ function encodeWAV(chunks: Float32Array[], sampleRate: number): Blob {
         merged.set(c, pos)
         pos += c.length
     }
-    const int16 = new Int16Array(merged.length)
-    for (let i = 0; i < merged.length; i++) {
-        const s = Math.max(-1, Math.min(1, merged[i]))
+
+    // Downsample if original rate is different from target rate
+    let downsampled = merged
+    if (originalSampleRate !== targetSampleRate) {
+        const ratio = originalSampleRate / targetSampleRate
+        const newLength = Math.round(merged.length / ratio)
+        downsampled = new Float32Array(newLength)
+        for (let i = 0; i < newLength; i++) {
+            const start = Math.round(i * ratio)
+            const end = Math.round((i + 1) * ratio)
+            let sum = 0
+            let count = 0
+            for (let j = start; j < end && j < merged.length; j++) {
+                sum += merged[j]
+                count++
+            }
+            downsampled[i] = count > 0 ? sum / count : 0
+        }
+    }
+
+    const int16 = new Int16Array(downsampled.length)
+    for (let i = 0; i < downsampled.length; i++) {
+        const s = Math.max(-1, Math.min(1, downsampled[i]))
         int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff
     }
     const buf = new ArrayBuffer(44 + int16.byteLength)
@@ -45,8 +69,8 @@ function encodeWAV(chunks: Float32Array[], sampleRate: number): Blob {
     view.setUint32(16, 16, true)
     view.setUint16(20, 1, true)
     view.setUint16(22, 1, true)
-    view.setUint32(24, sampleRate, true)
-    view.setUint32(28, sampleRate * 2, true)
+    view.setUint32(24, targetSampleRate, true)
+    view.setUint32(28, targetSampleRate * 2, true)
     view.setUint16(32, 2, true)
     view.setUint16(34, 16, true)
     w(36, 'data')
@@ -54,6 +78,77 @@ function encodeWAV(chunks: Float32Array[], sampleRate: number): Blob {
     new Int16Array(buf, 44).set(int16)
     return new Blob([buf], { type: 'audio/wav' })
 }
+
+function computeRMS(buffer: Float32Array): number {
+    let sum = 0
+    for (let i = 0; i < buffer.length; i++) {
+        sum += buffer[i] * buffer[i]
+    }
+    return Math.sqrt(sum / buffer.length)
+}
+
+const FILLERS = new Set([
+    'thank you', 'thanks', 'thanks for watching', 'thanks for',
+    'bye', 'goodbye', 'good bye', 'see you', 'see you later',
+    'hello', 'hi', 'hey', 'okay', 'ok', 'alright', 'right',
+    'hmm', 'hm', 'uh', 'um', 'ah', 'oh', 'yeah', 'yes', 'no',
+    'sure', 'sure sure', 'you', 'u', 'please subscribe', 'subscribe',
+    'subtitle by', 'subtitles by', 'captions by', 'the end',
+    'so', 'well', 'and', 'but', 'because', 'translated by',
+    'transcript by', 'thank you very much', 'thank you for watching',
+    'what is audio listening', 'audio listening', 'is audio listening',
+    'what is the audio listening', 'the audio listening',
+    'music', 'wind', 'laughter', 'cough', 'sigh', 'throat clearing', 'snort',
+    'coughing', 'gasp', 'whispering', 'silence', 'background noise',
+    'humming', 'bell', 'chime', 'ring', 'beep', 'click', 'shh', 'hiss',
+    'grunt', 'groan', 'giggle', 'applause', 'cheering'
+])
+
+function isFillerOrHallucination(text: string): boolean {
+    const normalized = text.toLowerCase().replace(/[.,!?;:'"()\[\]]/g, '').trim()
+    if (!normalized || normalized.length < 3) return true
+    if (FILLERS.has(normalized)) return true
+
+    const words = normalized.split(/\s+/)
+    
+    // Check if the text is composed entirely of repeating single characters or filler words
+    const uniqueWords = new Set(words)
+    if (uniqueWords.size === 1 && FILLERS.has(Array.from(uniqueWords)[0])) {
+        return true
+    }
+
+    // Heuristics for short transcripts (less than 5 words)
+    if (words.length < 5) {
+        // Strip common leading filler words
+        const leadingFillers = new Set(['so', 'and', 'but', 'okay', 'ok', 'now', 'well', 'actually', 'basically', 'like'])
+        let startIndex = 0
+        while (startIndex < words.length && leadingFillers.has(words[startIndex])) {
+            startIndex++
+        }
+        
+        // If we stripped all words, it's a filler
+        if (startIndex >= words.length) return true
+        
+        const firstRealWord = words[startIndex]
+        
+        // Check if the first real word is a valid question/action word
+        const VALID_STARTERS = new Set([
+            'what', 'how', 'why', 'can', 'could', 'tell', 'explain', 'describe',
+            'write', 'code', 'implement', 'give', 'show', 'where', 'when', 'which',
+            'who', 'whose', 'whom', 'define', 'introduce', 'design', 'discuss',
+            'create', 'act', 'suppose', 'elaborate', 'analyze', 'solve', 'state',
+            'compare', 'difference', 'diff'
+        ])
+        
+        if (!VALID_STARTERS.has(firstRealWord)) {
+            console.log(`[Filter] Filtered short non-question: "${normalized}" (first word: "${firstRealWord}")`)
+            return true
+        }
+    }
+
+    return false
+}
+
 
 export default function OverlayPage(): React.ReactElement {
     const [session, setSession] = useState<SessionData | null>(null)
@@ -70,11 +165,12 @@ export default function OverlayPage(): React.ReactElement {
     const [isThinking, setIsThinking] = useState(false)
     const [pendingTranscript, setPendingTranscript] = useState('')
     const pendingTranscriptRef = useRef('')
-    const [displayedTranscript, setDisplayedTranscript] = useState('')
+    const [displayedWords, setDisplayedWords] = useState<WordToken[]>([])
+    const wordIdCounterRef = useRef(0)
     const targetTranscriptRef = useRef('')
     const transcriptContainerRef = useRef<HTMLDivElement>(null)
-    const [continuationCount, setContinuationCount] = useState(0)
     const displayHistoryRef = useRef('') // Store previous questions in this session
+    const rawSessionHistoryRef = useRef('') // NEW: Continuous raw transcription history
 
     // ── Session balance + trial timer ────────────────────────
     const TRIAL_LIMIT = 600 // 10 minutes in seconds
@@ -242,43 +338,68 @@ export default function OverlayPage(): React.ReactElement {
     }, [refreshProfileAndStartTimers])
 
 
+
+
     // Keep ref in sync
     useEffect(() => {
         pendingTranscriptRef.current = pendingTranscript
-    }, [pendingTranscript])
-
-    // ── Typewriter / word-crawl target ────────────────────────
-    // pendingTranscript already contains master + partial combined (set in schedulePartial)
-    // so we just mirror it directly.
-    useEffect(() => {
+        // Sync target for crawl loop
         targetTranscriptRef.current = pendingTranscript
     }, [pendingTranscript])
 
-    // Persistent word-by-word crawl loop (Parakeet style)
+    // ── Typewriter / word-crawl loop ──────────────────────────
+    // Persistent word-by-word crawl loop (Stable Token version)
     useEffect(() => {
         const interval = setInterval(() => {
-            setDisplayedTranscript((prev) => {
-                const target = targetTranscriptRef.current
-                if (!target) return ''
-                if (prev === target) return prev
+            const target = targetTranscriptRef.current
+            if (!target) {
+                if (displayedWords.length > 0) {
+                    setDisplayedWords([])
+                }
+                return
+            }
 
-                const targetWords = target.trim().split(/\s+/)
-                const currentWords = prev.trim().split(/\s+/).filter(w => w.length > 0)
-
-                // If target is completely different or much shorter (correction/reset), snap to first word
-                if (!target.startsWith(prev) && targetWords[0] !== currentWords[0]) {
-                    return targetWords[0] || ''
+            const targetWords = target.trim().split(/\s+/).filter(w => w.length > 0)
+            
+            setDisplayedWords((prev) => {
+                // If the first word has completely changed (not just casing), reset the crawl
+                if (prev.length > 0 && targetWords.length > 0) {
+                    const firstPrev = prev[0].text.toLowerCase().replace(/[.,!?;:'"]/g, '')
+                    const firstTarget = targetWords[0].toLowerCase().replace(/[.,!?;:'"]/g, '')
+                    if (firstPrev !== firstTarget) {
+                        return []
+                    }
                 }
 
-                // If we are just missing words, append the next one
-                if (currentWords.length < targetWords.length) {
-                    return targetWords.slice(0, currentWords.length + 1).join(' ')
+                const next = [...prev]
+                let changed = false
+
+                // 1. Sync existing words (handle corrections/autocorrect from Whisper)
+                for (let i = 0; i < Math.min(next.length, targetWords.length); i++) {
+                    if (next[i].text !== targetWords[i]) {
+                        next[i] = { ...next[i], text: targetWords[i] }
+                        changed = true
+                    }
                 }
 
-                // If text was corrected mid-sentence but starts the same, just sync
-                return target
+                // 2. Add NEXT word (crawl forward one word at a time)
+                if (next.length < targetWords.length) {
+                    next.push({
+                        id: ++wordIdCounterRef.current,
+                        text: targetWords[next.length]
+                    })
+                    changed = true
+                }
+
+                // 3. Trim trailing words if target shrank significantly
+                if (next.length > targetWords.length + 1) {
+                    next.splice(targetWords.length)
+                    changed = true
+                }
+
+                return changed ? next : prev
             })
-        }, 50) // Faster word-by-word cadence for real-time feel
+        }, 40) // Faster cadence for smoother real-time feel
 
         return () => clearInterval(interval)
     }, [])
@@ -288,7 +409,7 @@ export default function OverlayPage(): React.ReactElement {
         const el = transcriptContainerRef.current
         if (el) {
             el.scrollLeft = el.scrollWidth
-
+            
             // Toggle mask visibility based on whether we're actually overflowing
             const isOverflow = el.scrollWidth > el.clientWidth
             if (isOverflow) {
@@ -297,7 +418,7 @@ export default function OverlayPage(): React.ReactElement {
                 el.classList.remove('is-overflowing')
             }
         }
-    }, [displayedTranscript])
+    }, [displayedWords])
     
     // Auto-scroll to TOP when a new answer starts (as requested)
     useEffect(() => {
@@ -332,7 +453,6 @@ export default function OverlayPage(): React.ReactElement {
     const vadWorkerRef = useRef<Worker | null>(null)
     const vadSpeechActiveRef = useRef(false) // true when worker detects real speech
 
-    // ── Continuation chain (accumulate multi-part questions) ──────────────
     const masterQuestionRef = useRef('') // full growing question
     const continuationCountRef = useRef(0) // how many appends so far
     const lastAnswerTimeRef = useRef<number | null>(null) // epoch-sec of last answer
@@ -344,32 +464,60 @@ export default function OverlayPage(): React.ReactElement {
         document.body.classList.add('overlay-mode')
 
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (!e.ctrlKey) return
+            const target = e.target as HTMLElement
+            const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
 
-            if (e.key === '=' || e.key === '+') {
-                setZoomLevel((prev) => {
-                    const next = Math.min(prev + 0.5, 4)
-                    window.api.setZoom(next)
-                    return next
-                })
-            } else if (e.key === '-') {
-                setZoomLevel((prev) => {
-                    const next = Math.max(prev - 0.5, -2)
-                    window.api.setZoom(next)
-                    return next
-                })
-            } else if (e.key === '0') {
-                setZoomLevel(0)
-                window.api.setZoom(0)
-            } else if (e.key.toLowerCase() === 's') {
-                e.preventDefault()
-                handleAnalyzeScreenRef.current?.()
-            } else if (e.key.toLowerCase() === 'a') {
-                e.preventDefault()
-                handleToggleAutoRef.current?.()
-            } else if (e.code === 'Space') {
-                e.preventDefault()
-                handleToggleManualRef.current?.()
+            if (isInput) {
+                if (e.ctrlKey && (e.key === '=' || e.key === '+' || e.key === '-' || e.key === '0')) {
+                    // Allow zoom hotkeys to fall through
+                } else {
+                    return
+                }
+            }
+
+            if (e.ctrlKey) {
+                if (e.key === '=' || e.key === '+') {
+                    e.preventDefault()
+                    setZoomLevel((prev) => {
+                        const next = Math.min(prev + 0.5, 4)
+                        window.api.setZoom(next)
+                        return next
+                    })
+                } else if (e.key === '-') {
+                    e.preventDefault()
+                    setZoomLevel((prev) => {
+                        const next = Math.max(prev - 0.5, -2)
+                        window.api.setZoom(next)
+                        return next
+                    })
+                } else if (e.key === '0') {
+                    e.preventDefault()
+                    setZoomLevel(0)
+                    window.api.setZoom(0)
+                } else if (e.key.toLowerCase() === 's') {
+                    e.preventDefault()
+                    handleAnalyzeScreenRef.current?.()
+                } else if (e.key.toLowerCase() === 'a') {
+                    e.preventDefault()
+                    handleToggleAutoRef.current?.()
+                } else if (e.code === 'Space') {
+                    e.preventDefault()
+                    handleToggleManualRef.current?.()
+                }
+            } else {
+                if (e.key === 'ArrowUp') {
+                    const el = contentRef.current
+                    if (el) {
+                        e.preventDefault()
+                        el.scrollBy({ top: -140, behavior: 'smooth' })
+                    }
+                } else if (e.key === 'ArrowDown') {
+                    const el = contentRef.current
+                    if (el) {
+                        e.preventDefault()
+                        el.scrollBy({ top: 140, behavior: 'smooth' })
+                    }
+                }
             }
         }
 
@@ -396,7 +544,7 @@ export default function OverlayPage(): React.ReactElement {
             // can reference the underlying window's element in that state.
             const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
 
-            const isOverInteractive = !!el?.closest(INTERACTIVE_SELECTOR)
+            const isOverInteractive = (e.clientY < 120) || !!el?.closest(INTERACTIVE_SELECTOR)
 
             if (isOverInteractive && currentIgnore) {
                 currentIgnore = false
@@ -457,7 +605,10 @@ export default function OverlayPage(): React.ReactElement {
     }
 
     // ── VAD + Audio Capture (ParakeetAI-style state machine) ────
-    const startCapture = useCallback(async () => {
+    const startCapture = useCallback(async (sessionDataOverride?: SessionData) => {
+        const sData = sessionDataOverride || sessionRef.current || session
+        if (!sData) return
+
         // ── VAD Tuning (matches ParakeetAI config) ───────────────
         const LONG_PAUSE_SEC = 1.8
         const PARTIAL_MS = 300
@@ -500,6 +651,8 @@ export default function OverlayPage(): React.ReactElement {
             sourceNode.connect(processor)
             processor.connect(audioCtx.destination)
 
+
+
             // ── Step 4: encode buffered PCM chunks → WAV → base64 → Whisper ──
             const transcribeBuffer = async (chunks: Float32Array[]): Promise<string> => {
                 if (!chunks.length) return ''
@@ -517,6 +670,7 @@ export default function OverlayPage(): React.ReactElement {
                 return await transcribeAudioOnly(base64, 'audio/wav', promptContext)
             }
 
+            // ── Step 5: finalize question → run final Whisper → call LLM ─────
             // ── Step 5: finalize question → run final Whisper → call LLM ─────
             const finalizeQuestion = async (providedChunks?: Float32Array[]) => {
                 if (isFinalizingRef.current || isGeneratingRef.current) return
@@ -537,65 +691,34 @@ export default function OverlayPage(): React.ReactElement {
 
                 isFinalizingRef.current = true
                 setIsManualListening(false)
+
                 try {
                     isGeneratingRef.current = true
                     setStatusText('Transcribing...')
                     const finalText = (await transcribeBuffer(chunksSnap))?.trim() ?? ''
                     console.log('[VAD] Final Transcript:', finalText)
 
-
-                    // ── Filler / hallucination filter ─────────────────────────────
-                    const FILLERS = new Set([
-                        'thank you', 'thanks', 'thanks for watching', 'thanks for',
-                        'bye', 'goodbye', 'good bye', 'see you', 'see you later',
-                        'hello', 'hi', 'hey', 'okay', 'ok', 'alright', 'right',
-                        'hmm', 'hm', 'uh', 'um', 'ah', 'oh', 'yeah', 'yes', 'no',
-                        'sure', 'sure sure', 'you', 'u', 'please subscribe', 'subscribe',
-                        'subtitle by', 'subtitles by', 'captions by', 'the end',
-                        'so', 'well', 'and', 'but', 'because', 'translated by',
-                        'transcript by', 'thank you very much', 'thank you for watching'
-                    ])
-                    const normalized = finalText.toLowerCase().replace(/[.,!?;:'"]/g, '').trim()
-                    
-                    if (!finalText || normalized.length < 3 || FILLERS.has(normalized)) {
-                        console.log('[VAD] Silent discard (Noise/Hallucination):', JSON.stringify(finalText))
-                        // Explicitly clear the transcript display
-                        setPendingTranscript('')
-                        setDisplayedTranscript('')
-                        targetTranscriptRef.current = ''
+                    // ── Background & Intent Analysis (Filler Check) ───
+                    if (isFillerOrHallucination(finalText)) {
+                        console.log('[VAD] Silent background discard (Noise/Filler/Hallucination)')
+                        isGeneratingRef.current = false
+                        isFinalizingRef.current = false
+                        setIsGenerating(false)
+                        setIsThinking(false)
+                        setStatusText(autoAnswerRef.current ? 'Ready (Auto)' : 'Manual Mode')
                         return
                     }
 
-                    // ── Phase 1.5: Smart Question Classification ──────────────────
-                    // If in Auto-Mode, use LLM to check if this is a real question
-                    // or just feedback/lecture. We SKIP this for continuations
-                    // because if we are already in a question chain, we want to append.
+                    // ── Visual Display Phase (Filtered & Valid Transcript) ───
+                    // Immediately append to history so the user sees EXACTLY what Whisper said
+                    rawSessionHistoryRef.current += (rawSessionHistoryRef.current ? ' ' : '') + finalText
+                    setPendingTranscript(rawSessionHistoryRef.current)
                     const nowSec = Date.now() / 1000
                     const prevSpeechEnd = lastSpeechEndRef.current
                     const timeSinceLastSpeech = prevSpeechEnd !== null ? nowSec - prevSpeechEnd : Infinity
                     const isWithinSpeechGrace = timeSinceLastSpeech < GRACE_WINDOW_SEC
                     const hasMaster = masterQuestionRef.current.trim().length > 0
 
-                    if (autoAnswerRef.current && (!hasMaster || !isWithinSpeechGrace)) {
-                        setStatusText('Analyzing Intent...')
-                        const isQuestion = await isSubstantiveQuestion(finalText)
-                        if (!isQuestion) {
-                            console.log('[VAD] Intent: IGNORE (Non-question)')
-                            // Clear transcript — this was just interviewer talk
-                            setPendingTranscript('')
-                            setDisplayedTranscript('')
-                            targetTranscriptRef.current = ''
-                            return
-                        }
-                    }
-
-                    // ── Phase 2: Real question confirmed — NOW show thinking UI ───
-                    setIsThinking(true)
-                    setIsGenerating(true)
-                    setStatusText('Thinking...')
-                    console.log('[VAD] Pipeline Triggered: Processing Question...')
-
-                    // ── Continuation chain logic ─────────────────────────────────
                     // Record when this speech segment ended
                     lastSpeechEndRef.current = nowSec
 
@@ -614,23 +737,30 @@ export default function OverlayPage(): React.ReactElement {
                         continuationCountRef.current = 0
                         console.log(`[VAD] New question (${timeSinceLastSpeech.toFixed(1)}s since last speech): '${masterQuestionRef.current}'`)
                     }
-                    setContinuationCount(continuationCountRef.current)
 
                     const rawCombined = masterQuestionRef.current
                     
-                    // ── Phase 3: Question Extraction (Purification) ─────────────
-                    setStatusText('Cleaning Question...')
-                    let purifiedQuestion = await extractCleanQuestion(rawCombined)
-                    
-                    // FALLBACK: If extraction is too aggressive or fails, use raw text
-                    if (!purifiedQuestion || purifiedQuestion.trim().length < 5) {
-                        console.warn('[AI-Extraction] Result too short, falling back to raw.')
-                        purifiedQuestion = rawCombined
-                    }
-                    console.log('[AI-Extraction] Finalized:', purifiedQuestion)
+                    // ── Phase 3: Bypassed Cleaning (Temporarily) ─────────────
+                    let purifiedQuestion = rawCombined
+                    console.log('[AI-Extraction] Bypassed cleaning, using raw text:', purifiedQuestion)
 
                     // Immediately show the question in the UI
-                    setCurrentQA({ question: purifiedQuestion, answer: '', timestamp: new Date() })
+                    setCurrentQA((prev) => ({
+                        question: purifiedQuestion,
+                        answer: prev?.answer || '',
+                        timestamp: new Date()
+                    }))
+
+                    // Proceed with AI processing for the Answer Panel...
+                    setIsThinking(true)
+                    setIsGenerating(true)
+                    setStatusText('Thinking...')
+                    console.log('[VAD] Pipeline Triggered: Processing Question...')
+
+                    // CLEAR visual transcript immediately so next question starts from empty bar
+                    rawSessionHistoryRef.current = ''
+                    setPendingTranscript('')
+                    setDisplayedWords([])
 
                     console.log('[AI-Train] Requesting answer for:', purifiedQuestion)
                     setStatusText('Generating Answer...')
@@ -639,23 +769,16 @@ export default function OverlayPage(): React.ReactElement {
                     if (!answer) {
                         console.error('[AI-Train] Generation returned nothing.')
                         setStatusText('Generation Failed.')
-                        setPendingTranscript('')
                         return
                     }
                     console.log('[AI-Train] Answer received length:', answer.length)
 
                     // ON SUCCESS: Add the finalized question to session history
                     displayHistoryRef.current += (displayHistoryRef.current ? ' ' : '') + purifiedQuestion
-                    // Clear master — next speech segment starts fresh
-                    masterQuestionRef.current = ''
-                    // Reset the speech-end clock so the NEXT question doesn't accidentally
-                    // get merged into this one after the answer is shown
-                    lastSpeechEndRef.current = null
 
                     setCurrentQA({ question: purifiedQuestion, answer, timestamp: new Date() })
                     lastAnswerTimeRef.current = Date.now() / 1000
-                    setPendingTranscript('')
-                    setContinuationCount(0)
+
                 } catch (err: any) {
                     setErrorMsg(`Error: ${err.message?.substring(0, 100)}`)
                 } finally {
@@ -698,31 +821,19 @@ export default function OverlayPage(): React.ReactElement {
                         // Safety: If finalization started while we were transcribing, discard
                         if (isFinalizingRef.current || isGeneratingRef.current) return
 
-                        // ── Partial Hallucination Check ────────────────────────
-                        const pLower = partial.toLowerCase().replace(/[.,!?;:'"-]/g, '').trim()
-                        const PARTIAL_FILLERS = new Set([
-                            'you', 'thank you', 'thanks', 'u', 'um', 'uh', 'hmm', 'hm',
-                            'okay', 'ok', 'yeah', 'yes', 'no', 'hi', 'hey', 'bye',
-                            'subtitle by', 'subscribe', 'and', 'the', 'a', 'i'
-                        ])
+                        // Filter out fillers and hallucinations from real-time display
+                        if (isFillerOrHallucination(partial)) {
+                            return
+                        }
 
-                        if (!partial || partial.length < 3 || PARTIAL_FILLERS.has(pLower)) {
-                            console.log('[Partial] Hallucination suppressed:', JSON.stringify(partial))
-                            // Clear the transcript area — it's noise
-                            setPendingTranscript('')
-                            setDisplayedTranscript('')
-                            targetTranscriptRef.current = ''
-                        } else {
-                            // Valid partial — show it: combine with master question if we have one
-                            const fullPending = (masterQuestionRef.current ? masterQuestionRef.current + ' ' : '') + partial
-                            console.log('[Partial] Showing:', fullPending)
-                            setPendingTranscript(fullPending)
+                        // Valid partial — show ONLY the current active speech partial
+                        setPendingTranscript(partial)
 
-                            // Fast-path: detect question starters and hint the user
-                            const isTriggerWord = /^(what|how|why|can|could|tell|explain|describe|suppose|discuss|write|code|implement|show|if)/.test(pLower)
-                            if (isTriggerWord && autoAnswerRef.current && !isThinking) {
-                                setStatusText('Question Detected...')
-                            }
+                        // Fast-path: detect question starters
+                        const pLower = partial.toLowerCase()
+                        const isTriggerWord = /^(what|how|why|can|could|tell|explain|describe|suppose|discuss|write|code|implement|show|if)/.test(pLower)
+                        if (isTriggerWord && autoAnswerRef.current && !isThinking) {
+                            setStatusText('Question Detected...')
                         }
                     } catch {
                         /* partial failure is non-fatal */
@@ -782,17 +893,24 @@ export default function OverlayPage(): React.ReactElement {
                     vadBufferRef.current.push(chunk)
                     schedulePartial()
                 } else if (autoAnswerRef.current) {
-                    // In auto mode: always accumulate for finalize, but only schedule partial
-                    // when the VAD worker has confirmed speech is active
-                    vadBufferRef.current.push(chunk)
-                    // Bound the local buffer to last 10 seconds to avoid growing forever
-                    const maxChunks = Math.ceil(vadSampleRateRef.current * 10 / 4096)
-                    if (vadBufferRef.current.length > maxChunks) {
-                        vadBufferRef.current = vadBufferRef.current.slice(-maxChunks)
-                    }
-                    // Only show partial text when real speech is happening
-                    if (vadSpeechActiveRef.current) {
-                        schedulePartial()
+                    const rms = computeRMS(chunk)
+                    const isSpeechPresent = rms >= 0.018 || vadSpeechActiveRef.current
+                    if (isSpeechPresent) {
+                        vadBufferRef.current.push(chunk)
+                        // Bound the local buffer to last 10 seconds to avoid growing forever
+                        const maxChunks = Math.ceil(vadSampleRateRef.current * 10 / 4096)
+                        if (vadBufferRef.current.length > maxChunks) {
+                            vadBufferRef.current = vadBufferRef.current.slice(-maxChunks)
+                        }
+                        // Only show partial text when real speech is happening
+                        if (vadSpeechActiveRef.current) {
+                            schedulePartial()
+                        }
+                    } else {
+                        // Clear the local buffer during silence to prevent Whisper from transcribing noise
+                        if (vadBufferRef.current.length > 0) {
+                            vadBufferRef.current = []
+                        }
                     }
                 }
             }
@@ -804,16 +922,20 @@ export default function OverlayPage(): React.ReactElement {
         }
     }, [])
 
+    const sessionRef = useRef<SessionData | null>(null)
+
     useEffect(() => {
         let sc = false
         window.api.getSession().then(async (data) => {
             if (sc || !data) return
-            setSession(data)
-            setAutoAnswer(!!data.autoAnswer)
-            autoAnswerRef.current = !!data.autoAnswer
+            const sData = data as SessionData
+            setSession(sData)
+            sessionRef.current = sData
+            setAutoAnswer(!!sData.autoAnswer)
+            autoAnswerRef.current = !!sData.autoAnswer
 
-            initAI(data)
-            startCapture()
+            initAI(sData)
+            startCapture(sData)
         })
         return () => {
             sc = true
@@ -831,27 +953,7 @@ export default function OverlayPage(): React.ReactElement {
         }
     }, [minimized])
 
-    // ── Global Keyboard Scroll & Mouse Passthrough ───────────
-    useEffect(() => {
-        // 1. Mouse Passthrough Toggle
 
-        // 2. Scroll Event from Global Shortcut
-        const cleanupScroll = window.api.onScrollOverlay((dir) => {
-            const el = contentRef.current
-            if (el) {
-                const scrollAmount = 100
-                const targetScroll = dir === 'up' ? el.scrollTop - scrollAmount : el.scrollTop + scrollAmount
-                el.scrollTo({
-                    top: targetScroll,
-                    behavior: 'smooth'
-                })
-            }
-        })
-
-        return () => {
-            cleanupScroll()
-        }
-    }, [])
 
     const autoAnswerRef = useRef(autoAnswer)
     useEffect(() => {
@@ -886,17 +988,26 @@ export default function OverlayPage(): React.ReactElement {
         if (isFinalizingRef.current || isGeneratingRef.current) return
 
         if (manualListenRef.current) {
-            // STOP: signal worker to finalize the current buffer
+            // STOP
             setIsManualListening(false)
             manualListenRef.current = false
             setStatusText('Processing Manual Stop...')
             vadWorkerRef.current?.postMessage({ type: 'manual_stop' })
         } else {
-            // START: begin a new manual recording session.
-            // Keep whatever text is displayed — don't wipe it.
-            // Only reset the audio buffers and worker state.
+            // START
             setIsManualListening(true)
             manualListenRef.current = true
+
+            // Clear history for a fresh start when manually clicking 'Listen'
+            rawSessionHistoryRef.current = ''
+            setPendingTranscript('')
+            setDisplayedWords([])
+            vadBufferRef.current = []
+
+            // Reset continuation state on manual start
+            masterQuestionRef.current = ''
+            lastSpeechEndRef.current = null
+            continuationCountRef.current = 0
 
             // Sync to worker
             vadWorkerRef.current?.postMessage({
@@ -904,13 +1015,6 @@ export default function OverlayPage(): React.ReactElement {
                 data: { isAuto: false, isManual: true }
             })
             vadWorkerRef.current?.postMessage({ type: 'reset' })
-
-            vadBufferRef.current = []
-
-            // Do NOT clear displayedTranscript / pendingTranscript here.
-            // The existing text stays visible while the user starts speaking again.
-            // It will be replaced naturally as new partials come in.
-
             setStatusText('Listening...')
         }
     }
@@ -952,6 +1056,11 @@ export default function OverlayPage(): React.ReactElement {
                 timestamp: new Date()
             })
             setMinimized(false) // Ensure it's expanded once result is back
+
+            // Reset continuation state for screen analysis
+            masterQuestionRef.current = ''
+            lastSpeechEndRef.current = null
+            continuationCountRef.current = 0
         } catch (err: any) {
             setErrorMsg(err.message || 'Failed to analyze screen')
         } finally {
@@ -980,11 +1089,21 @@ export default function OverlayPage(): React.ReactElement {
             const answer = await generateInterviewAnswer(query)
             if (answer) {
                 displayHistoryRef.current += (displayHistoryRef.current ? ' ' : '') + query
+                rawSessionHistoryRef.current += (rawSessionHistoryRef.current ? ' ' : '') + query
+                setPendingTranscript(rawSessionHistoryRef.current)
                 setCurrentQA({ question: query, answer, timestamp: new Date() })
+
+                // Reset continuation state for manual chat query
+                masterQuestionRef.current = ''
+                lastSpeechEndRef.current = null
+                continuationCountRef.current = 0
             }
+            isGeneratingRef.current = false
+            setIsGenerating(false)
+            setIsThinking(false)
+            setStatusText(autoAnswer ? 'Ready (Auto)' : 'Manual Mode')
         } catch (err: any) {
             setErrorMsg(err.message || 'Failed to generate answer')
-        } finally {
             isGeneratingRef.current = false
             setIsGenerating(false)
             setIsThinking(false)
@@ -1097,21 +1216,23 @@ export default function OverlayPage(): React.ReactElement {
                 <div className="header-row-bottom">
                     {/* Live transcript area — always shows accumulated text, no placeholder label */}
                     <div className="header-transcript-area" ref={transcriptContainerRef}>
-                        {displayedTranscript ? (
+                        {displayedWords.length > 0 ? (
                             <>
-                                <AnimatePresence mode="sync">
-                                    {displayedTranscript.trim().split(/\s+/).filter(w => w.length > 0).map((word, idx, arr) => {
+                                <AnimatePresence mode="popLayout">
+                                    {displayedWords.slice(-30).map((wordObj, idx, arr) => {
                                         const age = arr.length - 1 - idx // 0 = newest
                                         const wordClass = age === 0 ? 'latest' : age <= 4 ? 'recent' : age <= 12 ? 'previous' : 'old'
+                                        
                                         return (
                                             <motion.span
-                                                key={`w-${idx}`}
-                                                initial={{ opacity: 0, y: 5 }}
-                                                animate={{ opacity: 1, y: 0 }}
-                                                transition={{ duration: 0.18, ease: 'easeOut' }}
+                                                key={`word-${wordObj.id}`}
+                                                initial={{ opacity: 0, x: 15 }}
+                                                animate={{ opacity: 1, x: 0 }}
+                                                exit={{ opacity: 0, x: -15 }}
+                                                transition={{ duration: 0.25, ease: [0.23, 1, 0.32, 1] }}
                                                 className={`transcript-word ${wordClass}`}
                                             >
-                                                {word}{' '}
+                                                {wordObj.text}{' '}
                                             </motion.span>
                                         )
                                     })}

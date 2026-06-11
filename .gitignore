@@ -25,3 +25,9 @@ web_errors.txt
 
 # Exclude website folder (tracked in another repo)
 website/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/

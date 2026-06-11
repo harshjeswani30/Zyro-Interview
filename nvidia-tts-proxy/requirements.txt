@@ -1,4 +1,0 @@
-fastapi
-uvicorn[standard]
-nvidia-riva-client
-python-dotenv

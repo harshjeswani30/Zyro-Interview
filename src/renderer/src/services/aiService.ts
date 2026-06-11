@@ -6,7 +6,7 @@ export interface SessionData {
   company: string
   language: string
   resumeText: string
-  groqApiKey: string
+  groqApiKey?: string
   autoAnswer: boolean
   experienceLevel: 'fresher' | 'experienced'
   experienceDuration?: string
@@ -84,7 +84,12 @@ export function initAI(data: SessionData): void {
     company: data.company,
     resumeLength: data.resumeText?.length
   })
-  window.api.initGroq(data.groqApiKey)
+  
+  // Clear any existing session history/cache to prevent carry-over
+  conversationHistory.length = 0
+  activeCodingChallenge = ''
+  
+  if (data.groqApiKey) window.api.initGroq(data.groqApiKey)
   sessionContext = data
 }
 
@@ -158,36 +163,9 @@ TEMPLATE: ${template}
 `
 }
 
-export async function generateInterviewAnswer(transcript: string): Promise<string> {
-  if (!sessionContext) return 'AI not initialized.'
-
-  // Skip if transcript is too short or appears to be a noise artifact
-  if (!transcript || transcript.trim().length < 4) {
-    return ''
-  }
-
-  // Final sanity check: if the transcript is JUST a common hallucination, ignore it
-  const lowerT = transcript
-    .toLowerCase()
-    .replace(/[.,!?;:]/g, '')
-    .trim()
-  const commonH = [
-    'thank you',
-    'thanks for watching',
-    'thanks for',
-    'subtitle by',
-    'bye',
-    'you',
-    'please subscribe',
-    'subscribe',
-    'thanks'
-  ]
-  if (commonH.includes(lowerT)) {
-    console.log('[AI] Ignoring likely silence hallucination:', transcript)
-    return ''
-  }
-
-  const systemPrompt = `You are a real-time AI interview assistant helping ${sessionContext.name} answer interview questions live.
+export function getSystemPrompt(): string {
+  if (!sessionContext) return ''
+  return `You are a real-time AI interview assistant helping ${sessionContext.name} answer interview questions live.
 
 IDENTITY:
 - You ARE ${sessionContext.name} — applying for ${sessionContext.role}${sessionContext.company ? ` at ${sessionContext.company}` : ''}.
@@ -224,6 +202,38 @@ ${getExperienceContext()}${getHistoryContext()}
 === CANDIDATE RESUME (SOURCE OF TRUTH — NEVER go beyond this) ===
 ${sessionContext.resumeText.substring(0, 4500)}
 === END OF RESUME ===${sessionContext.company ? `\n**TARGET COMPANY**: Interviewing at ${sessionContext.company}.` : ''}`
+}
+
+export async function generateInterviewAnswer(transcript: string): Promise<string> {
+  if (!sessionContext) return 'AI not initialized.'
+
+  // Skip if transcript is too short or appears to be a noise artifact
+  if (!transcript || transcript.trim().length < 4) {
+    return ''
+  }
+
+  // Final sanity check: if the transcript is JUST a common hallucination, ignore it
+  const lowerT = transcript
+    .toLowerCase()
+    .replace(/[.,!?;:]/g, '')
+    .trim()
+  const commonH = [
+    'thank you',
+    'thanks for watching',
+    'thanks for',
+    'subtitle by',
+    'bye',
+    'you',
+    'please subscribe',
+    'subscribe',
+    'thanks'
+  ]
+  if (commonH.includes(lowerT)) {
+    console.log('[AI] Ignoring likely silence hallucination:', transcript)
+    return ''
+  }
+
+  const systemPrompt = getSystemPrompt()
 
   try {
     console.log('[AI] Generating Text Answer. Resume Length:', sessionContext.resumeText?.length)
@@ -249,6 +259,11 @@ ${sessionContext.resumeText.substring(0, 4500)}
     console.error('[AI] Groq IPC Chat Error:', error)
     return `Error: ${error.message}`
   }
+}
+
+export function recordInteraction(question: string, answer: string): void {
+  updateHistory('user', question)
+  updateHistory('assistant', answer)
 }
 
 /**
@@ -303,27 +318,49 @@ Respond ONLY with "QUESTION" or "IGNORE".`
  * Purifies a noisy buffer into a clean, standalone question.
  */
 export async function extractCleanQuestion(rawBuffer: string): Promise<string> {
-  if (!rawBuffer || rawBuffer.trim().length < 5) return rawBuffer
+  const text = rawBuffer.trim()
+  if (!text || text.length < 5) return text
 
-  const systemPrompt = `You are a high-precision Question Extraction Module.
-Your task is to extract the core question from a noisy transcript.
-- REMOVE: Greetings ("Hi", "Hello"), resume-talk ("I was checking your profile"), fillers ("so", "yeah"), and conversational noise.
-- PRESERVE: Keep the wording of the actual question as close to the original as possible. 
-- DO NOT: Rewrite the question, change its meaning, or be too "creative".
-- OUTPUT: ONLY the clean question text. If the entire text is already a standalone question, return it exactly as is.`
+  const systemPrompt = `You are a transcript purification module. 
+Your ONLY job is to extract the core question from the input.
+- REMOVE: Small talk, greetings, resume comments, and noise.
+- RULES: Output ONLY the question. Never introduce yourself. Never describe your identity as an AI. Never explain your logic.
+- IF NO QUESTION: Return the input exactly as is.
+
+EXAMPLES:
+Input: "Hi there so I was looking at your resume and it looks great anyway what is the difference between a list and a tuple?"
+Output: "What is the difference between a list and a tuple?"
+
+Input: "Okay sounds good and tell me about yourself."
+Output: "Tell me about yourself."
+
+Input: "Exactly so how do you handle state in React?"
+Output: "How do you handle state in React?"`
 
   try {
     const result = await window.api.generateAnswer({
-      transcript: rawBuffer,
+      transcript: text,
       model: MODEL_NAME,
       systemPrompt,
-      temperature: 0.1,
-      maxTokens: 150
+      temperature: 0,
+      maxTokens: 100
     })
-    return result.trim()
+    
+    const cleaned = result.trim()
+    
+    // Hallucination Safeguard: 
+    // If the "cleaned" version is massively longer than the raw input, 
+    // or contains robotic AI keywords, it's a hallucination. Fallback to raw.
+    const roboticKeywords = ['artificial intelligence', 'ai model', 'language model', 'as an ai', 'developed by']
+    if (cleaned.length > text.length * 1.5 + 50 || roboticKeywords.some(k => cleaned.toLowerCase().includes(k))) {
+        console.warn('[AI-Extraction] Hallucination detected, falling back to raw text.')
+        return text
+    }
+
+    return cleaned
   } catch (err) {
     console.error('[AI-Service] Extraction error:', err)
-    return rawBuffer
+    return text
   }
 }
 

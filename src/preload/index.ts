@@ -14,6 +14,10 @@ const api = {
   supabaseGetProfile: (): Promise<UserProfile | null> => ipcRenderer.invoke('supabase-get-profile'),
   supabaseDeductSession: (): Promise<{ newBalance: number }> =>
     ipcRenderer.invoke('supabase-deduct-session'),
+  supabaseDeductPhoneSession: (): Promise<{ newBalance: number }> =>
+    ipcRenderer.invoke('supabase-deduct-phone-session'),
+  supabaseCreateRazorpayOrder: (planId: string): Promise<any> =>
+    ipcRenderer.invoke('supabase-create-razorpay-order', { planId }),
   supabaseUpdateTrial: (seconds: number): Promise<void> =>
     ipcRenderer.invoke('supabase-update-trial', seconds),
   supabaseLogSession: (
@@ -82,6 +86,8 @@ const api = {
   setOverlaySize: (width: number, height: number) =>
     ipcRenderer.send('set-overlay-size', { width, height }),
   openExternal: (url: string) => ipcRenderer.send('open-external', url),
+  resizeMainWindow: (width: number, height: number): Promise<void> =>
+    ipcRenderer.invoke('resize-main-window', { width, height }),
 
   // Status events
   onSttReady: (cb: (data: { transcript: string; isFinal: boolean }) => void): void => {
