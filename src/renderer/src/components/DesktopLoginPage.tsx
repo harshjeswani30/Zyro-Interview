@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Mail, Lock, Loader2, AlertCircle, ArrowRight } from 'lucide-react'
+import { Phone, Key, Loader2, AlertCircle, ArrowRight } from 'lucide-react'
 import '../assets/login.css'
 
 import ZyroMascot from './ZyroMascot'
@@ -17,8 +17,11 @@ interface DesktopLoginPageProps {
 
 export function DesktopLoginPage({ onLoginSuccess }: DesktopLoginPageProps): React.ReactElement {
   const [loading, setLoading] = useState(false)
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
+  const [phoneNumber, setPhoneNumber] = useState('')
+  const [countryCode, setCountryCode] = useState('+91')
+  const [otpCode, setOtpCode] = useState('')
+  const [otpSent, setOtpSent] = useState(false)
+  const [countdown, setCountdown] = useState(0)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -62,31 +65,64 @@ export function DesktopLoginPage({ onLoginSuccess }: DesktopLoginPageProps): Rea
     }
   }, [onLoginSuccess])
 
-  const handleLogin = async (e: React.FormEvent): Promise<void> => {
-    e.preventDefault()
+  useEffect(() => {
+    if (countdown <= 0) return
+    const timer = setTimeout(() => {
+      setCountdown((c) => c - 1)
+    }, 1000)
+    return () => clearTimeout(timer)
+  }, [countdown])
+
+  const handleSendOtp = async (): Promise<void> => {
     setError('')
     setLoading(true)
+    const fullPhone = `${countryCode.trim()}${phoneNumber.trim()}`
+    if (!/^\+\d{10,15}$/.test(fullPhone)) {
+      setError('Invalid phone number format. Use e.g. +91XXXXXXXXXX.')
+      setLoading(false)
+      return
+    }
     try {
-      console.log('[DesktopLogin] Calling supabaseLogin IPC...')
-      await window.api.supabaseLogin(email, password)
-      console.log('[DesktopLogin] Login success, fetching profile...')
+      console.log('[DesktopLogin] Sending OTP to:', fullPhone)
+      await window.api.supabaseSendOtp(fullPhone)
+      setOtpSent(true)
+      setCountdown(30)
+    } catch (err: unknown) {
+      console.error('[DesktopLogin] Send OTP error:', err)
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleVerifyOtp = async (): Promise<void> => {
+    setError('')
+    setLoading(true)
+    const fullPhone = `${countryCode.trim()}${phoneNumber.trim()}`
+    try {
+      console.log('[DesktopLogin] Verifying OTP for:', fullPhone)
+      await window.api.supabaseVerifyOtp(fullPhone, otpCode.trim())
+      console.log('[DesktopLogin] OTP verified! Fetching profile...')
       const profile = await window.api.supabaseGetProfile()
-      console.log('[DesktopLogin] Profile fetched:', profile)
       if (profile) {
         onLoginSuccess(profile)
       } else {
         setError('Connected, but could not load profile.')
       }
     } catch (err: unknown) {
-      console.error('[DesktopLogin] Error:', err)
-      const msg = err instanceof Error ? err.message : String(err)
-      if (msg.includes('Invalid login credentials')) {
-        setError('Invalid email or password.')
-      } else {
-        setError(msg || 'An error occurred during login.')
-      }
+      console.error('[DesktopLogin] Verify OTP error:', err)
+      setError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleLoginSubmit = async (e: React.FormEvent): Promise<void> => {
+    e.preventDefault()
+    if (otpSent) {
+      await handleVerifyOtp()
+    } else {
+      await handleSendOtp()
     }
   }
 
@@ -188,58 +224,92 @@ export function DesktopLoginPage({ onLoginSuccess }: DesktopLoginPageProps): Rea
             </div>
           )}
 
-          <form className="login-form-content" onSubmit={handleLogin}>
-            <div className="input-group-enhanced">
-              <div className="input-relative">
-                <Mail className="input-icon-left" size={20} />
-                <input
-                  id="email"
-                  type="email"
-                  className="input-entry"
-                  placeholder=" "
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                />
-                <label htmlFor="email" className="input-entry-label">
-                  Email Address
-                </label>
+          <form className="login-form-content" onSubmit={handleLoginSubmit}>
+            {!otpSent ? (
+              <div className="input-group-enhanced" style={{ display: 'flex', gap: '10px' }}>
+                <div className="input-relative" style={{ width: '85px', flexShrink: 0 }}>
+                  <input
+                    id="country-code"
+                    type="text"
+                    className="input-entry"
+                    placeholder=" "
+                    value={countryCode}
+                    onChange={(e) => setCountryCode(e.target.value)}
+                    required
+                    style={{ textAlign: 'center', paddingLeft: '10px' }}
+                  />
+                  <label htmlFor="country-code" className="input-entry-label" style={{ left: '10px' }}>
+                    Code
+                  </label>
+                </div>
+                <div className="input-relative" style={{ flexGrow: 1 }}>
+                  <Phone className="input-icon-left" size={20} />
+                  <input
+                    id="phone-number"
+                    type="tel"
+                    className="input-entry"
+                    placeholder=" "
+                    value={phoneNumber}
+                    onChange={(e) => setPhoneNumber(e.target.value.replace(/\D/g, ''))}
+                    required
+                    style={{ paddingLeft: '45px' }}
+                  />
+                  <label htmlFor="phone-number" className="input-entry-label" style={{ left: '45px' }}>
+                    Phone Number
+                  </label>
+                </div>
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="input-group-enhanced">
+                  <div className="input-relative">
+                    <Key className="input-icon-left" size={20} />
+                    <input
+                      id="otp"
+                      type="text"
+                      maxLength={6}
+                      className="input-entry"
+                      placeholder=" "
+                      value={otpCode}
+                      onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
+                      required
+                      style={{ textAlign: 'center', letterSpacing: '0.4em', fontWeight: 'bold', paddingLeft: '45px' }}
+                    />
+                    <label htmlFor="otp" className="input-entry-label" style={{ left: '45px' }}>
+                      6-Digit OTP
+                    </label>
+                  </div>
+                </div>
 
-            <div className="input-group-enhanced">
-              <div className="input-relative">
-                <Lock className="input-icon-left" size={20} />
-                <input
-                  id="password"
-                  type="password"
-                  className="input-entry with-forgot"
-                  placeholder=" "
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
-                <label htmlFor="password" className="input-entry-label">
-                  Password
-                </label>
-                <button
-                  type="button"
-                  className="forgot-password-link"
-                  onClick={() =>
-                    window.api.openExternal(
-                      'https://zyro-interview-website.vercel.app/#forgot-password'
-                    )
-                  }
-                >
-                  Forgot?
-                </button>
-              </div>
-            </div>
+                <div className="resend-container" style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginTop: '-8px', marginBottom: '8px', padding: '0 4px' }}>
+                  <button
+                    type="button"
+                    className="support-button"
+                    onClick={() => setOtpSent(false)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.4)', fontWeight: 'bold' }}
+                  >
+                    ← Back
+                  </button>
+                  {countdown > 0 ? (
+                    <span style={{ color: 'rgba(255,255,255,0.3)' }}>Resend in {countdown}s</span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="support-button"
+                      onClick={handleSendOtp}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#a78bfa', fontWeight: 'bold' }}
+                    >
+                      Resend OTP
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
 
             <button
               type="submit"
               className="signin-button-shimmer"
-              disabled={loading}
+              disabled={loading || (!otpSent && !phoneNumber) || (otpSent && otpCode.length < 6)}
               id="signin-btn"
             >
               {loading ? (
@@ -249,7 +319,7 @@ export function DesktopLoginPage({ onLoginSuccess }: DesktopLoginPageProps): Rea
                 </>
               ) : (
                 <>
-                  <span>Sign In</span>
+                  <span>{otpSent ? 'Verify & Login' : 'Send Verification OTP'}</span>
                   <ArrowRight size={18} />
                 </>
               )}
