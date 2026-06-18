@@ -10,6 +10,13 @@ const api = {
   ): Promise<{ user: { id: string }; accessToken: string }> =>
     ipcRenderer.invoke('supabase-login', { email, password }),
   supabaseLoginGoogle: (): Promise<void> => ipcRenderer.invoke('supabase-login-google'),
+  supabaseSendOtp: (phone: string): Promise<any> =>
+    ipcRenderer.invoke('supabase-send-otp', { phone }),
+  supabaseVerifyOtp: (
+    phone: string,
+    token: string
+  ): Promise<{ user: { id: string }; accessToken: string }> =>
+    ipcRenderer.invoke('supabase-verify-otp', { phone, token }),
   supabaseLogout: (): Promise<void> => ipcRenderer.invoke('supabase-logout'),
   supabaseGetProfile: (): Promise<UserProfile | null> => ipcRenderer.invoke('supabase-get-profile'),
   supabaseDeductSession: (): Promise<{ newBalance: number }> =>

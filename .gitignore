@@ -31,3 +31,7 @@ website/
 venv/
 env/
 ENV/
+
+# Wrangler local secrets
+.dev.vars
+

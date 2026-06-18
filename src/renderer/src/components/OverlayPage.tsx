@@ -188,19 +188,22 @@ export default function OverlayPage(): React.ReactElement {
 
 
     const handleEndInterview = useCallback(async () => {
+        // 1. Hide the overlay window immediately so the user/interviewer doesn't see it
+        window.api.endInterview()
+
+        // 2. Perform background session logging and trial update
         if (sessionStartTimeRef.current) {
             const elapsed = Math.floor((Date.now() - sessionStartTimeRef.current) / 1000)
             const startedAt = new Date(sessionStartTimeRef.current).toISOString()
             const sessionType = session?.name || 'Interview'
 
-            // 1. Final trial update if not premium
+            // Final trial update if not premium
             if (!deductionFiredRef.current) {
-                // finalUsed is calculated from the start time to be perfectly accurate
                 const finalUsed = Math.min(TRIAL_LIMIT, initialTrialUsedRef.current + elapsed)
                 await window.api.supabaseUpdateTrial(finalUsed).catch(console.error)
             }
 
-            // 2. Log session duration with metadata
+            // Log session duration with metadata
             await window.api.supabaseLogSession(elapsed, startedAt, sessionType).catch(console.error)
         }
 
@@ -210,7 +213,8 @@ export default function OverlayPage(): React.ReactElement {
         if (trialTimeoutRef.current) clearTimeout(trialTimeoutRef.current)
         fetchIdRef.current += 1 // Invalidate any pending timer initializations
 
-        window.api.endInterview()
+        // 3. Exit the application completely
+        window.api.quitApp()
     }, [session])
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -271,8 +275,8 @@ export default function OverlayPage(): React.ReactElement {
         } else {
             // Free trial user: check if trial is already exhausted
             if (usedSeconds >= TRIAL_LIMIT) {
-                // Already exhausted — end interview immediately
-                trialTimeoutRef.current = setTimeout(() => window.api.endInterview(), 2000)
+                // Already exhausted — exit app immediately
+                trialTimeoutRef.current = setTimeout(() => window.api.quitApp(), 2000)
             } else {
                 // Start countdown from where they left off
                 const secondsRemaining = TRIAL_LIMIT - usedSeconds

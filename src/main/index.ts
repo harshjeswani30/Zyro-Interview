@@ -470,9 +470,6 @@ function setupIPC(): void {
     if (overlayWindow && !overlayWindow.isDestroyed()) {
       overlayWindow.hide()
     }
-    safeZoom(mainWindow, 0)
-    mainWindow?.show()
-    safeSend(mainWindow, 'interview-ended')
   })
 
   ipcMain.on('quit-app', () => {
@@ -493,6 +490,45 @@ function setupIPC(): void {
       throw new Error(data.error_description || data.msg || 'Login failed')
     }
     console.log(`[Supabase] Login successful for user: ${data.user?.id}`)
+    supabaseAccessToken = data.access_token
+    supabaseUserId = data.user?.id
+    storeSecureSession({
+      accessToken: data.access_token,
+      userId: data.user?.id
+    })
+    return { user: data.user, accessToken: data.access_token }
+  })
+
+  ipcMain.handle('supabase-send-otp', async (_e, { phone }) => {
+    console.log(`[Supabase] Sending Phone OTP for: ${phone}`)
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY },
+      body: JSON.stringify({ phone })
+    })
+    console.log(`[Supabase] Send OTP response status: ${res.status}`)
+    const data = await res.json()
+    if (!res.ok) {
+      console.error(`[Supabase] Send OTP failed:`, data)
+      throw new Error(data.error_description || data.msg || 'Failed to send OTP')
+    }
+    return data
+  })
+
+  ipcMain.handle('supabase-verify-otp', async (_e, { phone, token }) => {
+    console.log(`[Supabase] Verifying OTP for: ${phone}`)
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY },
+      body: JSON.stringify({ type: 'sms', phone, token })
+    })
+    console.log(`[Supabase] Verify OTP response status: ${res.status}`)
+    const data = await res.json()
+    if (!res.ok) {
+      console.error(`[Supabase] Verify OTP failed:`, data)
+      throw new Error(data.error_description || data.msg || 'Verification failed')
+    }
+    console.log(`[Supabase] OTP verification successful for user: ${data.user?.id}`)
     supabaseAccessToken = data.access_token
     supabaseUserId = data.user?.id
     storeSecureSession({

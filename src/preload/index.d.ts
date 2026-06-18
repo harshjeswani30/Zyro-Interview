@@ -83,6 +83,8 @@ interface Api {
     password: string
   ) => Promise<{ user: { id: string }; accessToken: string }>
   supabaseLoginGoogle: () => Promise<void>
+  supabaseSendOtp: (phone: string) => Promise<any>
+  supabaseVerifyOtp: (phone: string, token: string) => Promise<{ user: { id: string }; accessToken: string }>
   supabaseLogout: () => Promise<void>
   supabaseGetProfile: () => Promise<UserProfile | null>
   supabaseDeductSession: () => Promise<{ newBalance: number }>
