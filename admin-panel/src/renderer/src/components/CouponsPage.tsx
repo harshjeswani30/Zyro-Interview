@@ -269,8 +269,10 @@ export default function CouponsPage() {
 
   const filteredUsers = useMemo(() => {
     return registeredUsers.filter(u => {
-      const matchSearch = (u.email?.toLowerCase().includes(activeUserSearch.toLowerCase()) ?? false) || 
-                          (u.full_name?.toLowerCase().includes(activeUserSearch.toLowerCase()) ?? false)
+      const matchSearch = !activeUserSearch.trim() ||
+                          (u.email?.toLowerCase().includes(activeUserSearch.toLowerCase()) ?? false) || 
+                          (u.full_name?.toLowerCase().includes(activeUserSearch.toLowerCase()) ?? false) ||
+                          (u.phone?.toLowerCase().includes(activeUserSearch.toLowerCase()) ?? false)
       const matchType = userTypeFilter === 'All' || 
                        (userTypeFilter === 'Paid' && u.sessions_balance > 0) ||
                        (userTypeFilter === 'Trial' && u.sessions_balance === 0)
@@ -280,7 +282,8 @@ export default function CouponsPage() {
 
   const filteredRedemptions = useMemo(() => {
     return redemptions.filter(r => {
-      const matchSearch = (r.email?.toLowerCase().includes(activeRedemptionSearch.toLowerCase()) ?? false) || 
+      const matchSearch = !activeRedemptionSearch.trim() ||
+                          (r.email?.toLowerCase().includes(activeRedemptionSearch.toLowerCase()) ?? false) || 
                           (r.name?.toLowerCase().includes(activeRedemptionSearch.toLowerCase()) ?? false) || 
                           (r.couponCode?.toLowerCase().includes(activeRedemptionSearch.toLowerCase()) ?? false)
       const matchStatus = redemptionStatusFilter === 'All' || r.status.toLowerCase() === redemptionStatusFilter.toLowerCase()
@@ -637,11 +640,15 @@ export default function CouponsPage() {
                         <td>
                           <div className="layout-row row-compact">
                             <div className="w-7 h-7 rounded-lg bg-violet-600/10 border border-violet-500/20 flex items-center justify-center text-[9px] font-bold text-violet-400 shrink-0">
-                              {u.email?.substring(0, 2).toUpperCase() || '??'}
+                              {u.email?.substring(0, 2).toUpperCase() || u.phone?.substring(0, 2).toUpperCase() || '??'}
                             </div>
                             <div className="layout-col overflow-hidden">
-                              <span className="font-semibold text-[13px] text-white truncate leading-none mb-1">{u.full_name || 'Unknown'}</span>
-                              <span className="text-[11px] text-slate-500 truncate">{u.email}</span>
+                              <span className="font-semibold text-[13px] text-white truncate leading-none mb-1">
+                                {u.full_name || (u.phone ? `User (${u.phone})` : 'Anonymous User')}
+                              </span>
+                              <span className="text-[11px] text-slate-500 truncate">
+                                {u.email || u.phone || 'No Contact Info'}
+                              </span>
                             </div>
                           </div>
                         </td>
