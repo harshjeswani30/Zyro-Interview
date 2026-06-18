@@ -9,6 +9,8 @@ files:
   - node_modules/**/*
 asarUnpack:
   - resources/**
+  - "**/node_modules/@napi-rs/canvas-darwin-arm64/**"
+  - "**/node_modules/@napi-rs/canvas-darwin-x64/**"
 win:
   executableName: AppService
   target:
