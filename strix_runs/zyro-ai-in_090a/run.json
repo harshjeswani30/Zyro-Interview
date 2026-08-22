@@ -1,0 +1,242 @@
+{
+  "run_id": "zyro-ai-in_090a",
+  "run_name": "zyro-ai-in_090a",
+  "start_time": "2026-08-16T14:50:35.211187+00:00",
+  "end_time": "2026-08-16T14:58:16.613523+00:00",
+  "status": "failed",
+  "auth_mode": "api_key",
+  "targets_info": [
+    {
+      "type": "web_application",
+      "details": {
+        "target_url": "https://zyro-ai.in"
+      },
+      "original": "https://zyro-ai.in"
+    }
+  ],
+  "llm_usage": {
+    "requests": 7,
+    "input_tokens": 202332,
+    "input_tokens_details": [
+      {
+        "cache_write_tokens": 0,
+        "cached_tokens": 80832
+      }
+    ],
+    "output_tokens": 1266,
+    "output_tokens_details": [
+      {
+        "reasoning_tokens": 391
+      }
+    ],
+    "total_tokens": 203598,
+    "request_usage_entries": [
+      {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      {
+        "input_tokens": 40380,
+        "output_tokens": 265,
+        "total_tokens": 40645,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 64
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 196
+        }
+      },
+      {
+        "input_tokens": 80798,
+        "output_tokens": 74,
+        "total_tokens": 80872,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 40256
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 17
+        }
+      },
+      {
+        "input_tokens": 81154,
+        "output_tokens": 927,
+        "total_tokens": 82081,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 40512
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 178
+        }
+      }
+    ],
+    "cost": 0.0,
+    "agents": [
+      {
+        "requests": 7,
+        "input_tokens": 202332,
+        "input_tokens_details": [
+          {
+            "cache_write_tokens": 0,
+            "cached_tokens": 80832
+          }
+        ],
+        "output_tokens": 1266,
+        "output_tokens_details": [
+          {
+            "reasoning_tokens": 391
+          }
+        ],
+        "total_tokens": 203598,
+        "request_usage_entries": [
+          {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          {
+            "input_tokens": 40380,
+            "output_tokens": 265,
+            "total_tokens": 40645,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 64
+            },
+            "output_tokens_details": {
+              "reasoning_tokens": 196
+            }
+          },
+          {
+            "input_tokens": 80798,
+            "output_tokens": 74,
+            "total_tokens": 80872,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 40256
+            },
+            "output_tokens_details": {
+              "reasoning_tokens": 17
+            }
+          },
+          {
+            "input_tokens": 81154,
+            "output_tokens": 927,
+            "total_tokens": 82081,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 40512
+            },
+            "output_tokens_details": {
+              "reasoning_tokens": 178
+            }
+          }
+        ],
+        "agent_id": "c330b059",
+        "agent_name": "Root Agent",
+        "model": "anthropic/qwen/qwen3.8-max-free",
+        "cost": 0.0
+      }
+    ]
+  },
+  "scan_mode": "quick",
+  "instruction": "Audit the live web app at https://zyro-ai.in for common vulnerabilities including authentication flaws, exposed endpoints, XSS, and broken access control.",
+  "user_instruction": "Audit the live web app at https://zyro-ai.in for common vulnerabilities including authentication flaws, exposed endpoints, XSS, and broken access control.",
+  "non_interactive": true,
+  "local_sources": [],
+  "workspace_mount": null,
+  "diff_scope": {
+    "active": false,
+    "mode": "auto"
+  },
+  "scope_mode": "auto",
+  "diff_base": null
+}

@@ -13,7 +13,7 @@ let isAuto = true;
 let isManual = false;
 
 // Config (sent from main thread)
-let LONG_PAUSE_SEC = 1.8;
+let LONG_PAUSE_SEC = 2.4;
 let MIN_SEC = 0.5;
 // Raised thresholds to be less sensitive to background hum/noise
 let SPEECH_START_RMS = 0.018;

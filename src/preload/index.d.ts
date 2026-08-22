@@ -27,6 +27,8 @@ interface SessionData {
   codingLanguage?: string
   apiType?: 'normal' | 'gemini_live'
   geminiApiKey?: string
+  interviewContent?: string
+  activeKbId?: string
 }
 
 interface Api {
@@ -57,12 +59,19 @@ interface Api {
     frequencyPenalty?: number
   }) => Promise<string>
   analyzeScreen: (data: { systemPrompt: string; model?: string }) => Promise<string>
+  captureScreenshot: () => Promise<string>
+  queryVision: (data: { systemPrompt: string; base64Image: string }) => Promise<string>
+  extractQuestionFromImage: (data: { base64Image: string }) => Promise<string>
   toggleCompact: (minimized: boolean) => void
   startInterview: (sessionData: SessionData) => Promise<{ allowed: boolean; reason?: string }>
   quitApp: () => void
+  minimizeWindow: () => void
   closeWindow: () => void
   reloadWindow: () => void
   getSession: () => Promise<SessionData | null>
+  getDeepgramKey: () => Promise<string>
+  getSupabaseToken: () => Promise<string | null>
+  getSupabaseSessionData: () => Promise<{ accessToken: string | null; refreshToken: string | null }>
   getScreenSize: () => Promise<{ width: number; height: number }>
   getDesktopSources: () => Promise<any[]>
   endInterview: () => void
@@ -75,6 +84,7 @@ interface Api {
   setIgnoreMouseEvents: (ignore: boolean, options?: { forward: boolean }) => void
   setZoom: (level: number) => void
   setOverlaySize: (width: number, height: number) => void
+  toggleScreenProtection: (enabled?: boolean) => void
   openExternal: (url: string) => void
   resizeMainWindow: (width: number, height: number) => Promise<void>
   // Supabase auth + profile
@@ -92,7 +102,15 @@ interface Api {
   supabaseCreateRazorpayOrder: (planId: string) => Promise<any>
   supabaseUpdateTrial: (seconds: number) => Promise<void>
   supabaseLogSession: (durationSeconds: number, startedAt: string, sessionType: string) => Promise<void>
-  supabaseManualSync: (accessToken: string, userId?: string) => void
+  supabaseManualSync: (accessToken: string, refreshToken?: string, userId?: string) => Promise<{ ok: boolean; userId: string | null }>
+  // Knowledge Base via main process IPC
+  kbList: () => Promise<{ data: { id: string; title: string; created_at: string }[] | null; error: string | null }>
+  kbSave: (args: { title: string; content: string }) => Promise<{ data: { id: string; title: string; created_at: string } | null; error: string | null }>
+  kbDelete: (kbId: string) => Promise<{ error: string | null }>
+  indexLocalContent: (source: string, content: string) => Promise<number>
+  searchLocalVectorDb: (query: string, topK?: number) => Promise<string[]>
+  getSupabaseSessionData: () => Promise<{ accessToken: string | null; refreshToken: string | null }>
+
   onSttReady: (cb: (data: { transcript: string; isFinal: boolean }) => void) => void
   onSttError: (cb: (data: { message: string }) => void) => void
   onInterviewEnd: (cb: () => void) => () => void
@@ -108,6 +126,9 @@ interface Api {
   onAuthCallbackSuccess: (
     cb: (data: { accessToken: string; refreshToken?: string }) => void
   ) => () => void
+  onOverlayToggle: (cb: (visible: boolean) => void) => () => void
+  onScreenProtectionToggle: (cb: (enabled: boolean) => void) => () => void
+  onSessionExpired: (cb: () => void) => () => void
 }
 
 declare global {

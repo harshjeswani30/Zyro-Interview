@@ -1,7 +1,137 @@
-import React, { useState, useCallback, useEffect } from 'react'
+import React, { useState, useCallback, useEffect, useRef } from 'react'
+import { motion, AnimatePresence, MotionConfig } from 'framer-motion'
 import { parseResumePDF, refineResumeWithAI, initAI, SessionData } from '../services/aiService'
 import ZyroMascot from './ZyroMascot'
-import PhoneInterviewPanel from './PhoneInterviewPanel'
+import Tooltip from './Tooltip'
+import CloudSyncButton from './CloudSyncButton'
+import MinimalUpdateButton from './MinimalUpdateButton'
+import TeleprompterText from './TeleprompterText'
+
+const HAMBURGER_VARIANTS = {
+  top: {
+    open: {
+      rotate: ['0deg', '0deg', '45deg'],
+      top: ['28%', '50%', '50%']
+    },
+    closed: {
+      rotate: ['45deg', '0deg', '0deg'],
+      top: ['50%', '50%', '28%']
+    }
+  },
+  middle: {
+    open: {
+      rotate: ['0deg', '0deg', '-45deg']
+    },
+    closed: {
+      rotate: ['-45deg', '0deg', '0deg']
+    }
+  },
+  bottom: {
+    open: {
+      rotate: ['0deg', '0deg', '45deg'],
+      top: ['72%', '50%', '50%'],
+      left: '50%',
+      opacity: [1, 0.4, 0],
+      scaleX: [1, 0.4, 0]
+    },
+    closed: {
+      rotate: ['45deg', '0deg', '0deg'],
+      top: ['50%', '50%', '72%'],
+      left: 'calc(50% + 4px)',
+      opacity: [0, 0.4, 1],
+      scaleX: [0, 0.4, 1]
+    }
+  }
+}
+
+function AnimatedHamburgerButton({
+  active,
+  onClick
+}: {
+  active: boolean
+  onClick: (e: React.MouseEvent) => void
+}): React.ReactElement {
+  return (
+    <MotionConfig
+      transition={{
+        duration: 0.35,
+        ease: 'easeInOut'
+      }}
+    >
+      <motion.button
+        type="button"
+        initial={false}
+        animate={active ? 'open' : 'closed'}
+        onClick={onClick}
+        className="no-drag"
+        style={{
+          position: 'relative',
+          width: '34px',
+          height: '34px',
+          borderRadius: '9px',
+          background: active ? 'rgba(139, 92, 246, 0.25)' : 'rgba(255, 255, 255, 0.04)',
+          border: active ? '1px solid rgba(167, 139, 250, 0.5)' : '1px solid rgba(255, 255, 255, 0.08)',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          outline: 'none',
+          padding: 0,
+          boxShadow: active ? '0 0 14px rgba(139, 92, 246, 0.35)' : 'none',
+          transition: 'background 0.2s, border-color 0.2s, box-shadow 0.2s',
+          marginLeft: 'auto',
+          flexShrink: 0
+        }}
+      >
+        <motion.span
+          variants={HAMBURGER_VARIANTS.top}
+          style={{
+            position: 'absolute',
+            height: '2px',
+            width: '18px',
+            background: active ? '#c4b5fd' : '#ffffff',
+            borderRadius: '2px',
+            left: '50%',
+            top: '28%',
+            x: '-50%',
+            y: '-50%'
+          }}
+        />
+        <motion.span
+          variants={HAMBURGER_VARIANTS.middle}
+          style={{
+            position: 'absolute',
+            height: '2px',
+            width: '18px',
+            background: active ? '#c4b5fd' : '#ffffff',
+            borderRadius: '2px',
+            left: '50%',
+            top: '50%',
+            x: '-50%',
+            y: '-50%'
+          }}
+        />
+        <motion.span
+          variants={HAMBURGER_VARIANTS.bottom}
+          style={{
+            position: 'absolute',
+            height: '2px',
+            width: '10px',
+            background: active ? '#c4b5fd' : '#ffffff',
+            borderRadius: '2px',
+            top: '72%',
+            left: 'calc(50% + 4px)',
+            x: '-50%',
+            y: '-50%',
+            transformOrigin: 'center right'
+          }}
+        />
+      </motion.button>
+    </MotionConfig>
+  )
+}
+// supabase.ts still used by ragService, not needed directly here
+// ragService functions (chunkText, EmbeddingProvider) now run in main process — no renderer import needed
 // Lucide imports removed as we use raw SVGs for exact reference matching
 
 const STORAGE_KEY = 'interview_assistant_session'
@@ -19,19 +149,27 @@ const LANGUAGES = [
   { code: 'pt-BR', label: '🇧🇷 Portuguese' }
 ]
 
-const CODING_LANGUAGES = [
-  'Python',
-  'Java',
-  'C++',
-  'JavaScript',
-  'TypeScript',
-  'Go',
-  'C#',
-  'Swift',
-  'Kotlin',
-  'Rust',
-  'PHP',
-  'Ruby'
+interface CodingLanguageOption {
+  id: string
+  name: string
+  icon: string
+  tag: string
+}
+
+const CODING_LANGUAGES: CodingLanguageOption[] = [
+  { id: 'Python', name: 'Python', icon: '🐍', tag: 'AI & Data / Scripting' },
+  { id: 'JavaScript', name: 'JavaScript', icon: '🟨', tag: 'Web & Fullstack' },
+  { id: 'TypeScript', name: 'TypeScript', icon: '🔷', tag: 'Frontend & Node' },
+  { id: 'Java', name: 'Java', icon: '☕', tag: 'Enterprise & Android' },
+  { id: 'C++', name: 'C++', icon: '⚡', tag: 'DSA & Systems' },
+  { id: 'SQL', name: 'SQL', icon: '🗄️', tag: 'Database & Analytics' },
+  { id: 'C#', name: 'C#', icon: '🟣', tag: '.NET & Game Dev' },
+  { id: 'Go', name: 'Go (Golang)', icon: '🐹', tag: 'Cloud & Microservices' },
+  { id: 'Rust', name: 'Rust', icon: '🦀', tag: 'High-Performance' },
+  { id: 'Kotlin', name: 'Kotlin', icon: '🎯', tag: 'Android & Server' },
+  { id: 'Swift', name: 'Swift', icon: '🍎', tag: 'iOS & macOS' },
+  { id: 'PHP', name: 'PHP', icon: '🐘', tag: 'Backend Web' },
+  { id: 'Ruby', name: 'Ruby', icon: '💎', tag: 'Rails & Scripting' }
 ]
 
 interface Resume {
@@ -52,6 +190,8 @@ interface SavedData {
   experienceDuration?: string
   workHistory?: string
   codingLanguage?: string
+  interviewContent?: string
+  activeKbId?: string
 }
 
 interface UserProfile {
@@ -61,6 +201,97 @@ interface UserProfile {
   phone_sessions_balance?: number
   trial_seconds_used?: number
   [key: string]: unknown
+}
+
+interface ShortcutTeleprompterCardProps {
+  icon: string
+  title: string
+  keyLabel: string | React.ReactNode
+  keyColor: 'purple' | 'blue' | 'emerald' | 'amber' | 'pink' | 'slate'
+  desc: string
+}
+
+function ShortcutTeleprompterCard({
+  icon,
+  title,
+  keyLabel,
+  keyColor,
+  desc
+}: ShortcutTeleprompterCardProps): React.ReactElement {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const textRef = useRef<HTMLParagraphElement>(null)
+  const [scrollDistance, setScrollDistance] = useState<number>(0)
+  const [isHovered, setIsHovered] = useState<boolean>(false)
+  const [isClicked, setIsClicked] = useState<boolean>(false)
+
+  const measureOverflow = (): void => {
+    if (textRef.current && containerRef.current) {
+      const containerW = containerRef.current.clientWidth || containerRef.current.getBoundingClientRect().width
+      const textW = textRef.current.scrollWidth
+      const diff = textW - containerW
+      setScrollDistance(diff > 4 ? Math.ceil(diff + 24) : 0)
+    }
+  }
+
+  useEffect(() => {
+    measureOverflow()
+    const timer1 = setTimeout(measureOverflow, 100)
+    const timer2 = setTimeout(measureOverflow, 400)
+    window.addEventListener('resize', measureOverflow)
+    return () => {
+      clearTimeout(timer1)
+      clearTimeout(timer2)
+      window.removeEventListener('resize', measureOverflow)
+    }
+  }, [desc])
+
+  const active = (isHovered || isClicked) && scrollDistance > 0
+  const duration = Math.max(2.8, scrollDistance / 40)
+
+  return (
+    <div
+      className={`fc-shortcut-card ${isClicked ? 'clicked-active' : ''}`}
+      onClick={() => {
+        measureOverflow()
+        setIsClicked((prev) => !prev)
+      }}
+      onMouseEnter={() => {
+        measureOverflow()
+        setIsHovered(true)
+      }}
+      onMouseLeave={() => {
+        setIsHovered(false)
+      }}
+    >
+      <div className="fc-shortcut-card-header">
+        <div className="fc-sc-left">
+          <span className="fc-sc-icon">{icon}</span>
+          <span className="fc-sc-title">{title}</span>
+        </div>
+        {typeof keyLabel === 'string' ? (
+          <span className={`fc-sc-key ${keyColor}`}>{keyLabel}</span>
+        ) : (
+          keyLabel
+        )}
+      </div>
+      <div ref={containerRef} className={`fc-sc-desc-wrapper ${active ? 'overflowing' : ''}`}>
+        <p
+          ref={textRef}
+          className={`fc-sc-desc ${active ? 'teleprompter-active' : ''}`}
+          style={
+            active
+              ? ({
+                  '--scroll-offset': `${scrollDistance}px`,
+                  '--scroll-duration': `${duration}s`
+                } as React.CSSProperties)
+              : undefined
+          }
+        >
+          {desc}
+        </p>
+      </div>
+    </div>
+  )
 }
 
 export default function SetupPage({
@@ -78,20 +309,28 @@ export default function SetupPage({
   const [resumes, setResumes] = useState<Resume[]>([])
   const [selectedResumeId, setSelectedResumeId] = useState('')
   const [isParsing, setIsParsing] = useState(false)
-  const [step, setStep] = useState<1 | 2 | 3 | 'phone'>(1)
+  const [step, setStep] = useState<1 | 2 | 3 | 'knowledge_base'>(1)
+  const [activeKbId, setActiveKbId] = useState('')
+  const [kbs, setKbs] = useState<{ id: string; title: string; created_at: string }[]>([])
+  const [newKbTitle, setNewKbTitle] = useState('')
+  const [newKbContent, setNewKbContent] = useState('')
+  const [kbLoading, setKbLoading] = useState(false)
   const [error, setError] = useState('')
   const [autoAnswer, setAutoAnswer] = useState(true)
   const [experienceLevel, setExperienceLevel] = useState<'fresher' | 'experienced'>('fresher')
   const [experienceDuration, setExperienceDuration] = useState('')
   const [workHistory, setWorkHistory] = useState('')
   const [codingLanguage, setCodingLanguage] = useState('Python')
+  const [isLangDropdownOpen, setIsLangDropdownOpen] = useState(false)
+  const langDropdownRef = React.useRef<HTMLDivElement>(null)
+  const [isSidebarMenuOpen, setIsSidebarMenuOpen] = useState(false)
+  const menuContainerRef = React.useRef<HTMLDivElement>(null)
+  const [interviewContent, setInterviewContent] = useState('')
+  const [resumeInputMode, setResumeInputMode] = useState<'upload' | 'text'>('upload')
+  const [manualResumeTitle, setManualResumeTitle] = useState('')
+  const [manualResumeText, setManualResumeText] = useState('')
   const [showPaywall, setShowPaywall] = useState(false)
   const [showEmail, setShowEmail] = useState(false)
-  const [refreshState, setRefreshState] = useState<'idle' | 'refreshing' | 'success'>('idle')
-  const [isPhoneCapturing, setIsPhoneCapturing] = useState(false)
-  const phoneStopCaptureRef = React.useRef<(() => void) | null>(null)
-  const [phoneHasLogs, setPhoneHasLogs] = useState(false)
-  const phoneStartCaptureRef = React.useRef<(() => void) | null>(null)
 
   // ── Auto-Update state ───────────────────────────────────────
   const [updateInfo, setUpdateInfo] = useState<{ version: string } | null>(null)
@@ -123,6 +362,34 @@ export default function SetupPage({
     }
   }, [])
 
+  useEffect(() => {
+    if (isSidebarMenuOpen) {
+      document.body.classList.add('quick-menu-active')
+    } else {
+      document.body.classList.remove('quick-menu-active')
+    }
+    return () => {
+      document.body.classList.remove('quick-menu-active')
+    }
+  }, [isSidebarMenuOpen])
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (langDropdownRef.current && !langDropdownRef.current.contains(event.target as Node)) {
+        setIsLangDropdownOpen(false)
+      }
+      if (menuContainerRef.current && !menuContainerRef.current.contains(event.target as Node)) {
+        setIsSidebarMenuOpen(false)
+      }
+    }
+    if (isLangDropdownOpen || isSidebarMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [isLangDropdownOpen, isSidebarMenuOpen])
+
   // ── Wire up auto-update events ──────────────────────────────
   useEffect(() => {
     const unsubAvailable = window.api.onUpdateAvailable((info) => {
@@ -152,13 +419,7 @@ export default function SetupPage({
     }
   }, [])
 
-  useEffect(() => {
-    if (step === 'phone') {
-      window.api.resizeMainWindow(1075, 731)
-    } else {
-      window.api.resizeMainWindow(768, 522)
-    }
-  }, [step])
+
 
   useEffect(() => {
     try {
@@ -177,6 +438,8 @@ export default function SetupPage({
         setExperienceDuration(saved.experienceDuration || '')
         setWorkHistory(saved.workHistory || '')
         setCodingLanguage(saved.codingLanguage || 'Python')
+        setInterviewContent(saved.interviewContent || '')
+        setActiveKbId(saved.activeKbId || '')
         setResumes(saved.resumes || [])
         setSelectedResumeId(saved.selectedResumeId || '')
         if (saved.selectedResumeId && saved.resumes?.length > 0) {
@@ -204,11 +467,13 @@ export default function SetupPage({
         experienceDuration,
         workHistory,
         codingLanguage,
+        interviewContent,
+        activeKbId,
         ...overrides
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
     },
-    [name, role, company, language, resumes, selectedResumeId, autoAnswer, experienceLevel, experienceDuration, workHistory, codingLanguage]
+    [name, role, company, language, resumes, selectedResumeId, autoAnswer, experienceLevel, experienceDuration, workHistory, codingLanguage, interviewContent, activeKbId]
   )
 
   const handlePickResume = useCallback(async () => {
@@ -236,7 +501,9 @@ export default function SetupPage({
         experienceLevel,
         experienceDuration: experienceLevel === 'experienced' ? experienceDuration : undefined,
         workHistory: experienceLevel === 'experienced' ? workHistory : undefined,
-        codingLanguage
+        codingLanguage,
+        interviewContent: interviewContent.trim() ? interviewContent.trim() : undefined,
+        activeKbId: activeKbId || undefined
       })
       const rawText = await parseResumePDF(resumeFile.data)
       const refinedText = await refineResumeWithAI(rawText)
@@ -257,7 +524,56 @@ export default function SetupPage({
     } finally {
       setIsParsing(false)
     }
-  }, [resumeFile, name, role, company, language, autoAnswer, resumes, saveData])
+  }, [resumeFile, name, role, company, language, autoAnswer, resumes, saveData, experienceLevel, experienceDuration, workHistory, codingLanguage, interviewContent, activeKbId])
+
+  const handleSaveManualResume = useCallback(async () => {
+    if (!manualResumeText.trim()) {
+      setError('Please enter or paste your resume text.')
+      return
+    }
+    const title = manualResumeTitle.trim() || `Resume ${resumes.length + 1}`
+    setIsParsing(true)
+    setError('')
+    try {
+      initAI({
+        name: name || 'Candidate',
+        role,
+        company,
+        language,
+        resumeText: '',
+        autoAnswer,
+        experienceLevel,
+        experienceDuration: experienceLevel === 'experienced' ? experienceDuration : undefined,
+        workHistory: experienceLevel === 'experienced' ? workHistory : undefined,
+        codingLanguage,
+        interviewContent: interviewContent.trim() ? interviewContent.trim() : undefined,
+        activeKbId: activeKbId || undefined
+      })
+      let refinedText = ''
+      try {
+        refinedText = await refineResumeWithAI(manualResumeText.trim())
+      } catch {
+        refinedText = manualResumeText.trim()
+      }
+      const newResume: Resume = {
+        id: Date.now().toString(),
+        name: title,
+        text: refinedText || manualResumeText.trim()
+      }
+      const updatedResumes = [...resumes, newResume]
+      setResumes(updatedResumes)
+      setSelectedResumeId(newResume.id)
+      setManualResumeTitle('')
+      setManualResumeText('')
+      saveData({ resumes: updatedResumes, selectedResumeId: newResume.id })
+      setError('')
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e)
+      setError(`Failed to save resume: ${message}`)
+    } finally {
+      setIsParsing(false)
+    }
+  }, [manualResumeTitle, manualResumeText, name, role, company, language, autoAnswer, resumes, saveData, experienceLevel, experienceDuration, workHistory, codingLanguage, interviewContent, activeKbId])
 
   const handleStartInterview = useCallback(() => {
     if (!name || !role) {
@@ -288,7 +604,9 @@ export default function SetupPage({
       experienceLevel,
       experienceDuration: experienceLevel === 'experienced' ? experienceDuration : undefined,
       workHistory: experienceLevel === 'experienced' && workHistory.trim() ? workHistory.trim() : undefined,
-      codingLanguage
+      codingLanguage,
+      interviewContent: interviewContent.trim() ? interviewContent.trim() : undefined,
+      activeKbId: activeKbId || undefined
     }
 
     console.log('[Setup] Starting Interview with Context:', {
@@ -319,7 +637,13 @@ export default function SetupPage({
     autoAnswer,
     sessionsBalance,
     trialRemainingSeconds,
-    saveData
+    saveData,
+    experienceLevel,
+    experienceDuration,
+    workHistory,
+    codingLanguage,
+    interviewContent,
+    activeKbId
   ])
 
   const handleDeleteResume = useCallback(
@@ -332,6 +656,106 @@ export default function SetupPage({
     },
     [resumes, selectedResumeId, saveData]
   )
+
+  const fetchKbs = useCallback(async () => {
+    setKbLoading(true)
+    try {
+      const savedKbs = localStorage.getItem('zyro_local_kbs')
+      if (savedKbs) {
+        setKbs(JSON.parse(savedKbs))
+      } else {
+        setKbs([])
+      }
+    } catch (err: any) {
+      console.error('[KB] Failed to fetch local KBs:', err)
+      setKbs([])
+    } finally {
+      setKbLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchKbs()
+  }, [fetchKbs])
+
+  const [showKbAddForm, setShowKbAddForm] = useState(false)
+
+  const handleSaveAndProcessKb = useCallback(async () => {
+    if (!newKbTitle.trim()) {
+      setError('Please provide a title.')
+      return
+    }
+    if (!newKbContent.trim()) {
+      setError('Please paste some interview content.')
+      return
+    }
+
+    setKbLoading(true)
+    setError('')
+
+    const savedId = `kb_${Date.now()}`
+    const newKbItem = {
+      id: savedId,
+      title: newKbTitle.trim(),
+      content: newKbContent.trim(),
+      created_at: new Date().toISOString()
+    }
+
+    try {
+      console.log('[KB] Indexing locally into localVectorDb...')
+      await window.api.kbSave({
+        title: newKbTitle.trim(),
+        content: newKbContent.trim()
+      })
+
+      setKbs(prev => {
+        const next = [newKbItem, ...prev.filter(item => item.title !== newKbTitle.trim())]
+        localStorage.setItem('zyro_local_kbs', JSON.stringify(next))
+        return next
+      })
+
+      setActiveKbId(savedId)
+      saveData({ activeKbId: savedId })
+      setNewKbTitle('')
+      setNewKbContent('')
+      setShowKbAddForm(false)
+      console.log('[KB] Saved locally successfully:', savedId)
+    } catch (err: any) {
+      console.error('[KB] Save failed:', err)
+      setError(`Failed to save: ${err.message}`)
+    } finally {
+      setKbLoading(false)
+    }
+  }, [newKbTitle, newKbContent, saveData])
+
+
+  const handleDeleteKb = useCallback(async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!confirm('Are you sure you want to delete this knowledge base material?')) return
+
+    setKbLoading(true)
+    setError('')
+    try {
+      const target = kbs.find((k) => k.id === id)
+      await window.api.kbDelete(target?.title ? 'kb_' + target.title : id)
+
+      setKbs(prev => {
+        const next = prev.filter(item => item.id !== id)
+        localStorage.setItem('zyro_local_kbs', JSON.stringify(next))
+        return next
+      })
+
+      if (activeKbId === id) {
+        setActiveKbId('')
+        saveData({ activeKbId: '' })
+      }
+    } catch (err: any) {
+      console.error('[KB] Delete failed:', err)
+      setError(`Failed to delete: ${err.message}`)
+    } finally {
+      setKbLoading(false)
+    }
+  }, [activeKbId, saveData, fetchKbs])
 
 
   return (
@@ -354,12 +778,116 @@ export default function SetupPage({
         {/* Sidebar */}
         <aside className="setup-sidebar">
           {/* Logo Area */}
-          <div className="sidebar-logo">
-            <div className="logo-box">
-              <ZyroMascot size={52} strokeColor="#a78bfa" />
+          <div
+            className="sidebar-logo"
+            style={{
+              position: 'relative',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '20px 16px',
+              width: '100%',
+              boxSizing: 'border-box'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+              <div className="logo-box" style={{ width: '42px', height: '42px', flexShrink: 0 }}>
+                <ZyroMascot size={42} strokeColor="#a78bfa" />
+              </div>
+              <span className="logo-text" style={{ fontSize: '15px', fontWeight: 800, color: '#ffffff', letterSpacing: '-0.3px', whiteSpace: 'nowrap' }}>
+                Zyro AI
+              </span>
             </div>
-            <span className="logo-text">Zyro AI</span>
+
+            <div ref={menuContainerRef} className="no-drag" style={{ position: 'relative', display: 'inline-flex', zIndex: 999999 }}>
+              <AnimatedHamburgerButton
+                active={isSidebarMenuOpen}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setIsSidebarMenuOpen((prev) => !prev)
+                }}
+              />
+
+              {/* Quick Flyout Dropdown Menu */}
+              <AnimatePresence>
+                {isSidebarMenuOpen && (
+                  <>
+                    <div
+                      className="no-drag"
+                      onClick={() => setIsSidebarMenuOpen(false)}
+                      style={{
+                        position: 'fixed',
+                        inset: 0,
+                        zIndex: 999990,
+                        background: 'transparent',
+                        cursor: 'default'
+                      }}
+                    />
+                    <motion.div
+                      className="sidebar-quick-menu no-drag"
+                      initial={{ opacity: 0, y: -4, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -4, scale: 0.95 }}
+                      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                      style={{
+                        position: 'absolute',
+                        top: 'calc(100% + 8px)',
+                        left: '0px',
+                        width: '200px',
+                        zIndex: 999999,
+                        pointerEvents: 'auto'
+                      }}
+                    >
+                  {/* 1. Terms and Conditions */}
+                  <button
+                    type="button"
+                    className="sqm-item"
+                    onClick={() => {
+                      setIsSidebarMenuOpen(false)
+                      window.api.openExternal('https://zyro-ai.in/#/terms')
+                    }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor">
+                      <path d="M213.66,82.34l-56-56A8,8,0,0,0,152,24H56A16,16,0,0,0,40,40V216a16,16,0,0,0,16,16H200a16,16,0,0,0,16-16V88A8,8,0,0,0,213.66,82.34ZM160,51.31,188.69,80H160ZM200,216H56V40h88V88a8,8,0,0,0,8,8h48V216Zm-32-80a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,136Zm0,32a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,168Z" />
+                    </svg>
+                    <span>Terms & Conditions</span>
+                  </button>
+
+                  {/* 2. Privacy Policy */}
+                  <button
+                    type="button"
+                    className="sqm-item"
+                    onClick={() => {
+                      setIsSidebarMenuOpen(false)
+                      window.api.openExternal('https://zyro-ai.in/#/privacy')
+                    }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor">
+                      <path d="M208,80H176V56a48,48,0,0,0-96,0V80H48A16,16,0,0,0,32,96V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V96A16,16,0,0,0,208,80ZM96,56a32,32,0,0,1,64,0V80H96ZM208,208H48V96H208V208Zm-80-64a20,20,0,1,0,20,20A20,20,0,0,0,128,144Z" />
+                    </svg>
+                    <span>Privacy Policy</span>
+                  </button>
+
+                  {/* 3. Help & Support */}
+                  <button
+                    type="button"
+                    className="sqm-item"
+                    onClick={() => {
+                      setIsSidebarMenuOpen(false)
+                      window.api.openExternal('https://zyro-ai.in/#/help')
+                    }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor">
+                      <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm16-40a16,16,0,1,1-16-16A16,16,0,0,1,144,176Zm-16-96a28,28,0,0,0-28,28,8,8,0,0,0,16,0,12,12,0,1,1,24,0c0,8-4.57,12.79-11.53,17.43C120,131,120,136,120,144a8,8,0,0,0,16,0c0-4.71.69-7.23,4.7-9.87C149,129,160,121.26,160,108A28,28,0,0,0,128,80Z" />
+                    </svg>
+                    <span>Help & Support</span>
+                  </button>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
           </div>
+        </div>
 
           <nav className="sidebar-nav">
             {[
@@ -378,6 +906,13 @@ export default function SetupPage({
                 </svg>
               },
               {
+                id: 'knowledge_base',
+                label: 'Interview Content',
+                icon: <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256">
+                  <path d="M224,48H32A16,16,0,0,0,16,64V192a16,16,0,0,0,16,16H224a16,16,0,0,0,16-16V64A16,16,0,0,0,224,48Zm0,144H32V64H224V192ZM80,120a8,8,0,0,1,8-8h80a8,8,0,0,1,0,16H88A8,8,0,0,1,80,120Zm0,32a8,8,0,0,1,8-8h80a8,8,0,0,1,0,16H88A8,8,0,0,1,80,152Z" />
+                </svg>
+              },
+              {
                 id: 3,
                 label: 'Final Check',
                 icon: <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256">
@@ -386,8 +921,15 @@ export default function SetupPage({
               }
             ].map((t) => {
               const isCurrent = step === t.id
-              const isPast = typeof step === 'number' ? step > t.id : true
-              const canClick = (typeof step === 'number' ? t.id <= step : true) || (t.id === 2 && name && role) || (t.id === 3 && selectedResumeId)
+              const isPast =
+                (step === 3 && (t.id === 1 || t.id === 2 || t.id === 'knowledge_base')) ||
+                (step === 'knowledge_base' && (t.id === 1 || t.id === 2)) ||
+                (step === 2 && t.id === 1)
+              const canClick =
+                t.id === 1 ||
+                (t.id === 2 && name && role) ||
+                (t.id === 'knowledge_base' && name && role) ||
+                (t.id === 3 && selectedResumeId)
 
               return (
                 <button
@@ -395,7 +937,7 @@ export default function SetupPage({
                   className={`nav-item ${isCurrent ? 'active' : ''} ${isPast ? 'past' : ''} ${!canClick ? 'locked' : ''}`}
                   onClick={() => {
                     if (canClick) {
-                      setStep(t.id as 1 | 2 | 3)
+                      setStep(t.id as any)
                     }
                   }}
                 >
@@ -405,214 +947,25 @@ export default function SetupPage({
                 </button>
               )
             })}
-
-            <button
-              className={`nav-item ${step === 'phone' ? 'active' : ''}`}
-              onClick={() => setStep('phone')}
-              style={{
-                marginTop: 'auto',
-                marginBottom: '8px'
-              }}
-            >
-              <span className="nav-icon">
-                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256">
-                  <path d="M222.37,180.6a16,16,0,0,1-.54,20c-7.6,8.23-16.74,14.67-27.18,19.16a73.23,73.23,0,0,1-29.62,6.24c-35.63,0-72.33-19.13-103.35-50.15S12,109.63,12,74A73.23,73.23,0,0,1,18.24,44.38c4.49-10.44,10.93-19.58,19.16-27.18a16,16,0,0,1,20-.54L83.08,38.3A16,16,0,0,1,87.4,56.6L73.61,70.39A147.3,147.3,0,0,0,121.61,118.4l13.79-13.79a16,16,0,0,1,18.3-4.32l21.64,15.68a16,16,0,0,1-3,24.63Z" />
-                </svg>
-              </span>
-              <span className="nav-text">Phone Interview</span>
-              {step === 'phone' && <div className="nav-active-glow" />}
-            </button>
           </nav>
 
-          {/* ── Update Notification Card (Premium UI) ── */}
-          {(updateStatus === 'available' || updateStatus === 'downloading' || updateStatus === 'ready') && (
-            <div className="update-card-premium" style={{
-              margin: '16px 12px',
-              padding: '16px',
-              background: 'linear-gradient(135deg, rgba(88, 28, 135, 0.1), rgba(67, 56, 202, 0.05))',
-              backdropFilter: 'blur(16px) saturate(180%)',
-              WebkitBackdropFilter: 'blur(16px) saturate(180%)',
-              border: '1px solid rgba(139, 92, 246, 0.25)',
-              borderRadius: '16px',
-              boxShadow: updateStatus === 'available' ? '0 0 20px rgba(139, 92, 246, 0.1)' : 'none',
-              animation: updateStatus === 'available' ? 'upd-pulse 3s infinite ease-in-out' : 'none',
-              position: 'relative',
-              overflow: 'hidden'
-            }}>
-              {/* Animated Background Glow */}
-              <div style={{
-                position: 'absolute', top: '-50%', left: '-50%', width: '200%', height: '200%',
-                background: 'radial-gradient(circle, rgba(139, 92, 246, 0.05) 0%, transparent 70%)',
-                animation: 'upd-rotate 10s linear infinite', zIndex: 0, pointerEvents: 'none'
-              }} />
-
-              {/* Content Wrapper */}
-              <div style={{ position: 'relative', zIndex: 1 }}>
-                {/* Dismiss Button */}
-                <button
-                  onClick={() => setUpdateStatus('idle')}
-                  style={{
-                    position: 'absolute',
-                    top: -8,
-                    right: -8,
-                    width: 20,
-                    height: 20,
-                    borderRadius: '50%',
-                    background: 'rgba(255,255,255,0.05)',
-                    border: '1px solid rgba(255,255,255,0.1)',
-                    color: '#94a3b8',
-                    fontSize: 14,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease'
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = 'rgba(255,255,255,0.1)'
-                    e.currentTarget.style.color = '#f1f5f9'
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = 'rgba(255,255,255,0.05)'
-                    e.currentTarget.style.color = '#94a3b8'
-                  }}
-                >
-                  ×
-                </button>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-                  {/* Icon Container */}
-                  <div style={{
-                    width: 36, height: 36, borderRadius: '10px', flexShrink: 0,
-                    background: 'rgba(139, 92, 246, 0.1)',
-                    border: '1px solid rgba(139, 92, 246, 0.2)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    boxShadow: 'inset 0 0 10px rgba(139, 92, 246, 0.1)'
-                  }}>
-                    {updateStatus === 'ready' ? (
-                      <svg width="18" height="18" viewBox="0 0 256 256" fill="#a78bfa">
-                        <path d="M224,128a96,96,0,1,1-96-96A96,96,0,0,1,224,128Z" opacity="0.2"/><path d="M173.66,98.34a8,8,0,0,1,0,11.32l-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35A8,8,0,0,1,173.66,98.34ZM232,128A104,104,0,1,1,128,24,104.11,104.11,0,0,1,232,128Zm-16,0a88,88,0,1,0-88,88A88.1,88.1,0,0,0,216,128Z"/>
-                      </svg>
-                    ) : (updateStatus === 'downloading' || updateStatus === 'available') ? (
-                      <svg width="18" height="18" viewBox="0 0 256 256" fill="#a78bfa" style={{ animation: updateStatus === 'downloading' ? 'upd-bounce 1.5s infinite ease-in-out' : 'none' }}>
-                        <path d="M208,120H136V40a8,8,0,0,0-16,0v80H48a8,8,0,0,0-5.66,13.66l80,80a8,8,0,0,0,11.32,0l80-80A8,8,0,0,0,208,120Z" opacity="0.2"/><path d="M213.66,122.34l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,48,112H120V40a8,8,0,0,1,16,0v72h72a8,8,0,0,1,5.66,14.34ZM128,188.69,192.69,124H63.31Z"/>
-                      </svg>
-                    ) : (
-                      <svg width="18" height="18" viewBox="0 0 256 256" fill="#a78bfa">
-                        <path d="M128,32a96,96,0,1,0,96,96A96.11,96.11,0,0,0,128,32Z" opacity="0.2"/><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm45.66-93.66a8,8,0,0,1,0,11.32l-40,40a8,8,0,0,1-11.32,0l-40-40a8,8,0,0,1,11.32-11.32L120,152.69V88a8,8,0,0,1,16,0v64.69l26.34-26.35A8,8,0,0,1,173.66,122.34Z"/>
-                      </svg>
-                    )}
-                  </div>
-
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 800, color: '#f1f5f9', fontSize: '13px', lineHeight: 1.2, letterSpacing: '-0.01em' }}>
-                      {updateStatus === 'downloading' && 'Fetching...'}
-                      {updateStatus === 'ready' && 'Update Available'}
-                    </div>
-                    <div style={{ color: '#94a3b8', fontSize: '11px', marginTop: '2px', fontWeight: 500 }}>
-                      Version {updateInfo?.version || '...'}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Progress Visual (only during download) */}
-                {updateStatus === 'downloading' && (
-                  <div style={{ marginBottom: 14 }}>
-                    <div style={{ height: 6, background: 'rgba(255, 255, 255, 0.05)', borderRadius: 99, overflow: 'hidden', border: '1px solid rgba(255, 255, 255, 0.03)' }}>
-                      <div style={{
-                        height: '100%',
-                        width: `${updateProgress}%`,
-                        background: 'linear-gradient(90deg, #6366f1, #a855f7)',
-                        boxShadow: '0 0 10px rgba(168, 85, 247, 0.5)',
-                        borderRadius: 99,
-                        transition: 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)'
-                      }} />
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
-                      <span style={{ fontSize: 10, color: '#64748b', fontWeight: 600 }}>
-                        Downloading
-                      </span>
-                      <span style={{ fontSize: 10, color: '#a78bfa', fontWeight: 800 }}>
-                        {updateProgress}%
-                      </span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Buttons with Premium Styling */}
-                {updateStatus === 'available' && (
-                  <button
-                    onClick={() => {
-                      setUpdateStatus('downloading')
-                      window.api.downloadUpdate()
-                    }}
-                    className="upd-action-btn"
-                    style={{
-                      width: '100%', height: 34, borderRadius: '10px',
-                      background: 'rgba(139, 92, 246, 0.15)',
-                      border: '1px solid rgba(139, 92, 246, 0.3)',
-                      color: '#c4b5fd', fontWeight: 700, fontSize: '12px',
-                      cursor: 'pointer', transition: 'all 0.3s ease',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6
-                    }}
-                  >
-                    <span>Fetch Now</span>
-                    <svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm45.66-93.66a8,8,0,0,1,0,11.32l-40,40a8,8,0,0,1-11.32,0l-40-40a8,8,0,0,1,11.32-11.32L120,152.69V88a8,8,0,0,1,16,0v64.69l26.34-26.35A8,8,0,0,1,173.66,122.34Z"/></svg>
-                  </button>
-                )}
-
-                {updateStatus === 'ready' && (
-                  <button
-                    onClick={() => window.api.installUpdate()}
-                    className="upd-action-btn-ready"
-                    style={{
-                      width: '100%', height: 36, borderRadius: '10px',
-                      background: 'linear-gradient(135deg, #7c3aed, #4f46e5)',
-                      border: 'none', color: '#fff', fontWeight: 800,
-                      fontSize: '12px', cursor: 'pointer', transition: 'all 0.3s ease',
-                      boxShadow: '0 4px 15px rgba(124, 58, 237, 0.3)',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                      marginTop: 8
-                    }}
-                  >
-                    <span>Install & Restart</span>
-                    <svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M216,128a8,8,0,0,1-8,8H56a8,8,0,0,1,0-16H208A8,8,0,0,1,216,128Zm-88,56H56a8,8,0,0,0,0,16h72a8,8,0,0,0,0-16Zm72-112H56a8,8,0,0,0,0,16H200a8,8,0,0,0,0-16Z"/></svg>
-                  </button>
-                )}
-                
-              </div>
-
-              <style>{`
-                @keyframes upd-pulse {
-                  0%, 100% { border-color: rgba(139, 92, 246, 0.25); box-shadow: 0 0 20px rgba(139, 92, 246, 0.05); }
-                  50% { border-color: rgba(139, 92, 246, 0.5); box-shadow: 0 0 25px rgba(139, 92, 246, 0.15); }
-                }
-                @keyframes upd-rotate {
-                  from { transform: rotate(0deg); }
-                  to { transform: rotate(360deg); }
-                }
-                @keyframes upd-bounce {
-                  0%, 100% { transform: translateY(0); }
-                  50% { transform: translateY(3px); }
-                }
-                .upd-action-btn:hover {
-                  background: rgba(139, 92, 246, 0.25) !important;
-                  transform: translateY(-1px);
-                }
-                .upd-action-btn-ready:hover {
-                  filter: brightness(1.1);
-                  transform: translateY(-1px);
-                  box-shadow: 0 6px 20px rgba(124, 58, 237, 0.4) !important;
-                }
-              `}</style>
-            </div>
-          )}
+          {/* ── Minimal Uiverse Update Button ── */}
+          <MinimalUpdateButton
+            updateStatus={updateStatus}
+            updateInfo={updateInfo}
+            updateProgress={updateProgress}
+            onDownload={() => {
+              setUpdateStatus('downloading')
+              window.api.downloadUpdate()
+            }}
+            onInstall={() => window.api.installUpdate()}
+            onDismiss={() => setUpdateStatus('idle')}
+          />
 
           <footer className="sidebar-footer-enhanced">
             <div 
               className="user-brief clickable" 
               onClick={() => setShowEmail(!showEmail)}
-              title={showEmail ? "Click to show Name" : "Click to show Email"}
             >
               <div className="ub-left">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256" className="text-secondary">
@@ -625,18 +978,20 @@ export default function SetupPage({
                   }
                 </span>
               </div>
-              <button
-                className="sidebar-logout-icon"
-                onClick={async () => {
-                  await window.api.supabaseLogout()
-                  onLogout?.()
-                }}
-                title="Log Out"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
-                  <path d="M120,216a8,8,0,0,1-8,8H48a16,16,0,0,1-16-16V48A16,16,0,0,1,48,32h64a8,8,0,0,1,0,16H48V208h64A8,8,0,0,1,120,216Zm109.66-93.66-40-40a8,8,0,0,0-11.32,11.32L204.69,120H112a8,8,0,0,0,0,16h92.69l-26.35,26.34a8,8,0,0,0,11.32,11.32l40-40A8,8,0,0,0,229.66,122.34Z" />
-                </svg>
-              </button>
+              <Tooltip content="Log Out" position="top">
+                <button
+                  className="sidebar-logout-icon"
+                  onClick={async (e) => {
+                    e.stopPropagation()
+                    await window.api.supabaseLogout()
+                    onLogout?.()
+                  }}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
+                    <path d="M120,216a8,8,0,0,1-8,8H48a16,16,0,0,1-16-16V48A16,16,0,0,1,48,32h64a8,8,0,0,1,0,16H48V208h64A8,8,0,0,1,120,216Zm109.66-93.66-40-40a8,8,0,0,0-11.32,11.32L204.69,120H112a8,8,0,0,0,0,16h92.69l-26.35,26.34a8,8,0,0,0,11.32,11.32l40-40A8,8,0,0,0,229.66,122.34Z" />
+                  </svg>
+                </button>
+              </Tooltip>
             </div>
 
             <div className="sidebar-stat-grid">
@@ -651,10 +1006,10 @@ export default function SetupPage({
               </div>
               <div className="stat-pill-modern">
                 <div className="spm-label">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="#F59E0B" viewBox="0 0 256 256">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="#8B5CF6" viewBox="0 0 256 256">
                     <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm64-88a8,8,0,0,1-8,8H128a8,8,0,0,1-8-8V72a8,8,0,0,1,16,0v48h48A8,8,0,0,1,192,128Z" />
                   </svg>
-                  <span>Trial</span>
+                  <span>Free Trial</span>
                 </div>
                 <span className="spm-value">{formatTime(trialRemainingSeconds)}</span>
               </div>
@@ -668,128 +1023,52 @@ export default function SetupPage({
               <h1 className="shr-title">
                 {step === 1 && 'Tell us about you'}
                 {step === 2 && 'Resume Library'}
+                {step === 'knowledge_base' && 'Interview Content'}
                 {step === 3 && 'Final Check'}
-                {step === 'phone' && 'Phone Interview'}
               </h1>
-              <p className="shr-desc">
-                {step === 1 && "Personalize your AI assistant's background context."}
-                {step === 2 && 'Manage and select the resume for this session.'}
-                {step === 3 && 'Review your configuration before starting.'}
-                {step === 'phone' && 'Real-time call companion'}
-              </p>
+              <TeleprompterText
+                text={
+                  step === 1
+                    ? 'Configure your profile, target role, and interview preferences.'
+                    : step === 2
+                      ? 'Upload, manage, and select your target resume for this session.'
+                      : step === 'knowledge_base'
+                        ? 'Upload company documents, preparation notes, and cheat sheets.'
+                        : 'Verify your interview configuration before launching the assistant.'
+                }
+              />
             </div>
             <div className="shr-right">
-              {step === 'phone' && (
-                <div className="header-session-badge-capsule no-drag" title="Phone Sessions Balance">
-                  <div className="badge-glow-effect" />
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="#8B5CF6" viewBox="0 0 256 256" className="badge-icon">
-                    <path d="M224,48H32A16,16,0,0,0,16,64V192a16,16,0,0,0,16,16H224a16,16,0,0,0,16-16V64A16,16,0,0,0,224,48Zm0,144H32V64H224V192ZM64,128a8,8,0,0,1,8-8H96a8,8,0,0,1,0,16H72A8,8,0,0,1,64,128Zm48,0a8,8,0,0,1,8-8h64a8,8,0,0,1,0,16H120A8,8,0,0,1,112,128Z" />
-                  </svg>
-                  <span className="badge-label">Sessions Balance</span>
-                  <span className="badge-value">{userProfile?.phone_sessions_balance ?? 0}</span>
-                </div>
-              )}
-              {step === 'phone' && isPhoneCapturing && (
-                <button
-                  className="stop-capture-header-btn no-drag"
-                  onClick={() => {
-                    if (phoneStopCaptureRef.current) {
-                      phoneStopCaptureRef.current()
-                    }
+              <Tooltip content="Real-time Cloud Sync Active" position="bottom-left">
+                <CloudSyncButton
+                  onClick={async () => {
+                    try {
+                      const profile = await window.api.supabaseGetProfile();
+                      if (profile) {
+                        window.dispatchEvent(new CustomEvent('force-profile-refresh', { detail: profile }));
+                      }
+                    } catch {}
                   }}
-                >
-                  <span className="pulse-red-dot"></span>
-                  <span>Stop Capture</span>
-                </button>
-              )}
-              {step === 'phone' && !isPhoneCapturing && phoneHasLogs && (
-                <button
-                  className="resume-capture-header-btn no-drag"
-                  onClick={() => {
-                    if (phoneStartCaptureRef.current) {
-                      phoneStartCaptureRef.current()
-                    }
-                  }}
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256" style={{ marginRight: 6 }}>
-                    <path d="M128,176a48.05,48.05,0,0,0,48-48V56a48,48,0,0,0-96,0v72A48.05,48.05,0,0,0,128,176ZM96,56a32,32,0,0,1,64,0v72a32,32,0,0,1-64,0Zm112,72a8,8,0,0,1-16,0,64,64,0,0,1-128,0,8,8,0,0,1-16,0,80.11,80.11,0,0,0,72,79.6V224H80a8,8,0,0,1,0-16h96a8,8,0,0,1,0,16H136v16.4A80.11,80.11,0,0,0,208,128Z" />
+                />
+              </Tooltip>
+              <Tooltip content="Minimize" position="bottom-left">
+                <button className="ov-action-btn minimize no-drag" onClick={() => window.api.minimizeWindow()}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="5" y1="12" x2="19" y2="12" />
                   </svg>
-                  <span>Resume Capture</span>
                 </button>
-              )}
-              <button 
-                className="ov-action-btn refresh no-drag" 
-                title="Refresh Stats" 
-                onClick={async () => {
-                  if (refreshState !== 'idle') return;
-                  setRefreshState('refreshing');
-                  try {
-                    const profile = await window.api.supabaseGetProfile();
-                    if (profile) {
-                      window.dispatchEvent(new CustomEvent('force-profile-refresh', { detail: profile }));
-                    }
-                  } finally {
-                    setTimeout(() => {
-                      setRefreshState('success');
-                      setTimeout(() => setRefreshState('idle'), 2000);
-                    }, 1000);
-                  }
-                }}
-              >
-                <div style={{ position: 'relative', width: 15, height: 15, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {/* Spinner Icon */}
-                  <div className={`refresh-wrapper ${refreshState === 'success' ? 'refresh-out' : 'refresh-in'}`}>
-                    <svg 
-                      className={refreshState === 'refreshing' ? 'refresh-spin' : ''}
-                      xmlns="http://www.w3.org/2000/svg" 
-                      width="15" height="15" viewBox="0 0 24 24" 
-                      fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-                    >
-                      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-                      <path d="M3 3v5h5"/>
-                    </svg>
-                  </div>
-                  {/* Success Icon */}
-                  <div className={`refresh-wrapper refresh-icon-check ${refreshState === 'success' ? 'refresh-in' : 'refresh-out'}`}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="20 6 9 17 4 12"></polyline>
-                    </svg>
-                  </div>
-                </div>
-              </button>
-              <button className="ov-action-btn close no-drag" title="Close" onClick={() => window.api.quitApp()}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 6 6 18M6 6l12 12" />
-                </svg>
-              </button>
+              </Tooltip>
+              <Tooltip content="Close App" position="bottom-left">
+                <button className="ov-action-btn close no-drag" onClick={() => window.api.quitApp()}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 6 6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              </Tooltip>
             </div>
           </header>
 
-          <div className="content-scrollable">
-            {step === 'phone' && (
-              <div className="setup-step fade-in" style={{ height: '100%' }}>
-                <PhoneInterviewPanel
-                  name={name}
-                  role={role}
-                  company={company}
-                  language={language}
-                  experienceLevel={experienceLevel}
-                  experienceDuration={experienceDuration}
-                  workHistory={workHistory}
-                  codingLanguage={codingLanguage}
-                  selectedResumeId={selectedResumeId}
-                  resumes={resumes}
-                  userProfile={userProfile}
-                  onUpgradeClick={() => setShowPaywall(true)}
-                  onCaptureStateChange={(isCapturing, stopFn, startFn, hasLogs) => {
-                    setIsPhoneCapturing(isCapturing)
-                    phoneStopCaptureRef.current = stopFn || null
-                    phoneStartCaptureRef.current = startFn || null
-                    setPhoneHasLogs(!!hasLogs)
-                  }}
-                />
-              </div>
-            )}
+          <div className="content-scrollable" style={step === 3 ? { padding: '20px 28px', display: 'flex', flexDirection: 'column' } : undefined}>
             {step === 1 && (
               <div className="setup-step fade-in">
 
@@ -871,43 +1150,89 @@ export default function SetupPage({
                     </div>
                   </div>
 
-                  <div className="field-group-modern">
-                    <label>Preferred Coding Language *</label>
-                    <div className="input-with-icon">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256" className="icon">
-                        <path d="M216,40H40A16,16,0,0,0,24,56V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A16,16,0,0,0,216,40Zm0,160H40V56H216V200ZM184,96a8,8,0,0,1-8,8H144v24a8,8,0,0,1-16,0V104H88a8,8,0,0,1,0-16h40V64a8,8,0,0,1,16,0V88h32A8,8,0,0,1,184,96Z" />
-                      </svg>
-                      <select
-                        value={codingLanguage}
-                        onChange={(e) => {
-                          setCodingLanguage(e.target.value)
-                          saveData({ codingLanguage: e.target.value })
-                        }}
-                        style={{
-                          width: '100%',
-                          background: 'transparent',
-                          border: 'none',
-                          color: '#e2e8f0',
-                          padding: '10px 12px 10px 42px',
-                          fontSize: '14px',
-                          outline: 'none',
-                          cursor: 'pointer',
-                          appearance: 'none',
-                          fontWeight: 500
-                        }}
-                      >
-                        {CODING_LANGUAGES.map(lang => (
-                          <option key={lang} value={lang} style={{ background: '#1e1b4b', color: '#fff' }}>
-                            {lang}
-                          </option>
-                        ))}
-                      </select>
-                      <div style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: '#64748b' }}>
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256">
+                  <div className="field-group-modern" ref={langDropdownRef} style={{ position: 'relative' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span>Preferred Coding Language *</span>
+                      <span style={{ fontSize: '11px', color: '#a78bfa', fontWeight: 600, background: 'rgba(167,139,250,0.12)', padding: '2px 8px', borderRadius: '6px', border: '1px solid rgba(167,139,250,0.2)' }}>
+                        {CODING_LANGUAGES.find(l => l.id === codingLanguage)?.tag || 'DSA & Code Output'}
+                      </span>
+                    </label>
+                    
+                    <div
+                      className={`custom-select-trigger ${isLangDropdownOpen ? 'active' : ''}`}
+                      onClick={() => setIsLangDropdownOpen(!isLangDropdownOpen)}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <div style={{
+                          width: '28px',
+                          height: '28px',
+                          borderRadius: '8px',
+                          background: 'rgba(139, 92, 246, 0.15)',
+                          border: '1px solid rgba(139, 92, 246, 0.3)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '15px'
+                        }}>
+                          {CODING_LANGUAGES.find(l => l.id === codingLanguage)?.icon || '💻'}
+                        </div>
+                        <span style={{ color: '#f8fafc', fontWeight: 600, fontSize: '14px', letterSpacing: '0.2px' }}>
+                          {CODING_LANGUAGES.find(l => l.id === codingLanguage)?.name || codingLanguage}
+                        </span>
+                      </div>
+
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        color: isLangDropdownOpen ? '#c4b5fd' : '#64748b',
+                        transform: isLangDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                        transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s ease'
+                      }}>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
                           <path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80a8,8,0,0,1,11.32-11.32L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z" />
                         </svg>
                       </div>
                     </div>
+
+                    {isLangDropdownOpen && (
+                      <div className="custom-select-menu">
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '6px' }}>
+                          {CODING_LANGUAGES.map((lang) => {
+                            const isSelected = codingLanguage === lang.id
+                            return (
+                              <div
+                                key={lang.id}
+                                className={`custom-select-option ${isSelected ? 'selected' : ''}`}
+                                onClick={() => {
+                                  setCodingLanguage(lang.id)
+                                  saveData({ codingLanguage: lang.id })
+                                  setIsLangDropdownOpen(false)
+                                }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <span style={{ fontSize: '15px' }}>{lang.icon}</span>
+                                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                    <span style={{ fontSize: '13px', fontWeight: isSelected ? 700 : 500, color: isSelected ? '#fff' : '#cbd5e1' }}>
+                                      {lang.name}
+                                    </span>
+                                    <span style={{ fontSize: '9.5px', color: isSelected ? '#c4b5fd' : '#64748b' }}>
+                                      {lang.tag}
+                                    </span>
+                                  </div>
+                                </div>
+                                {isSelected && (
+                                  <div style={{ color: '#a78bfa', display: 'flex', alignItems: 'center' }}>
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256">
+                                      <path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z" />
+                                    </svg>
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="field-group-modern">
@@ -981,28 +1306,6 @@ export default function SetupPage({
                       </div>
                     )}
                   </div>
-
-                  <div className="field-group-modern">
-                    <label>Interview Language</label>
-                    <div className="input-with-icon">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256" className="icon">
-                        <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm87.63,96H175.8c-1.42-28.28-10.29-55.74-25.65-78.1A88.2,88.2,0,0,1,215.63,120ZM128,215.89C109,193.14,97.15,162.06,96.12,128h63.76C158.85,162.06,147,193.14,128,215.89Zm0-103.78C109,89.06,120.85,58,128,40.11,147,62.86,158.85,93.94,159.88,112ZM105.85,41.9C90.49,64.26,81.62,91.72,80.2,120H40.37A88.2,88.2,0,0,1,105.85,41.9ZM40.37,136H80.2c1.42,28.28,10.29,55.74,25.65,78.1A88.2,88.2,0,0,1,40.37,136Zm109.78,78.1c15.36-22.36,24.23-49.82,25.65-78.1h39.83A88.2,88.2,0,0,1,150.15,214.1Z" />
-                      </svg>
-                      <select
-                        value={language}
-                        onChange={(e) => {
-                          setLanguage(e.target.value)
-                          saveData({ language: e.target.value })
-                        }}
-                      >
-                        {LANGUAGES.map((l) => (
-                          <option key={l.code} value={l.code}>
-                            {l.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
                 </div>
 
                 {error && <div className="error-modern">{error}</div>}
@@ -1011,15 +1314,220 @@ export default function SetupPage({
 
             {step === 2 && (
               <div className="setup-step fade-in">
-
                 <div className="step-body">
-                  <button className="add-resume-btn-large" onClick={handlePickResume}>
-                    <div className="plus-icon">+</div>
-                    <div className="btn-text">
-                      <p className="title">Upload New Resume</p>
-                      <p className="subtitle">PDF format recommended</p>
+                  {/* ── Mode Selection Header: Segmented Glass Switcher ── */}
+                  <div style={{
+                    display: 'flex',
+                    background: 'rgba(255, 255, 255, 0.03)',
+                    padding: '4px',
+                    borderRadius: '12px',
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    marginBottom: '16px',
+                    gap: '6px'
+                  }}>
+                    <button
+                      type="button"
+                      onClick={() => setResumeInputMode('upload')}
+                      style={{
+                        flex: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '8px',
+                        padding: '10px 0',
+                        borderRadius: '9px',
+                        fontSize: '13px',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                        background: resumeInputMode === 'upload' ? 'linear-gradient(135deg, rgba(139, 92, 246, 0.35), rgba(99, 102, 241, 0.2))' : 'transparent',
+                        border: resumeInputMode === 'upload' ? '1px solid rgba(167, 139, 250, 0.5)' : '1px solid transparent',
+                        color: resumeInputMode === 'upload' ? '#fff' : '#94a3b8',
+                        boxShadow: resumeInputMode === 'upload' ? '0 2px 10px rgba(139, 92, 246, 0.25)' : 'none'
+                      }}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
+                        <path d="M213.66,82.34l-56-56A8,8,0,0,0,152,24H56A16,16,0,0,0,40,40V216a16,16,0,0,0,16,16H200a16,16,0,0,0,16-16V88A8,8,0,0,0,213.66,82.34ZM160,51.31,188.69,80H160ZM200,216H56V40h88V88a8,8,0,0,0,8,8h48V216Zm-32-80a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,136Zm0,32a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,168Z" />
+                      </svg>
+                      <span>Upload PDF Document</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setResumeInputMode('text')}
+                      style={{
+                        flex: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '8px',
+                        padding: '10px 0',
+                        borderRadius: '9px',
+                        fontSize: '13px',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                        background: resumeInputMode === 'text' ? 'linear-gradient(135deg, rgba(139, 92, 246, 0.35), rgba(99, 102, 241, 0.2))' : 'transparent',
+                        border: resumeInputMode === 'text' ? '1px solid rgba(167, 139, 250, 0.5)' : '1px solid transparent',
+                        color: resumeInputMode === 'text' ? '#fff' : '#94a3b8',
+                        boxShadow: resumeInputMode === 'text' ? '0 2px 10px rgba(139, 92, 246, 0.25)' : 'none'
+                      }}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
+                        <path d="M227.31,73.37,182.63,28.69a16,16,0,0,0-22.63,0L36.69,152A15.86,15.86,0,0,0,32,163.31V208a16,16,0,0,0,16,16H92.69A15.86,15.86,0,0,0,104,219.31L227.31,96a16,16,0,0,0,0-22.63ZM92.69,208H48V163.31l88-88L180.69,120ZM192,108.69,147.31,64l24-24L216,84.69Z" />
+                      </svg>
+                      <span>Paste Plain Text</span>
+                    </button>
+                  </div>
+
+                  {/* ── Mode A: Upload PDF ── */}
+                  {resumeInputMode === 'upload' && (
+                    <div style={{ animation: 'fadeIn 0.2s ease' }}>
+                      <button className="add-resume-btn-large" onClick={handlePickResume}>
+                        <div className="plus-icon">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 256 256">
+                            <path d="M213.66,82.34l-56-56A8,8,0,0,0,152,24H56A16,16,0,0,0,40,40V216a16,16,0,0,0,16,16H200a16,16,0,0,0,16-16V88A8,8,0,0,0,213.66,82.34ZM160,51.31,188.69,80H160ZM200,216H56V40h88V88a8,8,0,0,0,8,8h48V216Zm-32-80a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,136Zm0,32a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,168Z" />
+                          </svg>
+                        </div>
+                        <div className="btn-text">
+                          <p className="title">Select PDF Resume</p>
+                          <p className="subtitle">Click to browse your documents (.pdf format)</p>
+                        </div>
+                      </button>
+
+                      {resumeFile && (
+                        <div className="parsing-status-modern" style={{ marginBottom: '16px' }}>
+                          <div className="ps-info">
+                            <span className="ps-icon">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256">
+                                <path d="M213.66,82.34l-56-56A8,8,0,0,0,152,24H56A16,16,0,0,0,40,40V216a16,16,0,0,0,16,16H200a16,16,0,0,0,16-16V88A8,8,0,0,0,213.66,82.34ZM160,51.31,188.69,80H160ZM200,216H56V40h88V88a8,8,0,0,0,8,8h48V216Zm-32-80a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,136Zm0,32a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,168Z" />
+                              </svg>
+                            </span>
+                            <div className="ps-info-text">
+                              <p className="ps-name">{resumeFile.name}</p>
+                              <p className="ps-meta">{((resumeFile.data.length * 3) / 4 / 1024).toFixed(1)} KB</p>
+                            </div>
+                          </div>
+                          <div className="ps-actions">
+                            <button className="secondary-btn btn-sm" onClick={() => setResumeFile(null)}>
+                              Cancel
+                            </button>
+                            <button className="parse-btn-modern" onClick={handleParseResume} disabled={isParsing}>
+                              {isParsing ? (
+                                <span className="laser-scan-loader">
+                                  <span>Parsing...</span>
+                                </span>
+                              ) : (
+                                <>
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256">
+                                    <path d="M215.79,121.79l-45.17,14.65a8,8,0,0,0-5.22,5.22l-14.65,45.17a8,8,0,0,1-15.2,0L121,141.66A8,8,0,0,0,114.34,135L69.17,120.35a8,8,0,0,1,0-15.2l45.17-14.65a8,8,0,0,0,5.22-5.22L134.21,40.11a8,8,0,0,1,15.2,0L164.06,85.28a8,8,0,0,0,5.22,5.22l45.17,14.65a8,8,0,0,1,1.34,16.64Z" />
+                                  </svg>
+                                  <span>Parse & Save</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  </button>
+                  )}
+
+                  {/* ── Mode B: Paste Plain Text ── */}
+                  {resumeInputMode === 'text' && (
+                    <div
+                      style={{
+                        background: 'rgba(255, 255, 255, 0.025)',
+                        border: '1px solid rgba(139, 92, 246, 0.25)',
+                        borderRadius: '16px',
+                        padding: '16px',
+                        marginBottom: '20px',
+                        animation: 'fadeIn 0.2s ease',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '12px'
+                      }}
+                    >
+                      <div className="field-group-modern">
+                        <label>Resume Version / Profile Title *</label>
+                        <div className="input-with-icon">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256" className="icon">
+                            <path d="M224,48H32A16,16,0,0,0,16,64V192a16,16,0,0,0,16,16H224a16,16,0,0,0,16-16V64A16,16,0,0,0,224,48ZM64,128a8,8,0,0,1,8-8H96a8,8,0,0,1,0,16H72a8,8,0,0,1,0-16Zm48,0a8,8,0,0,1,8-8h64a8,8,0,0,1,0,16H120a8,8,0,0,1,0-16Z" />
+                          </svg>
+                          <input
+                            placeholder="e.g. Senior Frontend Resume (React & TS)"
+                            value={manualResumeTitle}
+                            onChange={(e) => setManualResumeTitle(e.target.value)}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="field-group-modern">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                          <label style={{ margin: 0 }}>Resume Details / Experience Text *</label>
+                          <span style={{ fontSize: '11px', color: '#64748b' }}>{manualResumeText.length} chars</span>
+                        </div>
+                        <textarea
+                          placeholder="Paste your resume content, summary, skills, past experience, projects, or education here..."
+                          value={manualResumeText}
+                          onChange={(e) => setManualResumeText(e.target.value)}
+                          rows={5}
+                          style={{
+                            width: '100%',
+                            background: 'rgba(255, 255, 255, 0.04)',
+                            border: '1.5px solid rgba(255, 255, 255, 0.08)',
+                            borderRadius: '10px',
+                            color: '#e2e8f0',
+                            padding: '10px 12px',
+                            fontSize: '13px',
+                            resize: 'vertical',
+                            outline: 'none',
+                            fontFamily: 'inherit',
+                            lineHeight: 1.5
+                          }}
+                        />
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                        {manualResumeText && (
+                          <button
+                            type="button"
+                            className="secondary-btn btn-sm"
+                            onClick={() => { setManualResumeText(''); setManualResumeTitle('') }}
+                          >
+                            Clear
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="parse-btn-modern"
+                          onClick={handleSaveManualResume}
+                          disabled={isParsing || !manualResumeText.trim()}
+                          style={{ padding: '8px 16px', fontSize: '13px' }}
+                        >
+                          {isParsing ? (
+                            <span className="laser-scan-loader">
+                              <span>Refining...</span>
+                            </span>
+                          ) : (
+                            <>
+                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256">
+                                <path d="M215.79,121.79l-45.17,14.65a8,8,0,0,0-5.22,5.22l-14.65,45.17a8,8,0,0,1-15.2,0L121,141.66A8,8,0,0,0,114.34,135L69.17,120.35a8,8,0,0,1,0-15.2l45.17-14.65a8,8,0,0,0,5.22-5.22L134.21,40.11a8,8,0,0,1,15.2,0L164.06,85.28a8,8,0,0,0,5.22,5.22l45.17,14.65a8,8,0,0,1,1.34,16.64Z" />
+                              </svg>
+                              <span>Save & Add to Library</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Resume Library List ── */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+                    <span style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8' }}>
+                      Saved Resumes ({resumes.length})
+                    </span>
+                    <span style={{ fontSize: '11px', color: '#64748b' }}>Select active resume for AI prompt context</span>
+                  </div>
 
                   <div className="resume-list-modern">
                     {resumes.map((r) => (
@@ -1038,152 +1546,385 @@ export default function SetupPage({
                         </div>
                         <div className="ri-info">
                           <p className="ri-name">{r.name}</p>
-                          <p className="ri-meta">ID: {r.id.substring(r.id.length - 4)}</p>
+                          <p className="ri-meta">ID: {r.id.substring(r.id.length - 4)} • {r.text.length} chars</p>
                         </div>
-                        {selectedResumeId === r.id && <div className="ri-active-dot" />}
-                        <button className="ri-delete" onClick={(e) => handleDeleteResume(r.id, e)}>×</button>
+                        {selectedResumeId === r.id && (
+                          <span style={{ fontSize: '11px', color: '#a78bfa', fontWeight: 600, background: 'rgba(167,139,250,0.15)', padding: '2px 8px', borderRadius: '6px', marginRight: '4px' }}>
+                            ACTIVE
+                          </span>
+                        )}
+                        <Tooltip content="Delete Resume" position="left">
+                          <button className="ri-delete" onClick={(e) => handleDeleteResume(r.id, e)}>×</button>
+                        </Tooltip>
                       </div>
                     ))}
                     {resumes.length === 0 && !resumeFile && (
                       <div className="empty-state-modern">
-                        <p>No resumes uploaded yet.</p>
+                        <p>No resumes added yet. Upload a PDF or paste text above.</p>
                       </div>
                     )}
                   </div>
-
-                  {resumeFile && (
-                    <div className="parsing-status-modern">
-                      <div className="ps-info">
-                        <span className="ps-icon">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256">
-                            <path d="M213.66,82.34l-56-56A8,8,0,0,0,152,24H56A16,16,0,0,0,40,40V216a16,16,0,0,0,16,16H200a16,16,0,0,0,16-16V88A8,8,0,0,0,213.66,82.34ZM160,51.31,188.69,80H160ZM200,216H56V40h88V88a8,8,0,0,0,8,8h48V216Zm-32-80a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,136Zm0,32a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,168Z" />
-                          </svg>
-                        </span>
-                        <span className="ps-name">{resumeFile.name}</span>
-                      </div>
-                      <div className="ps-actions">
-                        <button className="secondary-btn btn-sm" onClick={() => setResumeFile(null)}>
-                          Cancel
-                        </button>
-                        <button className="parse-btn-modern" onClick={handleParseResume} disabled={isParsing}>
-                          {isParsing ? 'Processing...' : (
-                            <>
-                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256">
-                                <path d="M215.79,121.79l-45.17,14.65a8,8,0,0,0-5.22,5.22l-14.65,45.17a8,8,0,0,1-15.2,0L121,141.66A8,8,0,0,0,114.34,135L69.17,120.35a8,8,0,0,1,0-15.2l45.17-14.65a8,8,0,0,0,5.22-5.22L134.21,40.11a8,8,0,0,1,15.2,0L164.06,85.28a8,8,0,0,0,5.22,5.22l45.17,14.65a8,8,0,0,1,1.34,16.64Z" />
-                              </svg>
-                              <span>Parse</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  )}
                 </div>
 
                 {error && <div className="error-modern">{error}</div>}
               </div>
             )}
 
-            {step === 3 && (
+            {step === 'knowledge_base' && (
               <div className="setup-step fade-in">
+                {showKbAddForm ? (
+                  /* ── Form View: Glassmorphic Material Creation Form ── */
+                  <div className="kb-form-glass">
+                    <div className="kb-form-header">
+                      <div className="kb-form-header-left">
+                        <div className="kb-form-header-icon">
+                          📚
+                        </div>
+                        <div>
+                          <h3 className="kb-form-header-title">Add Preparation Material</h3>
+                          <p className="kb-form-header-sub">Notes, cheat sheets & QA docs for live AI matching</p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="uiverse-cancel-btn"
+                        style={{ height: '28px', padding: '0 12px', fontSize: '11.5px' }}
+                        onClick={() => setShowKbAddForm(false)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
 
-                <div className="step-body">
-                  <div className="dashboard-summary-grid">
-                    <div className="summary-card">
-                      <p className="card-label">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256" className="opacity-70">
-                          <path d="M234.38,210a123.36,123.36,0,0,0-60.78-53.23,72,72,0,1,0-91.2,0A123.36,123.36,0,0,0,21.62,210a8,8,0,1,0,13.85,8C49.13,193.53,77.37,180,109,177.8l12.16,30.4a8,8,0,0,0,14.8,0L148.12,177.8c31.63,2.2,59.87,15.73,73.53,40.2a8,8,0,1,0,13.73-8ZM72,96a56,56,0,1,1,56,56A56.06,56.06,0,0,1,72,96Zm56,88.65L120.35,168h15.3ZM136,160h0Z" />
+                    <div className="field-group-modern">
+                      <label>Title / Topic Name *</label>
+                      <div className="input-with-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256" className="icon">
+                          <path d="M224,48H32A16,16,0,0,0,16,64V192a16,16,0,0,0,16,16H224a16,16,0,0,0,16-16V64A16,16,0,0,0,224,48ZM64,128a8,8,0,0,1,8-8H96a8,8,0,0,1,0,16H72a8,8,0,0,1,0-16Zm48,0a8,8,0,0,1,8-8h64a8,8,0,0,1,0,16H120a8,8,0,0,1,0-16Z" />
                         </svg>
-                        <span>Profile</span>
-                      </p>
-                      <p className="card-val">{name}</p>
-                      <p className="card-sub">{role} @ {company || 'N/A'}</p>
+                        <input
+                          type="text"
+                          placeholder="e.g. Google System Design, Behavioral QA, Cheat Sheet"
+                          value={newKbTitle}
+                          onChange={(e) => setNewKbTitle(e.target.value)}
+                          disabled={kbLoading}
+                        />
+                      </div>
                     </div>
-                    <div className="summary-card">
-                      <p className="card-label">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256" className="opacity-70">
-                          <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm87.63,96H175.8c-1.42-28.28-10.29-55.74-25.65-78.1A88.2,88.2,0,0,1,215.63,120ZM128,215.89C109,193.14,97.15,162.06,96.12,128h63.76C158.85,162.06,147,193.14,128,215.89Zm0-103.78C109,89.06,120.85,58,128,40.11,147,62.86,158.85,93.94,159.88,112ZM105.85,41.9C90.49,64.26,81.62,91.72,80.2,120H40.37A88.2,88.2,0,0,1,105.85,41.9ZM40.37,136H80.2c1.42,28.28,10.29,55.74,25.65,78.1A88.2,88.2,0,0,1,40.37,136Zm109.78,78.1c15.36-22.36,24.23-49.82,25.65-78.1h39.83A88.2,88.2,0,0,1,150.15,214.1Z" />
+
+                    <div className="field-group-modern">
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                        <label style={{ margin: 0 }}>Content (Paste Plain Text or Q&A) *</label>
+                        <span style={{ fontSize: '10.5px', color: newKbContent.length > 0 ? '#a78bfa' : '#64748b', fontWeight: 600 }}>
+                          {newKbContent.length.toLocaleString()} characters
+                        </span>
+                      </div>
+                      <div className="input-with-icon" style={{ alignItems: 'flex-start' }}>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256" className="icon" style={{ top: '14px' }}>
+                          <path d="M208,32H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32Zm-16,48H64V48H192ZM64,80H192v96H64Zm128,128H64V192H192Z" />
                         </svg>
-                        <span>Settings</span>
-                      </p>
-                      <p className="card-val">{LANGUAGES.find((l) => l.code === language)?.label}</p>
-                      <p className="card-sub">{autoAnswer ? 'Auto Answer' : 'Manual Mode'}</p>
+                        <textarea
+                          className="kb-textarea-modern"
+                          placeholder="Paste interview questions and answers, documentation, code snippets, or cheat sheets here..."
+                          value={newKbContent}
+                          onChange={(e) => setNewKbContent(e.target.value)}
+                          disabled={kbLoading}
+                          rows={6}
+                        />
+                      </div>
                     </div>
-                    <div className="summary-card">
-                      <p className="card-label">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256" className="opacity-70">
-                          <path d="M213.66,82.34l-56-56A8,8,0,0,0,152,24H56A16,16,0,0,0,40,40V216a16,16,0,0,0,16,16H200a16,16,0,0,0,16-16V88A8,8,0,0,0,213.66,82.34ZM160,51.31,188.69,80H160ZM200,216H56V40h88V88a8,8,0,0,0,8,8h48V216Z" />
-                        </svg>
-                        <span>Selected Resume</span>
-                      </p>
-                      <p className="card-val">
-                        {resumes.find((r) => r.id === selectedResumeId)?.name || 'None'}
-                      </p>
-                      <p className="card-sub">
-                        ID: {selectedResumeId ? selectedResumeId.substring(selectedResumeId.length - 4) : 'N/A'}
-                      </p>
+
+                    <div className="kb-form-hint">
+                      <span>💡</span>
+                      <span>AI uses on-device vector indexing to instantly retrieve and prioritize this content when asked relevant interview questions.</span>
                     </div>
-                    <div className="summary-card">
-                      <p className="card-label">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256" className="opacity-70">
-                          <path d="M216,48V208a16,16,0,0,1-16,16H56a16,16,0,0,1-16-16V48A16,16,0,0,1,56,32h16V24a8,8,0,0,1,16,0v8h80V24a8,8,0,0,1,16,0v8h16A16,16,0,0,1,216,48ZM176,120a12,12,0,1,0-12,12A12,12,0,0,0,176,120ZM92,120a12,12,0,1,0,12-12A12,12,0,0,0,92,120Zm44,40a28,28,0,0,1,28,28,8,8,0,0,1-16,0,12,12,0,0,0-24,0,8,8,0,0,1-16,0A28,28,0,0,1,136,160Z" />
-                        </svg>
-                        <span>Account Status</span>
-                      </p>
-                      <p className="card-val">
-                        {sessionsBalance > 0 ? `${sessionsBalance} Sessions` : 'Interview Trial'}
-                      </p>
-                      <p className="card-sub">
-                        {sessionsBalance > 0 ? 'Full Access' : `${formatTime(trialRemainingSeconds)} Remaining`}
-                      </p>
+
+                    <div style={{ display: 'flex', gap: '10px', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
+                      <div>
+                        {newKbContent && (
+                          <button
+                            type="button"
+                            className="secondary-btn btn-sm"
+                            style={{ height: '28px', fontSize: '11px' }}
+                            onClick={() => { setNewKbTitle(''); setNewKbContent('') }}
+                            disabled={kbLoading}
+                          >
+                            Clear All
+                          </button>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          className="uiverse-cancel-btn"
+                          onClick={() => setShowKbAddForm(false)}
+                          disabled={kbLoading}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="kb-submit-btn"
+                          onClick={handleSaveAndProcessKb}
+                          disabled={kbLoading || !newKbTitle.trim() || !newKbContent.trim()}
+                        >
+                          {kbLoading ? (
+                            <>
+                              <svg className="animate-spin" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}>
+                                <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                              </svg>
+                              <span>Processing Vector Index...</span>
+                            </>
+                          ) : (
+                            <>
+                              <svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor">
+                                <path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z" />
+                              </svg>
+                              <span>Save & Index Material</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  /* ── Dashboard View: Modern Glassmorphism Material Cards Grid ── */
+                  <div className="material-dashboard">
+                    <div className="material-dashboard-header">
+                      <span className="material-dashboard-title">Real-time Content Matching</span>
+                      <Tooltip content="Add New Material" position="left">
+                        <button
+                          type="button"
+                          className="zyro-add-material-btn no-drag"
+                          onClick={() => setShowKbAddForm(true)}
+                        >
+                          <svg
+                            className="zyro-add-material-svg"
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              d="M12 22C17.5 22 22 17.5 22 12C22 6.5 17.5 2 12 2C6.5 2 2 6.5 2 12C2 17.5 6.5 22 12 22Z"
+                              strokeWidth="1.8"
+                            />
+                            <path d="M8 12H16" strokeWidth="2" strokeLinecap="round" />
+                            <path d="M12 16V8" strokeWidth="2" strokeLinecap="round" />
+                          </svg>
+                        </button>
+                      </Tooltip>
+                    </div>
+
+                    <div className="material-grid">
+                      {/* Default Card: None / General AI Mode */}
+                      <div
+                        className={`material-card ${activeKbId === '' ? 'active' : ''}`}
+                        onClick={() => {
+                          setActiveKbId('')
+                          saveData({ activeKbId: '' })
+                        }}
+                      >
+                        <div>
+                          <div className="material-card-header">
+                            <h4 className="material-card-title">General AI Mode</h4>
+                            <span className={`material-card-badge ${activeKbId === '' ? 'active' : 'default'}`}>
+                              {activeKbId === '' ? 'Active' : 'Default'}
+                            </span>
+                          </div>
+                          <p className="material-card-body">Standard interview assistant mode using general knowledge & candidate resume.</p>
+                        </div>
+                        <div className="material-card-footer">
+                          <span className="material-card-meta">Full AI Capability</span>
+                          {activeKbId === '' && (
+                            <span style={{ fontSize: '11px', color: '#8b5cf6', fontWeight: 600 }}>Selected</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Custom Saved Knowledge Base Cards */}
+                      {kbs.map((kb) => {
+                        const isActive = activeKbId === kb.id
+                        return (
+                          <div
+                            key={kb.id}
+                            className={`material-card ${isActive ? 'active' : ''}`}
+                            onClick={() => {
+                              setActiveKbId(kb.id)
+                              saveData({ activeKbId: kb.id })
+                            }}
+                          >
+                            <div>
+                              <div className="material-card-header">
+                                <h4 className="material-card-title">{kb.title}</h4>
+                                <span className={`material-card-badge ${isActive ? 'active' : 'default'}`}>
+                                  {isActive ? 'Active' : 'Ready'}
+                                </span>
+                              </div>
+                              <p className="material-card-body">On-device vector indexed material for real-time interview lookup.</p>
+                            </div>
+                            <div className="material-card-footer">
+                              <span className="material-card-meta">Local Vector Storage</span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                {isActive && (
+                                  <span style={{ fontSize: '11px', color: '#8b5cf6', fontWeight: 600 }}>Selected</span>
+                                )}
+                                <Tooltip content="Delete Material" position="left">
+                                  <button
+                                    className="material-card-delete"
+                                    onClick={(e) => handleDeleteKb(kb.id, e)}
+                                  >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                      <path d="M18 6 6 18M6 6l12 12" />
+                                    </svg>
+                                  </button>
+                                </Tooltip>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                      {/* Empty State Add Card if No Custom Material Added */}
+                      {kbs.length === 0 && (
+                        <div
+                          className="material-card"
+                          style={{ borderStyle: 'dashed', background: 'rgba(255, 255, 255, 0.01)', justifyContent: 'center', alignItems: 'center', textAlign: 'center', padding: '12px' }}
+                          onClick={() => setShowKbAddForm(true)}
+                        >
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                            <div className="zyro-add-material-btn" style={{ pointerEvents: 'none' }}>
+                              <svg className="zyro-add-material-svg" style={{ width: 32, height: 32 }} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                                <path d="M12 22C17.5 22 22 17.5 22 12C22 6.5 17.5 2 12 2C6.5 2 2 6.5 2 12C2 17.5 6.5 22 12 22Z" strokeWidth="1.8" />
+                                <path d="M8 12H16" strokeWidth="2" strokeLinecap="round" />
+                                <path d="M12 16V8" strokeWidth="2" strokeLinecap="round" />
+                              </svg>
+                            </div>
+                            <h4 style={{ fontSize: '11.5px', fontWeight: 600, color: '#f1f5f9', margin: 0 }}>Add Material</h4>
+                            <p style={{ fontSize: '10px', color: '#64748b', margin: 0, lineHeight: 1.3 }}>Cheat sheets, notes & QA docs</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {error && <div className="error-modern" style={{ marginTop: '12px' }}>{error}</div>}
+              </div>
+            )}
+
+            {step === 3 && (
+              <div className="setup-step fade-in final-check-container">
+                {/* Upper Section: 4 Summary Stats Cards (2x2 Grid) */}
+                <div className="final-check-summary-grid">
+                  {/* Card 1: Profile */}
+                  <div className="final-check-card">
+                    <div className="fc-card-header profile">
+                      <svg width="12" height="12" fill="currentColor" viewBox="0 0 256 256">
+                        <path d="M234.38,210a123.36,123.36,0,0,0-60.78-53.23,72,72,0,1,0-91.2,0A123.36,123.36,0,0,0,21.62,210a8,8,0,1,0,13.85,8C49.13,193.53,77.37,180,109,177.8l12.16,30.4a8,8,0,0,0,14.8,0L148.12,177.8c31.63,2.2,59.87,15.73,73.53,40.2a8,8,0,1,0,13.73-8ZM72,96a56,56,0,1,1,56,56A56.06,56.06,0,0,1,72,96Z" />
+                      </svg>
+                      <span>Profile</span>
+                    </div>
+                    <div className="fc-card-title">{name || 'Your Profile'}</div>
+                    <div className="fc-card-sub">{role ? `${role} @ ${company || 'N/A'}` : 'Profile configured'}</div>
+                  </div>
+
+                  {/* Card 2: Attached Resume */}
+                  <div className="final-check-card">
+                    <div className="fc-card-header resume">
+                      <svg width="12" height="12" fill="currentColor" viewBox="0 0 256 256">
+                        <path d="M213.66,82.34l-56-56A8,8,0,0,0,152,24H56A16,16,0,0,0,40,40V216a16,16,0,0,0,16,16H200a16,16,0,0,0,16-16V88A8,8,0,0,0,213.66,82.34Z" />
+                      </svg>
+                      <span>Resume</span>
+                    </div>
+                    <div className="fc-card-title">
+                      {resumes.find((r) => r.id === selectedResumeId)?.name || 'Default Resume'}
+                    </div>
+                    <div className="fc-card-sub">
+                      {selectedResumeId ? '✓ Attached & Indexed' : 'No Resume Selected'}
                     </div>
                   </div>
 
-                  <div className="shortcut-guide-modern">
-                    <p className="guide-title">Interview Panel Controls</p>
-                    <div className="guide-items">
-                      <div className="gi-item">
-                        <div className="gi-label">
-                          <span className="gi-icon">🎙️</span>
-                          <span>Listen / Stop</span>
-                        </div>
-                        <kbd>Ctrl + Space</kbd>
-                      </div>
-                      <div className="gi-item">
-                        <div className="gi-label">
-                          <span className="gi-icon">🔍</span>
-                          <span>Screen Scan</span>
-                        </div>
-                        <kbd>Ctrl + S</kbd>
-                      </div>
-                      <div className="gi-item">
-                        <div className="gi-label">
-                          <span className="gi-icon">🤖</span>
-                          <span>Auto-Answer</span>
-                        </div>
-                        <kbd>Ctrl + A</kbd>
-                      </div>
-                      <div className="gi-item">
-                        <div className="gi-label">
-                          <span className="gi-icon">🔍</span>
-                          <span>Zoom +/-/0</span>
-                        </div>
-                        <kbd>Ctrl + [+/-/0]</kbd>
-                      </div>
+                  {/* Card 3: Preferred Coding Language */}
+                  <div className="final-check-card">
+                    <div className="fc-card-header language">
+                      <svg width="12" height="12" fill="currentColor" viewBox="0 0 256 256">
+                        <path d="M69.66,181.66l-48-48a8,8,0,0,1,0-11.32l48-48a8,8,0,0,1,11.32,11.32L39.31,128l41.67,41.66a8,8,0,0,1-11.32,11.32Zm116.68,0a8,8,0,0,0,11.32,0l48-48a8,8,0,0,0,0-11.32l-48-48a8,8,0,0,0-11.32,11.32L216.69,128l-41.67,41.66A8,8,0,0,0,186.34,181.66Zm-54.68,13.79,32-144a8,8,0,0,0-15.32-3.4l-32,144a8,8,0,0,0,15.32,3.4Z" />
+                      </svg>
+                      <span>Coding Syntax</span>
                     </div>
+                    <div className="fc-card-title">{codingLanguage || 'Python'}</div>
+                    <div className="fc-card-sub">DSA & Solution Architecture</div>
+                  </div>
 
-                    <p className="guide-title" style={{ marginTop: '16px', borderTop: '1px solid rgba(139, 92, 246, 0.1)', paddingTop: '12px' }}>
-                      Overlay Navigation (Local Focus Only)
-                    </p>
-                    <div className="guide-items">
-                      <div className="gi-item">
-                        <div className="gi-label">
-                          <span className="gi-icon">↕️</span>
-                          <span>Scroll Up / Down</span>
-                        </div>
-                        <kbd>ArrowUp / ArrowDown</kbd>
-                      </div>
+                  {/* Card 4: AI Mode */}
+                  <div className="final-check-card">
+                    <div className="fc-card-header mode">
+                      <svg width="12" height="12" fill="currentColor" viewBox="0 0 256 256">
+                        <path d="M208,32H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32ZM128,160a32,32,0,1,1,32-32A32,32,0,0,1,128,160Z" />
+                      </svg>
+                      <span>AI Mode</span>
                     </div>
+                    <div className="fc-card-title">
+                      {autoAnswer ? '⚡ Auto-Answer Active' : '🎯 Manual Trigger'}
+                    </div>
+                    <div className="fc-card-sub">
+                      {autoAnswer ? 'Instant automatic responses' : 'Press hotkey for answers'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Lower Section: Global Hotkeys Control Panel */}
+                <div className="final-check-shortcuts-panel">
+                  <div className="fc-shortcuts-header">
+                    <span>⚡ Overlay Shortcuts & Controls</span>
+                    <span style={{ fontSize: '9.5px', color: '#64748b' }}>Active During Live Interview</span>
+                  </div>
+
+                  <div className="fc-shortcuts-grid-2col">
+                    <ShortcutTeleprompterCard
+                      icon="👁️"
+                      title="Disappear Mode"
+                      keyLabel="Ctrl+B"
+                      keyColor="purple"
+                      desc="Instant stealth toggle — hides overlay window from screen immediately during live camera checks & screen sharing"
+                    />
+                    <ShortcutTeleprompterCard
+                      icon="🛡️"
+                      title="Stealth Protection"
+                      keyLabel="Ctrl+N"
+                      keyColor="blue"
+                      desc="Hardware-level screen protection shield — prevents Zoom, Teams, and Google Meet from recording or capturing this window"
+                    />
+                    <ShortcutTeleprompterCard
+                      icon="🎙️"
+                      title="Speech Audio"
+                      keyLabel="Ctrl+Space"
+                      keyColor="emerald"
+                      desc="Real-time dual audio capture — listens to interviewer questions from system audio or microphone and automatically transcribes"
+                    />
+                    <ShortcutTeleprompterCard
+                      icon="🔍"
+                      title="Screen OCR Scan"
+                      keyLabel="Ctrl+S"
+                      keyColor="amber"
+                      desc="AI vision screen grabber — instantly analyzes coding challenges, diagrams, and technical interview questions from your screen"
+                    />
+                    <ShortcutTeleprompterCard
+                      icon="🤖"
+                      title="Auto-Answer Mode"
+                      keyLabel="Ctrl+A"
+                      keyColor="pink"
+                      desc="Hands-free intelligent AI engine — automatically detects completed questions and generates context-aware answers without manual keypresses"
+                    />
+                    <ShortcutTeleprompterCard
+                      icon="↕️"
+                      title="Scroll & Zoom"
+                      keyLabel={
+                        <div style={{ display: 'flex', gap: '3px' }}>
+                          <span className="fc-sc-key slate">↑↓</span>
+                          <span className="fc-sc-key slate">Ctrl±</span>
+                        </div>
+                      }
+                      keyColor="slate"
+                      desc="Quick reading navigation — use up/down arrow keys to scroll through AI answers and Ctrl +/- to adjust font scale dynamically"
+                    />
                   </div>
                 </div>
 
@@ -1192,111 +1933,95 @@ export default function SetupPage({
             )}
             {showPaywall && (
               <div className="paywall-overlay fade-in">
-                <div className="card paywall-card relative">
-                  {/* Decorative background glow */}
-                  <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-32 bg-indigo-500/20 blur-[50px] pointer-events-none" />
-                  
-                  <div className="paywall-badge">🚀 PREMIUM UPGRADE</div>
-                  
-                  <div className="paywall-benefits">
-                    <div className="benefit-item">
-                      <div className="benefit-icon-wrapper">✨</div>
-                      <span><strong>Unlimited</strong> Session Time</span>
-                    </div>
-                    <div className="benefit-item">
-                      <div className="benefit-icon-wrapper">🧠</div>
-                      <span><strong>AI Models</strong> (GPT-5 & Claude Support)</span>
-                    </div>
-                    <div className="benefit-item">
-                      <div className="benefit-icon-wrapper">⚡</div>
-                      <span><strong>Real-time</strong> Fast Answers</span>
-                    </div>
-                    <div className="benefit-item">
-                      <div className="benefit-icon-wrapper">🛠️</div>
-                      <span><strong>24/7</strong> Priority Support</span>
-                    </div>
+                <div className="paywall-card glass-modal">
+                  <button className="paywall-close" onClick={() => setShowPaywall(false)}>×</button>
+
+                  <div className="paywall-badge-pill">
+                    <span className="paywall-dot" />
+                    <span>0 Sessions Left</span>
                   </div>
 
-                  <div className="btn-row vertical">
-                    <button
-                      className="primary-action-btn shimmer-btn"
-                      onClick={() =>
-                        window.api.openExternal('https://zyro-interview-website.vercel.app/#/dashboard/billing')
-                      }
-                    >
-                      <div className="btn-shine" />
-                      🎯 Choose Your Plan
-                    </button>
-                    <button className="secondary-btn-flat" onClick={() => setShowPaywall(false)}>
-                      Maybe later, continue exploring
-                    </button>
+                  <h3 className="paywall-title">Refill Sessions</h3>
+                  <p className="paywall-sub">Get more sessions to start live AI interviews.</p>
+
+                  <div className="paywall-features-grid">
+                    <div className="paywall-feat">⚡ Real-time AI</div>
+                    <div className="paywall-feat">🔒 100% Stealth</div>
+                    <div className="paywall-feat">📁 Local RAG</div>
+                    <div className="paywall-feat">🗣️ Hindi & English</div>
                   </div>
+
+                  <button
+                    className="paywall-action-btn"
+                    onClick={() =>
+                      window.api.openExternal('https://zyro-ai.in/#/dashboard/billing')
+                    }
+                  >
+                    <span>Get Sessions</span>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                  </button>
+
+                  <button className="paywall-dismiss-btn" onClick={() => setShowPaywall(false)}>
+                    Dismiss
+                  </button>
                 </div>
               </div>
             )}
+
           </div>
 
-          {step !== 'phone' && (
-            <footer className="content-footer-enhanced">
-              {step === 1 && (
-                <div className="footer-btn-row">
-                  <div /> {/* Spacer to push button to the right */}
-                  <button
-                    className="primary-action-btn shimmer-btn"
-                    onClick={() => {
-                      if (!name || !role) {
-                        setError('Name and Role are required.')
-                        return
-                      }
-                      setError('')
-                      setStep(2)
-                    }}
-                  >
-                    <div className="btn-shine" />
-                    <span>{resumes.length > 0 ? '✓ View My Library' : 'Submit'}</span>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
-                      <path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" />
-                    </svg>
-                  </button>
-                </div>
+          <footer className="content-footer-enhanced">
+            <div className="footer-btn-row">
+              {step !== 1 && (
+                <button
+                  type="button"
+                  className="secondary-btn footer-nav-btn footer-back-btn"
+                  onClick={() => {
+                    if (step === 2) setStep(1)
+                    else if (step === 'knowledge_base') setStep(2)
+                    else if (step === 3) setStep('knowledge_base')
+                  }}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256">
+                    <path d="M224,128a8,8,0,0,1-8,8H59.31l58.35,58.34a8,8,0,0,1-11.32,11.32l-72-72a8,8,0,0,1,0-11.32l72-72a8,8,0,0,1,11.32,11.32L59.31,120H216A8,8,0,0,1,224,128Z" />
+                  </svg>
+                  <span>Back</span>
+                </button>
               )}
-              {step === 2 && (
-                <div className="footer-btn-row">
-                  <button className="secondary-btn" onClick={() => setStep(1)}>
-                    ← Back
-                  </button>
-                  <button
-                    className="primary-action-btn shimmer-btn"
-                    onClick={() => setStep(3)}
-                    disabled={!selectedResumeId}
-                  >
-                    <div className="btn-shine" />
-                    <span>{selectedResumeId ? 'Review & Start' : 'Select Resume'}</span>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
-                      <path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-              {step === 3 && (
-                <div className="footer-btn-row">
-                  <button className="secondary-btn" onClick={() => setStep(2)}>
-                    ← Back
-                  </button>
-                  <button
-                    className="primary-action-btn success shimmer-btn"
-                    onClick={handleStartInterview}
-                  >
-                    <div className="btn-shine" />
-                    <span>Start Interview Session</span>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
-                      <path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-            </footer>
-          )}
+
+              <button
+                type="button"
+                className={`primary-action-btn shimmer-btn footer-nav-btn footer-next-btn ${step === 3 ? 'success' : ''}`}
+                onClick={() => {
+                  if (step === 1) {
+                    if (!name || !role) {
+                      setError('Name and Role are required.')
+                      return
+                    }
+                    setError('')
+                    setStep(2)
+                  } else if (step === 2) {
+                    setStep('knowledge_base')
+                  } else if (step === 'knowledge_base') {
+                    setStep(3)
+                  } else if (step === 3) {
+                    handleStartInterview()
+                  }
+                }}
+              >
+                <div className="btn-shine" />
+                <span>
+                  {step === 1 && 'Next'}
+                  {step === 2 && 'Next'}
+                  {step === 'knowledge_base' && 'Next'}
+                  {step === 3 && 'Start Interview'}
+                </span>
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256">
+                  <path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" />
+                </svg>
+              </button>
+            </div>
+          </footer>
         </section>
       </div>
     </div>

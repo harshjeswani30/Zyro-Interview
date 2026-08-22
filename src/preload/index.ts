@@ -33,8 +33,8 @@ const api = {
     sessionType: string
   ): Promise<void> =>
     ipcRenderer.invoke('supabase-log-session', { durationSeconds, startedAt, sessionType }),
-  supabaseManualSync: (accessToken: string, userId?: string): void =>
-    ipcRenderer.send('supabase-manual-sync', { accessToken, userId }),
+  supabaseManualSync: (accessToken: string, refreshToken?: string, userId?: string): Promise<{ ok: boolean; userId: string | null }> =>
+    ipcRenderer.invoke('supabase-manual-sync', { accessToken, refreshToken, userId }),
   // ── Setup window ─────────────────────────────────────────
   pickResume: (): Promise<{ path: string; data: string; name: string } | null> =>
     ipcRenderer.invoke('pick-resume'),
@@ -66,16 +66,36 @@ const api = {
   }): Promise<string> => ipcRenderer.invoke('generate-answer', data),
   analyzeScreen: (data: { systemPrompt: string }): Promise<string> =>
     ipcRenderer.invoke('analyze-screen', data),
+  captureScreenshot: (): Promise<string> => ipcRenderer.invoke('capture-screenshot'),
+  queryVision: (data: { systemPrompt: string; base64Image: string }): Promise<string> =>
+    ipcRenderer.invoke('query-vision', data),
+  extractQuestionFromImage: (data: { base64Image: string }): Promise<string> =>
+    ipcRenderer.invoke('extract-question-from-image', data),
   toggleCompact: (minimized: boolean): void => ipcRenderer.send('toggle-compact', minimized),
   startInterview: (sessionData: unknown): Promise<{ allowed: boolean; reason?: string }> =>
     ipcRenderer.invoke('start-interview', sessionData),
   quitApp: (): void => ipcRenderer.send('quit-app'),
   reloadWindow: (): void => ipcRenderer.send('reload-window'),
+  minimizeWindow: (): void => ipcRenderer.send('minimize-window'),
   closeWindow: (): void => ipcRenderer.send('close-window'),
   installUpdate: (): Promise<void> => ipcRenderer.invoke('install-update'),
   downloadUpdate: (): Promise<void> => ipcRenderer.invoke('download-update'),
   // ── Overlay window ────────────────────────────────────────
   getSession: (): Promise<unknown> => ipcRenderer.invoke('get-session'),
+  getDeepgramKey: (): Promise<string> => ipcRenderer.invoke('get-deepgram-key'),
+  getSupabaseToken: (): Promise<string | null> => ipcRenderer.invoke('get-supabase-token'),
+  getSupabaseSessionData: (): Promise<{ accessToken: string | null; refreshToken: string | null }> => ipcRenderer.invoke('get-supabase-session-data'),
+  // ── Knowledge Base (via main process — always uses valid user token) ───
+  kbList: (): Promise<{ data: { id: string; title: string; created_at: string }[] | null; error: string | null }> =>
+    ipcRenderer.invoke('kb-list'),
+  kbSave: (args: { title: string; content: string }): Promise<{ data: { id: string; title: string; created_at: string } | null; error: string | null }> =>
+    ipcRenderer.invoke('kb-save', args),
+  kbDelete: (kbId: string): Promise<{ error: string | null }> =>
+    ipcRenderer.invoke('kb-delete', kbId),
+  indexLocalContent: (source: string, content: string): Promise<number> =>
+    ipcRenderer.invoke('index-local-content', { source, content }),
+  searchLocalVectorDb: (query: string, topK?: number): Promise<string[]> =>
+    ipcRenderer.invoke('search-local-vector-db', { query, topK }),
   getScreenSize: (): Promise<{ width: number; height: number }> =>
     ipcRenderer.invoke('get-screen-size'),
   getDesktopSources: (): Promise<unknown[]> => ipcRenderer.invoke('get-desktop-sources'),
@@ -92,6 +112,8 @@ const api = {
   setZoom: (level: number) => ipcRenderer.send('set-zoom', level),
   setOverlaySize: (width: number, height: number) =>
     ipcRenderer.send('set-overlay-size', { width, height }),
+  toggleScreenProtection: (enabled?: boolean) =>
+    ipcRenderer.send('toggle-screen-protection', enabled),
   openExternal: (url: string) => ipcRenderer.send('open-external', url),
   resizeMainWindow: (width: number, height: number): Promise<void> =>
     ipcRenderer.invoke('resize-main-window', { width, height }),
@@ -145,6 +167,13 @@ const api = {
       ipcRenderer.removeListener('init-session', listener)
     }
   },
+  onSessionExpired: (cb: () => void): (() => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('session-expired', listener)
+    return (): void => {
+      ipcRenderer.removeListener('session-expired', listener)
+    }
+  },
   // Auto-updater status events
   onUpdateAvailable: (cb: (info: unknown) => void): (() => void) => {
     const listener = (_e: unknown, info: unknown): void => cb(info)
@@ -182,6 +211,20 @@ const api = {
     ipcRenderer.on('auth-callback-success', listener)
     return (): void => {
       ipcRenderer.removeListener('auth-callback-success', listener)
+    }
+  },
+  onOverlayToggle: (cb: (visible: boolean) => void): (() => void) => {
+    const listener = (_e: unknown, visible: boolean): void => cb(visible)
+    ipcRenderer.on('overlay-toggled', listener)
+    return (): void => {
+      ipcRenderer.removeListener('overlay-toggled', listener)
+    }
+  },
+  onScreenProtectionToggle: (cb: (enabled: boolean) => void): (() => void) => {
+    const listener = (_e: unknown, enabled: boolean): void => cb(enabled)
+    ipcRenderer.on('screen-protection-toggled', listener)
+    return (): void => {
+      ipcRenderer.removeListener('screen-protection-toggled', listener)
     }
   }
 }

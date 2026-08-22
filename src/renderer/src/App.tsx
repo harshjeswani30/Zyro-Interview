@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import SetupPage from './components/SetupPage'
 import OverlayPage from './components/OverlayPage'
 import { DesktopLoginPage } from './components/DesktopLoginPage'
+import PegtopLoader from './components/PegtopLoader'
 import { supabase } from './lib/supabase'
 import './assets/main.css'
 
@@ -43,6 +44,16 @@ function App(): React.ReactElement {
     }
   }, [])
 
+  // Listen for session expiry from main process (stale/reused refresh token)
+  useEffect(() => {
+    const cleanup = window.api.onSessionExpired(() => {
+      console.log('[App] Session expired — returning to login')
+      setUserProfile(null)
+      setPage('login')
+    })
+    return cleanup
+  }, [])
+
   // ── Real-time subscription ──────────────────────────────────
   useEffect(() => {
     if (!userProfile?.id) return
@@ -69,18 +80,36 @@ function App(): React.ReactElement {
     }
   }, [userProfile?.id])
 
-  // Background profile refresh every 30 seconds (catches purchases made on website)
+  // Real-time automatic profile & session balance sync
   useEffect(() => {
     if (!userProfile?.id) return
-    const interval = setInterval(() => {
+
+    const syncProfile = (): void => {
       window.api.supabaseGetProfile()
         .then((profile) => {
-          if (profile) setUserProfile((prev) => ({ ...prev, ...profile }) as UserProfile)
+          if (profile) {
+            setUserProfile((prev) => ({ ...prev, ...profile }) as UserProfile)
+          } else {
+            // null means session is dead (401 + token refresh failed) — stop polling and go to login
+            console.warn('[App] Profile sync returned null — session may have expired')
+          }
         })
         .catch(() => {
-          /* silent */
+          /* silent — network errors are transient */
         })
-    }, 30000)
+    }
+
+    // Auto-sync in background every 6 seconds
+    const interval = setInterval(syncProfile, 6000)
+
+    // Immediate sync on window focus (e.g. user returns from browser purchase)
+    const handleFocus = (): void => syncProfile()
+    const handleVisibility = (): void => {
+      if (document.visibilityState === 'visible') syncProfile()
+    }
+
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibility)
 
     // Also listen for manual refresh events from child components
     const handleForceRefresh = (e: CustomEvent): void => {
@@ -92,6 +121,8 @@ function App(): React.ReactElement {
 
     return () => {
       clearInterval(interval)
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener('visibilitychange', handleVisibility)
       window.removeEventListener('force-profile-refresh', handleForceRefresh as EventListener)
     }
   }, [userProfile?.id])
@@ -106,26 +137,23 @@ function App(): React.ReactElement {
     setPage('login')
   }
 
-  if (page === 'loading') return (
-    <div style={{
-      width: '100vw',
-      height: '100vh',
-      background: '#0a0a1a',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center'
-    }}>
-      <div style={{
-        width: 32,
-        height: 32,
-        border: '3px solid rgba(59,130,246,0.2)',
-        borderTop: '3px solid #3b82f6',
-        borderRadius: '50%',
-        animation: 'spin 0.8s linear infinite'
-      }} />
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
-  )
+  if (page === 'loading') {
+    return (
+      <div
+        style={{
+          width: '100vw',
+          height: '100vh',
+          background: '#0a0a14',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          overflow: 'hidden'
+        }}
+      >
+        <PegtopLoader />
+      </div>
+    )
+  }
   if (page === 'overlay') return <OverlayPage />
   if (page === 'login') return (
     <DesktopLoginPage onLoginSuccess={handleLoginSuccess} />

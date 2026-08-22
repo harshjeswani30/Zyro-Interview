@@ -28,6 +28,8 @@ interface PhoneInterviewPanelProps {
   experienceDuration?: string
   workHistory?: string
   codingLanguage?: string
+  interviewContent?: string
+  activeKbId?: string
   selectedResumeId: string
   resumes: Resume[]
   userProfile?: UserProfile | null
@@ -93,6 +95,9 @@ export default function PhoneInterviewPanel({
   experienceLevel,
   experienceDuration,
   workHistory,
+  codingLanguage: _codingLanguage,
+  interviewContent,
+  activeKbId,
   selectedResumeId,
   resumes,
   userProfile,
@@ -244,20 +249,89 @@ export default function PhoneInterviewPanel({
         ? 'CRITICAL ANSWER LENGTH RULE: The interviewer has explicitly asked to elaborate or answer in detail. Provide a comprehensive, detailed response (3 to 5 sentences).'
         : 'CRITICAL ANSWER LENGTH RULE: Keep the answer extremely short and brief (1 to 2 sentences maximum). Be highly direct and concise. Do NOT add extra details or explain at length unless explicitly asked to elaborate.'
 
-      const systemPrompt = `You are a real-time AI interview assistant. You are helping the candidate ${name} answer phone call technical interview questions live.
+      setStatusText('Formulating AI response...')
       
+      let finalAnswer = ''
+      let isRagSuccessful = false
+
+      const localExcerpts = await window.api.searchLocalVectorDb(block.question, 3)
+      if (localExcerpts && localExcerpts.length > 0) {
+        const ragContext = localExcerpts.join('\n\n')
+        const ragPrompt = `You are a real-time interview answer assistant.
+Answer the interviewer's question using the supplied INTERVIEW CONTEXT as your primary source of truth.
+The context is candidate-provided interview preparation material.
+
+Rules:
+1. Treat the supplied context as the primary factual source.
+2. Cross-Lingual Rule: The context may be in English, but if the question is in Hindi/Hinglish, you MUST translate and explain the concepts in fluent HINGLISH (Conversational Hindi written in English/Latin alphabet).
+3. If the question is in pure English, answer in English.
+4. Make the answer sound like something the candidate can naturally speak during a live interview.
+5. Keep technical terms in standard English.
+6. Start directly with the answer. Avoid unnecessary introductions.
+7. Do not mention 'context', 'knowledge base', 'retrieved chunks', or RAG.
+8. If the supplied material does not contain enough information to answer reliably, output exactly: NO_RELEVANT_CONTEXT
+
+INTERVIEW CONTEXT:
+${ragContext}
+
+===
+CANDIDATE INFORMATION (for name reference only):
+Name: ${name}
+Role: ${role}
+===`
+        try {
+          const answer = await window.api.generateAnswer({
+            transcript: block.question,
+            systemPrompt: ragPrompt,
+            model: 'openai/gpt-oss-120b',
+            temperature: 0.25,
+            maxTokens: 1600
+          })
+          const cleanAnswer = answer.trim()
+          if (cleanAnswer !== 'NO_RELEVANT_CONTEXT' && !cleanAnswer.includes('NO_RELEVANT_CONTEXT')) {
+            finalAnswer = cleanAnswer
+            isRagSuccessful = true
+          }
+        } catch (ragErr) {
+          console.error('[RAG] Phone Interview Groq completion failed:', ragErr)
+        }
+      }
+
+      if (!isRagSuccessful) {
+        const systemPrompt = `You are a real-time AI interview assistant. You are helping the candidate ${name} answer phone call technical interview questions live.
+        
 IDENTITY:
 - You ARE the candidate — ${name}, applying for the role of ${role} at ${company || 'the target company'}.
-- Always answer in the first person ("I"). Never say "Certainly", "Great question", or "As an AI model...". Start the answer directly.
+- Always answer in the first person ("I" / "Main"). Never say "Certainly", "Great question", or "As an AI model...". Start the answer directly.
 - NEVER invent or exaggerate experience beyond the resume.
 
-TONE & STYLE (SIMPLE INDIAN ENGLISH):
-- Professional, clear, conversational. Simple vocabulary that sounds highly natural when spoken.
+TONE & LANGUAGE RULES (CRITICAL):
+1. **HINDI / HINGLISH QUESTIONS**: If the interviewer speaks or asks the question in Hindi, Hinglish, or Devanagari script:
+   - You MUST answer in **fluent, natural HINGLISH** (Conversational Hindi written in English/Latin alphabet, e.g. "Main regression testing perform karne ke liye sabse pehle...", "Hum critical test cases execute karte hain...").
+   - **STRICT PROHIBITION 1**: DO NOT use Devanagari script (NO हिंदी लिपि like मैं, आप, यह). Always write in English alphabets.
+   - **STRICT PROHIBITION 2**: DO NOT answer in pure English when the question was in Hindi/Hinglish. Answer in Hinglish.
+   - Keep all technical terms, tool names, framework names, and processes in standard ENGLISH (e.g. QA Lead, Regression Testing, Test Plan, Selenium, Postman, Jira, Agile, Sprint, Bug Lifecycle, CI/CD).
+2. **ENGLISH QUESTIONS**: If the interviewer asks in pure English, answer in clear, professional English.
 - Short active sentences. No corporate filler phrases.
 - NEVER use bullet points. Always output clean, flowing paragraph sentences.
 - ${lengthInstruction}
 
 ${fresherContext}
+
+${interviewContent && interviewContent.trim() ? `
+=== IMPORTANT: INTERVIEW CONTENT CHEAT SHEET ===
+The candidate has provided the following custom notes/cheat sheet for this interview:
+"""
+${interviewContent.trim()}
+"""
+=== END OF INTERVIEW CONTENT CHEAT SHEET ===
+
+RULES FOR USING INTERVIEW CONTENT:
+1. When the interviewer's question matches, refers to, or is related to any topics/information in the "INTERVIEW CONTENT CHEAT SHEET" above, you MUST prioritize answering from that content.
+2. Cross-Lingual Adaptation: Even if the cheat sheet is in English, if the question is in Hindi/Hinglish, explain the concepts seamlessly in HINGLISH (English alphabet Hindi).
+3. When answering from the cheat sheet, explain it smartly, clearly, and in simple conversational terms. Keep it natural.
+4. If the interviewer asks something "out of the box" that is NOT covered or related to the cheat sheet, you should answer on your own using your general knowledge and the candidate's resume/profile context. Do NOT force a match if it is not related.
+` : ''}
 
 ### RECENT CONVERSATION HISTORY (CRITICAL FOR FOLLOW-UP QUESTIONS):
 ${historyString}
@@ -267,23 +341,22 @@ ${historyString}
 ${resumeText.substring(0, 3500)}
 === END OF RESUME ===`
 
-      setStatusText('Formulating AI response...')
-      
-      const answer = await window.api.generateAnswer({
-        transcript: block.question,
-        systemPrompt,
-        model: 'llama-3.3-70b-versatile',
-        temperature: 0.65,
-        maxTokens: 350
-      })
+        finalAnswer = await window.api.generateAnswer({
+          transcript: block.question,
+          systemPrompt,
+          model: 'openai/gpt-oss-120b',
+          temperature: 0.65,
+          maxTokens: 1600
+        })
+      }
 
       // Add to conversation history
       conversationHistoryRef.current.push({ role: 'user', content: block.question })
-      conversationHistoryRef.current.push({ role: 'assistant', content: answer })
+      conversationHistoryRef.current.push({ role: 'assistant', content: finalAnswer })
       if (conversationHistoryRef.current.length > 10) conversationHistoryRef.current.shift()
 
       setQaLogs((prev) =>
-        prev.map((q) => (q.id === blockId ? { ...q, answer, status: 'completed' } : q))
+        prev.map((q) => (q.id === blockId ? { ...q, answer: finalAnswer, status: 'completed' } : q))
       )
       setStatusText('🎙️ Listening for call audio...')
     } catch (err) {
@@ -295,7 +368,7 @@ ${resumeText.substring(0, 3500)}
     } finally {
       setIsThinking(false)
     }
-  }, [name, role, company, experienceLevel, experienceDuration, workHistory, selectedResumeId, resumes])
+  }, [name, role, company, experienceLevel, experienceDuration, workHistory, selectedResumeId, resumes, activeKbId])
 
   const handleNewTranscript = useCallback((newText: string) => {
     const now = Date.now()
@@ -353,7 +426,7 @@ ${resumeText.substring(0, 3500)}
       reader.onloadend = async () => {
         const base64Audio = (reader.result as string).split(',')[1]
         
-        const sttPrompt = 'Technical interview. The speaker might speak in Hindi or Hinglish. Please translate and transcribe it directly into clean, professional English. Ignore background noise, silence, or music. Do NOT hallucinate words. If no clear speech is detected, return an empty string.'
+        const sttPrompt = 'Technical interview. Multilingual speech detection (English, Hindi, Hinglish). Transcribe exact spoken words verbatim in their original spoken language without translating. Preserve Hindi words accurately. Ignore background noise, silence, or music. Do NOT hallucinate.'
         
         const transcript = await window.api.transcribeOnly({
           base64Audio,
