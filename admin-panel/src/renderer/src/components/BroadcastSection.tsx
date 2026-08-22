@@ -368,7 +368,9 @@ export const BroadcastSection: React.FC = (): React.ReactElement => {
               {htmlContent ? (
                 <div
                   style={{ padding: '24px', color: '#111', fontSize: '14px', lineHeight: 1.7 }}
-                  dangerouslySetInnerHTML={{ __html: htmlContent }}
+                  dangerouslySetInnerHTML={{
+                    __html: (window as any).DOMPurify ? (window as any).DOMPurify.sanitize(htmlContent) : htmlContent.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+                  }}
                 />
               ) : (
                 <div style={{

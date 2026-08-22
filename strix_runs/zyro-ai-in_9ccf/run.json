@@ -1,0 +1,76 @@
+{
+  "run_id": "zyro-ai-in_9ccf",
+  "run_name": "zyro-ai-in_9ccf",
+  "start_time": "2026-08-16T14:40:18.354933+00:00",
+  "end_time": "2026-08-16T14:48:10.699674+00:00",
+  "status": "failed",
+  "auth_mode": "api_key",
+  "targets_info": [
+    {
+      "type": "web_application",
+      "details": {
+        "target_url": "https://zyro-ai.in"
+      },
+      "original": "https://zyro-ai.in"
+    },
+    {
+      "type": "local_code",
+      "details": {
+        "target_path": "D:\\Projects\\Ai Assistant\\website\\src",
+        "workspace_subdir": "src"
+      },
+      "original": "D:\\Projects\\Ai Assistant\\website\\src"
+    },
+    {
+      "type": "local_code",
+      "details": {
+        "target_path": "D:\\Projects\\Ai Assistant\\supabase\\functions",
+        "workspace_subdir": "functions"
+      },
+      "original": "D:\\Projects\\Ai Assistant\\supabase\\functions"
+    }
+  ],
+  "llm_usage": {
+    "requests": 0,
+    "input_tokens": 0,
+    "input_tokens_details": [
+      {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0
+      }
+    ],
+    "output_tokens": 0,
+    "output_tokens_details": [
+      {
+        "reasoning_tokens": 0
+      }
+    ],
+    "total_tokens": 0,
+    "request_usage_entries": [],
+    "cost": 0.0,
+    "agents": []
+  },
+  "scan_mode": "standard",
+  "instruction": "This is Zyro AI — an interview assistance desktop companion. The website at https://zyro-ai.in handles user authentication (Supabase Auth), payments (Razorpay), and coupon redemptions. Focus on: auth bypass, IDOR, coupon abuse/manipulation, payment tampering, API key exposure in frontend bundles, XSS, SSRF in edge functions, and broken access control. Do NOT test third-party payment gateways directly.",
+  "user_instruction": "This is Zyro AI — an interview assistance desktop companion. The website at https://zyro-ai.in handles user authentication (Supabase Auth), payments (Razorpay), and coupon redemptions. Focus on: auth bypass, IDOR, coupon abuse/manipulation, payment tampering, API key exposure in frontend bundles, XSS, SSRF in edge functions, and broken access control. Do NOT test third-party payment gateways directly.",
+  "non_interactive": true,
+  "local_sources": [
+    {
+      "source_path": "D:\\Projects\\Ai Assistant\\website\\src",
+      "workspace_subdir": "src",
+      "protect_metadata": true
+    },
+    {
+      "source_path": "D:\\Projects\\Ai Assistant\\supabase\\functions",
+      "workspace_subdir": "functions",
+      "protect_metadata": true
+    }
+  ],
+  "workspace_mount": null,
+  "diff_scope": {
+    "active": false,
+    "mode": "auto"
+  },
+  "scope_mode": "auto",
+  "diff_base": null
+}

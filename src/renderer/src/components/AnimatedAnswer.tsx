@@ -44,7 +44,7 @@ interface AnimatedAnswerProps {
 export function AnimatedAnswer({
     answer,
     isThinking,
-    wordDelayMs = 20,
+    wordDelayMs = 8,
 }: AnimatedAnswerProps): React.ReactElement {
 
     const { visibleLength, isStreaming } = useWordReveal(

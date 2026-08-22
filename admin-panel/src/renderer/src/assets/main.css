@@ -1017,37 +1017,54 @@ input[type=number] {
 .items-end { align-items: flex-end; }
 
 /* Modern Admin Table */
+.custom-table-container {
+  background: rgba(255, 255, 255, 0.01);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  overflow-x: auto;
+  backdrop-filter: blur(12px);
+  width: 100%;
+}
+
 .table-container {
   background: rgba(255, 255, 255, 0.01);
   border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: 12px;
-  overflow: hidden;
+  overflow-x: hidden;
   backdrop-filter: blur(12px);
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .admin-table {
   width: 100%;
+  min-width: 0;
+  table-layout: fixed;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 11.5px;
   text-align: left;
 }
 
 .admin-table th {
-  padding: 12px 16px;
+  padding: 8px 12px;
   background: rgba(255, 255, 255, 0.02);
-  color: #64748b;
-  font-size: 11px;
-  font-weight: 600;
+  color: #94a3b8;
+  font-size: 10px;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  white-space: nowrap;
 }
 
 .admin-table td {
-  padding: 10px 16px;
+  padding: 7px 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.02);
   color: #94a3b8;
   vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .admin-table tr:last-child td {
@@ -1055,21 +1072,67 @@ input[type=number] {
 }
 
 .admin-table tr:hover td {
-  background: rgba(139, 92, 246, 0.02);
+  background: rgba(139, 92, 246, 0.04);
   color: white;
 }
 
 /* Compact Table Variant */
 .admin-table.compact {
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .admin-table.compact td {
-  padding: 8px 16px;
+  padding: 6px 10px;
 }
 
 .admin-table.compact th {
-  padding: 10px 16px;
+  padding: 7px 10px;
+  font-size: 9.5px;
+}
+
+/* Viewport Fit & Inner Table Scroll Utilities */
+.content-scrollable.viewport-fit-page {
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  height: calc(100vh - 56px) !important;
+  padding: 20px 24px !important;
+  box-sizing: border-box !important;
+}
+
+.viewport-fit-section {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  flex: 1 !important;
+  overflow: hidden !important;
+}
+
+.stat-grid-pinned {
+  flex-shrink: 0 !important;
+  margin-bottom: 14px !important;
+}
+
+.table-container-viewport {
+  flex: 1 !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+  border-radius: 10px !important;
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  background: rgba(0, 0, 0, 0.25) !important;
+}
+
+.table-container-viewport thead tr {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 10 !important;
+  background: #0d071a !important;
+  backdrop-filter: blur(16px) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08) !important;
 }
 
 /* Scaling Reduction Utility */

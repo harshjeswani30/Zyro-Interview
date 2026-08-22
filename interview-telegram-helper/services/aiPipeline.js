@@ -162,7 +162,7 @@ async function generateAIResponse(fullText) {
 
     try {
         const completion = await openai.chat.completions.create({
-            model: 'llama-3.3-70b-versatile',
+            model: 'openai/gpt-oss-120b',
             messages: [
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: `${historyContext}Interviewer: ${finalTranscript}` }
@@ -200,7 +200,7 @@ async function analyzeScreenProcess(base64Image) {
     const systemPrompt = buildSystemPrompt(name, role, company, expLevel, expDuration, workHistory, codingLang, resume);
 
     const completion = await openai.chat.completions.create({
-        model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+        model: 'qwen/qwen3.6-27b',
         messages: [
             { role: 'system', content: systemPrompt },
             {

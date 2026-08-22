@@ -1,4 +1,10 @@
 // aiService.ts - Logic moved to main process via IPC
+import { classifyIntent, IntentResult } from './pipeline/intentClassifier'
+import { planAnswer, AnswerPlan } from './pipeline/answerPlanner'
+import { enforceHumanLikeness } from './pipeline/humanLikeness'
+import { inspectAndSanitizeAnswerCode } from './pipeline/codeSanityCheck'
+import { getSystemDesignDiagramPrompt } from './pipeline/diagramIntelligence'
+import { liveSessionMemory } from './pipeline/liveSessionMemory'
 
 export interface SessionData {
   name: string
@@ -15,11 +21,12 @@ export interface SessionData {
   trial_seconds_used?: number
   isPremium?: boolean
   codingLanguage?: string
+  interviewContent?: string
+  activeKbId?: string
 }
 
 let sessionContext: SessionData | null = null
-const MODEL_NAME = 'llama-3.3-70b-versatile'        // Text/chat model — same as Interview Pro
-const VISION_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct' // Vision model for screen scan
+const MODEL_NAME = 'openai/gpt-oss-120b'        // Text/chat model
 let activeCodingChallenge: string = ''
 const conversationHistory: { role: 'user' | 'assistant'; content: string }[] = []
 
@@ -77,6 +84,7 @@ function getExperienceContext(): string {
 }
 
 
+
 export function initAI(data: SessionData): void {
   console.log('[AI-Train] Initializing AI with context:', {
     name: data.name,
@@ -84,13 +92,21 @@ export function initAI(data: SessionData): void {
     company: data.company,
     resumeLength: data.resumeText?.length
   })
-  
+
   // Clear any existing session history/cache to prevent carry-over
   conversationHistory.length = 0
   activeCodingChallenge = ''
-  
+
   if (data.groqApiKey) window.api.initGroq(data.groqApiKey)
   sessionContext = data
+
+  // Index resume and interview content locally on-device
+  if (data.resumeText && window.api?.indexLocalContent) {
+    window.api.indexLocalContent('resume', data.resumeText).catch(() => {})
+  }
+  if (data.interviewContent && window.api?.indexLocalContent) {
+    window.api.indexLocalContent('interview_content', data.interviewContent).catch(() => {})
+  }
 }
 
 export function getCurrentModelName(): string {
@@ -163,56 +179,124 @@ TEMPLATE: ${template}
 `
 }
 
-export function getSystemPrompt(): string {
-  if (!sessionContext) return ''
-  return `You are a real-time AI interview assistant helping ${sessionContext.name} answer interview questions live.
+function getInterviewContentPrompt(_hasRagContext?: boolean): string {
+  if (!sessionContext || !sessionContext.interviewContent?.trim()) return ''
+  
+  const cheatSheetContent = sessionContext.interviewContent.trim().substring(0, 5000)
 
-IDENTITY:
-- You ARE ${sessionContext.name} — applying for ${sessionContext.role}${sessionContext.company ? ` at ${sessionContext.company}` : ''}.
-- First person ONLY. Never say "Certainly!", "Of course!", "Great question!", or "As an AI...".
+  return `
+=== CANDIDATE PREPARATION MATERIAL & CHEAT SHEET (HIGHEST PRIORITY) ===
+"""
+${cheatSheetContent}
+"""
+=== END OF PREPARATION MATERIAL ===
+
+CRITICAL CROSS-LINGUAL & CHEAT SHEET RULES:
+1. **Source of Truth**: When the interviewer asks about ANY topic or question covered in the preparation material above (e.g. QA testing, automation, methodologies, tools, scenarios, test plans), you MUST base your answer directly on this material.
+2. **Cross-Lingual Adaptation (Smart RAG)**: The preparation material above may be in English, but the interviewer may ask the question in Hindi or Hinglish (or vice versa). You MUST understand the concepts from the English text and explain them seamlessly in **HINGLISH** (Hindi written in English alphabet) or English as requested.
+3. **Conversational Tone**: Do not copy notes robotically. Explain the core points from the material intelligently and naturally as a candidate speaking out loud.
+`
+}
+
+export function getSystemPrompt(
+  intentResult?: IntentResult,
+  answerPlan?: AnswerPlan,
+  localRagContext?: string,
+  sessionMemoryContext?: string
+): string {
+  if (!sessionContext) return ''
+
+  const intent = intentResult?.intent || 'general_factual'
+  const isSystemDesign = intent === 'system_design'
+  const isCoding = intent === 'dsa_coding'
+  const isIdentity = intent === 'identity'
+  const isBehavioral = intent === 'behavioral' || intent === 'project_deepdive'
+  const isConceptOrDef = intent === 'definitional' || intent === 'technical_concept'
+
+  // 1. Coding Directive (ONLY for DSA Coding)
+  const codingDirective = isCoding ? `
+=== MANDATORY FAANG CODING & DSA SCRIPT FORMAT ===
+1. **Problem Clarification**: 1-2 conversational sentences confirming constraints and edge cases.
+2. **Approach & Complexity**: 2-3 sentences comparing brute-force to optimal data structure.
+3. **Optimal Code Solution**: Complete, production-ready solution in \`\`\`${sessionContext.codingLanguage || 'python'}\n...\n\`\`\`.
+4. **Dry-Run**: 1-2 sentences tracing with a simple test input.
+5. **Complexity**: Exact final line: Time Complexity: O(?) | Space Complexity: O(?)
+=== END CODING SCRIPT ===` : ''
+
+  // 2. System Design & Diagram Directive (ONLY for System Design)
+  const diagramInstruction = getSystemDesignDiagramPrompt(isSystemDesign)
+
+  // 3. Voice & Identity
+  const voiceRule = answerPlan?.voicePerspective === 'neutral_explanation'
+    ? 'Explain technical concepts clearly, objectively, and directly without unnecessary personal narrative.'
+    : `You ARE ${sessionContext.name} — applying for ${sessionContext.role}${sessionContext.company ? ` at ${sessionContext.company}` : ''}. Use first-person "I" / "Main".`
+
+  // 4. Resume & Experience Context (ONLY for Identity, Behavioral, or when required)
+  let profileSection = ''
+  if (answerPlan?.profileContextPolicy === 'required' || isIdentity || isBehavioral) {
+    profileSection = `
+${getExperienceContext()}
+${isIdentity ? getIntroTemplate() : ''}
+=== CANDIDATE RESUME ===
+${sessionContext.resumeText?.substring(0, 2500) || ''}
+=== END OF RESUME ===`
+  } else if (answerPlan?.profileContextPolicy === 'allowed' || isSystemDesign) {
+    profileSection = `\n**CANDIDATE BACKGROUND**: ${sessionContext.name}, ${sessionContext.role} with expertise in modern scalable architectures.`
+  }
+
+  // 5. Cheat Sheet Notes (Semantic RAG excerpts + full preparation material)
+  const hasRag = Boolean(localRagContext && localRagContext.trim().length > 0)
+  const cheatSheetSection = getInterviewContentPrompt(hasRag)
+
+  // 6. Real-World Example Rule
+  const exampleRule = (intentResult?.requiresExample || answerPlan?.requiresExample || isConceptOrDef || isSystemDesign)
+    ? 'EXAMPLE RULE (MANDATORY): Always include at least one concrete real-world example starting with "For example," or "Jaise ki / Example ke liye".'
+    : ''
+
+  return `You are Natively, a real-time AI interview assistant helping ${sessionContext.name} answer live interview questions.
+
+IDENTITY & VOICE:
+- ${voiceRule}
+- First person ONLY when answering personal/behavioral questions. Never say "Certainly!", "Of course!", "Great question!", or "As an AI...".
 - NO greetings or filler openers. Start your answer immediately.
 
-TONE (SIMPLE INDIAN ENGLISH):
-- Natural, confident, conversational. Simple vocabulary — like how a smart person speaks casually.
-- Short sentences, active voice. Easy to read aloud quickly.
-- NEVER use bullet points. Always flowing sentences.
+ANTI-AI TELLS & SPOKEN NATURALNESS:
+- BANNED PUNCTUATION: NEVER use em-dashes (—) or semicolons (;). Use standard commas or separate sentences.
+- BANNED BUZZWORDS: Do NOT use "delve", "leverage", "rich tapestry", "moreover", "furthermore", "it is important to note that".
+- Write output so it reads like a real human naturally speaking out loud in an interview.
+- COMPLETENESS (CRITICAL): Always conclude your thoughts cleanly and fully. Finish every sentence, bullet point, and code block completely before stopping. Never cut off mid-thought.
 
-### ANSWER LENGTH — SMART & ADAPTIVE (READ CAREFULLY):
-Answer length must match the question. The goal is to sound natural — not robotic, not padded.
+TONE & LANGUAGE RULES (CRITICAL):
+1. **HINDI / HINGLISH QUESTIONS**: If the interviewer asks in HINDI, HINGLISH, or Devanagari script (e.g. "Aapka testing experience kaisa raha?", "Regression testing kab perform karte ho?", "रिग्रेशन टेस्टिंग क्या है?"):
+   - You MUST answer in **fluent, conversational HINGLISH** (Conversational Hindi written in English/Latin alphabet, e.g. "Main regression testing perform karne ke liye sabse pehle...", "Hum test cases design karte hain...").
+   - **STRICT PROHIBITION 1**: DO NOT use Devanagari script (NO हिंदी लिपि like मैं, आप, यह). Always write in Roman English letters.
+   - **STRICT PROHIBITION 2**: DO NOT answer in pure English when the question was asked in Hindi/Hinglish. Answer in Hinglish.
+   - Keep all technical terms, tool names, framework names, and processes in standard ENGLISH (e.g., QA Lead, Regression Testing, Test Plan, Selenium, Postman, Bug Lifecycle, Jira, Agile, Sprint, CI/CD).
+2. **ENGLISH QUESTIONS**: If the interviewer asks in pure English, answer in clear, professional English.
 
-- **One-word / definition question** ("What is X?", "Define Y"): 2-3 sentences MAX. Direct answer → one-line why it matters.
-- **Short technical question** ("How does X work?", "Diff between A and B"): 3-4 sentences. Core concept + one real example.
-- **Behavioral** ("Tell me about a time...", "How do you handle..."): 4-5 sentences. Context → what YOU did → result.
-- **Introduction** ("Tell me about yourself"): Follow INTRODUCTION TEMPLATE below. 6-7 sentences, natural flow.
-- **Project question** ("Tell me about your project"): 5-6 sentences. Problem → what you built → tech → outcome.
-- **Follow-up** ("Why?", "Can you explain more?", "What about X?"): 2-3 sentences. Pick up context from history.
-- **MCQ** (options A, B, C, D given): Line 1: "The answer is [Letter] — [Option text]." Then 2 sentences why.
-- **Elaborate request** ("Tell me more", "Go deeper", "Explain in detail"): Expand the last answer by 3-4 sentences with a new angle or example.
+### ANSWER LENGTH:
+- **Definition / Concept**: 2-4 sentences. Core concept → direct explanation → one real-world example.
+- **Behavioral / Identity**: 4-5 sentences. Context → what YOU did → measurable outcome.
+- **System Design**: 4-5 sentences + architecture breakdown + clean Mermaid diagram.
+- **Coding / DSA**: 1-2 sentence approach → code block in ${sessionContext.codingLanguage || 'Python'} → "Time Complexity: O(?) | Space Complexity: O(?)".
 
-HARD RULE: Never exceed 6 sentences for any single answer UNLESS it's a project deep-dive or explicit elaborate request.
-HARD RULE: Never repeat the question back. Never pad with conclusions like "I hope that answers your question."
-
-CODING QUESTIONS:
-- Provide the complete, working code in ${sessionContext.codingLanguage || 'Python'}.
-- Briefly explain the logic in 2 sentences.
-- **MANDATORY**: End with "Time Complexity: O(?) | Space Complexity: O(?)" on a new line.
-
-${getIntroTemplate()}
-${getExperienceContext()}${getHistoryContext()}
-=== CANDIDATE RESUME (SOURCE OF TRUTH — NEVER go beyond this) ===
-${sessionContext.resumeText.substring(0, 4500)}
-=== END OF RESUME ===${sessionContext.company ? `\n**TARGET COMPANY**: Interviewing at ${sessionContext.company}.` : ''}`
+${codingDirective}
+${diagramInstruction}
+${exampleRule}
+${sessionMemoryContext || ''}
+${localRagContext || ''}
+${cheatSheetSection}
+${profileSection}${getHistoryContext()}
+${sessionContext.company ? `\n**TARGET COMPANY**: Interviewing at ${sessionContext.company}.` : ''}`
 }
 
 export async function generateInterviewAnswer(transcript: string): Promise<string> {
   if (!sessionContext) return 'AI not initialized.'
 
-  // Skip if transcript is too short or appears to be a noise artifact
   if (!transcript || transcript.trim().length < 4) {
     return ''
   }
 
-  // Final sanity check: if the transcript is JUST a common hallucination, ignore it
   const lowerT = transcript
     .toLowerCase()
     .replace(/[.,!?;:]/g, '')
@@ -226,37 +310,74 @@ export async function generateInterviewAnswer(transcript: string): Promise<strin
     'you',
     'please subscribe',
     'subscribe',
-    'thanks'
+    'thanks',
+    'notification',
+    'alert',
+    'ding',
+    'ping',
+    'chime',
+    'ringtone'
   ]
   if (commonH.includes(lowerT)) {
-    console.log('[AI] Ignoring likely silence hallucination:', transcript)
+    console.log('[AI] Ignoring likely silence/notification hallucination:', transcript)
     return ''
   }
 
-  const systemPrompt = getSystemPrompt()
+  // Record interviewer turn in Live Session Memory
+  liveSessionMemory.recordTurn('interviewer', transcript)
+  const sessionMemoryContext = liveSessionMemory.getSessionTimelinePrompt(transcript)
+
+  // Natively Pipeline Step 1: Intent Classification
+  const intentResult = classifyIntent(transcript)
+
+  // Natively Pipeline Step 2: Answer Planning
+  const answerPlan = planAnswer(intentResult)
+
+  // Natively Pipeline Step 3: Local RAG Retrieval (On-Device Vector Search)
+  let localRagContext = ''
+  try {
+    if (window.api?.searchLocalVectorDb) {
+      const localExcerpts = await window.api.searchLocalVectorDb(transcript, 3)
+      if (localExcerpts && localExcerpts.length > 0) {
+        localRagContext = `\n=== LOCAL ON-DEVICE RETRIEVED CONTEXT ===\n${localExcerpts.join('\n---\n')}\n=== END RETRIEVED CONTEXT ===\n`
+      }
+    }
+  } catch (e) {
+    console.warn('[AI Pipeline] Local Vector DB search skipped:', e)
+  }
+
+  // Natively Pipeline Step 4: Build System Prompt based on Plan, Diagrams, Memory & Local RAG
+  const systemPrompt = getSystemPrompt(intentResult, answerPlan, localRagContext, sessionMemoryContext)
 
   try {
-    console.log('[AI] Generating Text Answer. Resume Length:', sessionContext.resumeText?.length)
-    if (!sessionContext.resumeText || sessionContext.resumeText.length < 10) {
-      console.warn('[AI] WARNING: resumeText is missing or extremely short in sessionContext!')
-    }
+    console.log(`[AI Pipeline] Intent: ${intentResult.intent} | Voice: ${answerPlan.voicePerspective} | ProfilePolicy: ${answerPlan.profileContextPolicy}`)
 
-    console.log('[AI-Train] Full System Prompt:', systemPrompt)
-    const answer = await window.api.generateAnswer({
+    // Natively Pipeline Step 5: Generate Raw Answer
+    const rawAnswer = await window.api.generateAnswer({
       transcript,
       model: MODEL_NAME,
       systemPrompt,
       temperature: 0.65,
-      maxTokens: 500, // Increased to allow code + complexity
+      maxTokens: 1600,
       presencePenalty: 0.4,
       frequencyPenalty: 0.4
     })
+
+    // Natively Pipeline Step 6: Post-Process & Anti-AI Tells Enforcer
+    const finalAnswer = enforceHumanLikeness(rawAnswer, answerPlan.requiresExample)
+
+    // Natively Pipeline Step 7: Code Sanity & Bug Inspector
+    const sanitizedAnswer = inspectAndSanitizeAnswerCode(finalAnswer)
+
+    // Record candidate answer in Live Session Memory
+    liveSessionMemory.recordTurn('candidate', sanitizedAnswer)
+
     updateHistory('user', transcript)
-    updateHistory('assistant', answer)
-    return answer
+    updateHistory('assistant', sanitizedAnswer)
+    return sanitizedAnswer
   } catch (err: unknown) {
     const error = err as Error
-    console.error('[AI] Groq IPC Chat Error:', error)
+    console.error('[AI Pipeline] Chat Error:', error)
     return `Error: ${error.message}`
   }
 }
@@ -371,70 +492,18 @@ export async function generateAudioResponse(
   if (!sessionContext?.groqApiKey) throw new Error('AI Key missing.')
 
   try {
-    const systemPrompt = `You are a real-time AI interview assistant helping ${sessionContext.name} answer interview questions during a live interview.
+    console.log('[AI] Transcribing audio only...')
+    const transcript = await transcribeAudioOnly(base64Audio, mimeType)
+    console.log('[AI] Transcribed text:', transcript)
 
-IDENTITY:
-- You ARE the candidate — ${sessionContext.name}, applying for ${sessionContext.role}${sessionContext.company ? ` at ${sessionContext.company}` : ''}.
-- First person only. Never say "Certainly!", "Of course!", "Great question!", or "As an AI...".
+    if (!transcript || transcript.trim().length < 4) {
+      return { transcript: '', answer: '' }
+    }
 
-TONE & STYLE (SIMPLE INDIAN ENGLISH):
-- Confident, clear, conversational. Simple Indian English — no corporate jargon.
-- Short sentences. Active voice. Never start two consecutive sentences with "I".
-- Never repeat the question. No filler openers ("So basically...", "Sure...", etc.).
-- NEVER use bullet points. Always flowing sentences.
-${getIntroTemplate()}
-ANSWER LENGTH (SMART & ADAPTIVE):
-Judge how long to answer based on what the question actually needs. Be naturally brief — not artificially short.
-- Simple/factual ("What is X?", "Define Y?"): 2-4 sentences. Direct and clear.
-- Technical depth ("How does X work?", "Explain X"): Clear explanation + one real-world example from your experience. Can be 5-8 sentences if the topic genuinely needs it.
-- Behavioral ("Tell me about a time..."): 5-6 sentences — context, what you did, result.
-- "Tell me about yourself": Follow the INTRODUCTION TEMPLATE above. 6-8 sentences, natural flow.
-- Follow-up questions: Match the depth the question actually deserves. Small follow-up = 2-3 sentences. A detailed follow-up = answer it properly with full depth.
-- If the interviewer says "tell me more", "elaborate", "explain in detail", "go deeper", or similar → give a full, detailed answer. Expand with depth and examples. Do NOT hold back.
-- Multiple questions in one: Bold heading per topic, proportional length per topic.
-- NEVER pad or repeat yourself. Stop when the point is made.
-
-MCQ / MULTIPLE-CHOICE QUESTION HANDLING:
-- If the question includes spoken options (A, B, C, D or 1, 2, 3, 4), IMMEDIATELY state the correct option and its label first.
-- Format: "The answer is [Option Label] — [Option Text]." then explain why in 2-3 sentences.
-- Do NOT explain the wrong options.
-- Example: "The answer is B — Polymorphism. It allows objects of different types to be treated via a common interface, making code flexible and reusable."
-
-ANSWER STRUCTURE:
-- Technical: Simple clear answer → explanation of how/why → one real-world or work example from your experience.
-- Behavioral (STAR): Brief context → what YOU specifically did (50%) → result.
-
-PERSONALIZATION (STRICT SOURCE OF TRUTH):
-- Your resume is the absolute boundary. Never discuss projects, internships, or work that is not explicitly found in the provided resume text.
-- Reference specific details from the resume: company names, tech stack, project names.
-- If a specific skill or tool is asked for that is NOT on your resume: mention you have worked with similar technologies found on your resume, or explain the conceptual understanding, but NEVER invent a fake project or job role to justify it.
-
-CONTINUITY:
-- "slow down", "explain that" → refined version of LAST response. Do NOT pivot.
-- "tell me more", "elaborate", "in detail", "go deeper" → expand the last answer fully with more depth and examples.
-${getExperienceContext()}${getHistoryContext()}
-=== CANDIDATE'S COMPLETE RESUME (SOURCE OF TRUTH) ===
-${sessionContext.resumeText.substring(0, 4500)}
-=== END OF RESUME ===${sessionContext.company ? `
-**TARGET COMPANY**: Interviewing at ${sessionContext.company}. If asked why, show genuine interest.` : ''}
-
-Format: JSON only: {"transcript": "...", "answer": "..."}`
-
-    console.log('[AI] Generating Audio Answer. Resume Length:', sessionContext.resumeText?.length)
-
-    const response = await window.api.transcribeAudio({
-      base64Audio,
-      mimeType,
-      language: sessionContext.language,
-      model: MODEL_NAME,
-      systemPrompt,
-      resumeText: sessionContext.resumeText.substring(0, 3000)
-    })
-    updateHistory('user', response.transcript)
-    updateHistory('assistant', response.answer)
-    return response
+    const answer = await generateInterviewAnswer(transcript)
+    return { transcript, answer }
   } catch (err: unknown) {
-    console.error('[AI] Groq IPC Audio Error Details:', err)
+    console.error('[AI] generateAudioResponse Error Details:', err)
     throw err
   }
 }
@@ -461,7 +530,11 @@ export async function transcribeAudioOnly(
 export async function analyzeScreen(): Promise<string> {
   if (!sessionContext) return 'AI not initialized.'
 
-  const systemPrompt = `You are a real-time AI interview assistant. You ARE the candidate — ${sessionContext.name}, a ${sessionContext.role}${sessionContext.company ? ` at ${sessionContext.company}` : ''}.
+  try {
+    console.log('[AI] Capturing screen screenshot...')
+    const base64Image = await window.api.captureScreenshot()
+
+    let activePrompt = `You are a real-time AI interview assistant. You ARE the candidate — ${sessionContext.name}, a ${sessionContext.role}${sessionContext.company ? ` at ${sessionContext.company}` : ''}.
 
 TASK: Scan the screen and identify any interview question visible — this could be a coding problem, technical question, MCQ, behavioral question, HR/situational question, or any other type. Give exactly what the candidate should say out loud in response. Apply the correct answer structure for the question type detected.
 
@@ -469,22 +542,12 @@ IDENTITY: First person only. No "Certainly!", no AI preamble.
 
 ANSWER FORMAT BY QUESTION TYPE:
 
-CODING / DSA PROBLEM (use this format when a code problem is on screen):
-1. In 2-3 plain sentences, explain the approach and logic clearly.
-2. Provide the complete, working, optimized solution in a proper code block using ${sessionContext.codingLanguage || 'Python'}.
-3. **MANDATORY**: After the code, state "Time Complexity: O(?) | Space Complexity: O(?)" on a separate line.
-4. Example format:
-   "The idea is to use a hashmap to track seen values so we avoid nested loops. For each element we check if its complement already exists in the map.
-   \`\`\`python
-   def two_sum(nums, target):
-       seen = {}
-       for i, n in enumerate(nums):
-           diff = target - n
-           if diff in seen:
-               return [seen[diff], i]
-           seen[n] = i
-   \`\`\`
-   Time Complexity: O(n) | Space Complexity: O(n)"
+CODING / DSA PROBLEM (NATIVELY FAANG ROLLING INTERVIEW SCRIPT):
+1. **Problem Clarification** (Start with "So just to make sure I understand..."): 1-2 conversational sentences confirming understanding & edge cases.
+2. **Approach & Brainstorming**: 2-3 sentences. First mention naive/brute force approach (and its complexity), then pivot to optimal algorithm/data structure.
+3. **Optimal Code Solution**: Complete, production-ready, heavily commented code block in \`\`\`${sessionContext.codingLanguage || 'Python'}\n...\n\`\`\`.
+4. **Quick Dry-Run**: 1-2 sentences tracing code with a simple example.
+5. **Complexity Analysis**: Single line at end: **Time Complexity**: O(?) | **Space Complexity**: O(?)
 
 MCQ / MULTIPLE-CHOICE ON SCREEN:
 - First line: "The answer is [Option Label] — [Option Text]."
@@ -506,21 +569,19 @@ STYLE (ALL TYPES):
 - For non-coding answers: flowing sentences, NO bullet points, short active sentences.
 - If this is a follow-up screen scan, continue the previous explanation naturally.
 ${getExperienceContext()}${getHistoryContext()}
+${getInterviewContentPrompt(false)}
 === CANDIDATE'S COMPLETE RESUME (SOURCE OF TRUTH) ===
-${sessionContext.resumeText.substring(0, 4500)}
-=== END OF RESUME ===${sessionContext.company ? `
-**TARGET COMPANY**: Interviewing at ${sessionContext.company}. If asked why, show genuine interest.` : ''}`
+${sessionContext.resumeText.substring(0, 2000)}
+=== END OF RESUME ===${sessionContext.company ? `\n**TARGET COMPANY**: Interviewing at ${sessionContext.company}. If asked why, show genuine interest.` : ''}`
 
-    console.log('[AI] Analyzing Screen. Resume Length:', sessionContext.resumeText?.length)
-
-  try {
-    const result = await window.api.analyzeScreen({ systemPrompt, model: VISION_MODEL })
-    if (result && !result.startsWith('Error')) {
-      activeCodingChallenge = result
+    console.log('[AI] Querying vision model fast path...')
+    const result = await window.api.queryVision({ systemPrompt: activePrompt, base64Image })
+    const sanitizedResult = inspectAndSanitizeAnswerCode(result)
+    if (sanitizedResult && !sanitizedResult.startsWith('Error')) {
       updateHistory('user', '[Screen Scan Triggered]')
-      updateHistory('assistant', result)
+      updateHistory('assistant', sanitizedResult)
     }
-    return result
+    return sanitizedResult
   } catch (err: unknown) {
     const error = err as Error
     console.error('[AI] Screen Analysis Error:', error)

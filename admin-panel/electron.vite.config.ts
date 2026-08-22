@@ -17,7 +17,7 @@ export default defineConfig({
   renderer: {
     envPrefix: 'MAIN_VITE_',
     server: {
-      port: 5174
+      port: 5176
     },
     resolve: {
       alias: {

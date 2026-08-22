@@ -19,9 +19,107 @@ import { readFileSync } from 'fs'
 // pdf-parse is a CommonJS module with no official types
 /* eslint-disable-next-line @typescript-eslint/no-var-requires */
 const { PDFParse } = require('pdf-parse')
-import icon from '../../resources/icon.png?asset'
 import { loadSecureSession, storeSecureSession, clearSecureSession } from './secureStorage'
+import icon from '../../resources/icon.png?asset'
 import { autoUpdater } from 'electron-updater'
+import { localVectorDb } from './localVectorDb'
+
+// ── Native Windows Stealth Engine (Ghostly Algorithm via Koffi FFI) ──
+const WDA_MONITOR = 1
+const WDA_EXCLUDEFROMCAPTURE = 17
+
+let cachedSetWindowDisplayAffinity: ((hwnd: number, affinity: number) => number) | null = null
+let koffiAvailable: boolean | null = null
+
+function getSetWindowDisplayAffinity(): ((hwnd: number, affinity: number) => number) | null {
+  if (koffiAvailable === false) return null
+  if (cachedSetWindowDisplayAffinity) return cachedSetWindowDisplayAffinity
+  try {
+    /* eslint-disable-next-line @typescript-eslint/no-var-requires */
+    const koffi = require('koffi')
+    const user32 = koffi.load('user32.dll')
+    cachedSetWindowDisplayAffinity = user32.func(
+      'int __stdcall SetWindowDisplayAffinity(intptr hwnd, uint32 dwAffinity)'
+    )
+    koffiAvailable = true
+    return cachedSetWindowDisplayAffinity
+  } catch (err) {
+    console.warn('[Zyro Stealth Engine] koffi not available:', err)
+    koffiAvailable = false
+    return null
+  }
+}
+
+function readHWND(hwndBuffer: Buffer): number {
+  if (process.arch === 'x64' || process.arch === 'arm64') {
+    return Number(hwndBuffer.readBigUInt64LE(0))
+  }
+  return hwndBuffer.readUInt32LE(0)
+}
+
+const appliedHWnds = new Set<number>()
+
+function nudgeRepaint(win: BrowserWindow): void {
+  try {
+    if (win.isDestroyed()) return
+    const opacity = win.getOpacity()
+    win.setOpacity(Math.max(0, opacity - 0.001))
+    setTimeout(() => {
+      try {
+        if (!win.isDestroyed()) win.setOpacity(opacity)
+      } catch {
+        /* ignore */
+      }
+    }, 30)
+  } catch {
+    /* ignore */
+  }
+}
+
+function setStealthProtection(win: BrowserWindow, enable: boolean): void {
+  win.setContentProtection(enable)
+  if (process.platform !== 'win32') return
+
+  const SetWindowDisplayAffinity = getSetWindowDisplayAffinity()
+  if (!SetWindowDisplayAffinity) return
+
+  try {
+    const hwndBuffer = win.getNativeWindowHandle()
+    const hwnd = readHWND(hwndBuffer)
+
+    if (enable) {
+      // Priority 1: WDA_EXCLUDEFROMCAPTURE (17) — Zero capture by Zoom/Teams/Meet/OBS/Proctoring
+      let success = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+      if (success) {
+        appliedHWnds.add(hwnd)
+        console.log('[Zyro Stealth Engine] ✅ WDA_EXCLUDEFROMCAPTURE (17) applied')
+        setTimeout(() => nudgeRepaint(win), 50)
+        return
+      }
+
+      // Priority 2: Fallback WDA_MONITOR (1) for older Windows builds
+      success = SetWindowDisplayAffinity(hwnd, WDA_MONITOR)
+      if (success) {
+        appliedHWnds.add(hwnd)
+        console.log('[Zyro Stealth Engine] ⚠️ WDA_MONITOR (1) applied')
+        setTimeout(() => nudgeRepaint(win), 50)
+        return
+      }
+    } else {
+      // WDA_NONE (0) — Allow window capture
+      SetWindowDisplayAffinity(hwnd, 0)
+      appliedHWnds.delete(hwnd)
+      console.log('[Zyro Stealth Engine] 🔓 Screen share protection DISABLED')
+      setTimeout(() => nudgeRepaint(win), 50)
+    }
+  } catch (err) {
+    console.warn('[Zyro Stealth Engine] FFI call error:', err)
+  }
+}
+
+function applyStealthMode(win: BrowserWindow): void {
+  setStealthProtection(win, true)
+}
 
 // CRITICAL: Ensure we use the proper app data folder even if productName is changed to "Host Process for Windows Tasks"
 app.setPath('userData', join(app.getPath('appData'), 'Zyro-Ai'))
@@ -112,11 +210,130 @@ const AI_GATEWAY = 'https://ai-gateway.harshjeswani30.workers.dev'
 const SUPABASE_URL = 'https://weqwxoihdfsvjwwcgtat.supabase.co'
 const SUPABASE_ANON_KEY =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndlcXd4b2loZGZzdmp3d2NndGF0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI5NzI5NDksImV4cCI6MjA4ODU0ODk0OX0.93-tT4Uqo2E2EniSa33ZGtNwGzitkIn3P7nfg3sz14c'
-const SUPABASE_SERVICE_ROLE_KEY =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndlcXd4b2loZGZzdmp3d2NndGF0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Mjk3Mjk0OSwiZXhwIjoyMDg4NTQ4OTQ5fQ.Vwx6J3X1ffVocTAIpiFqbXaklYT8Nox8TW2zqT7M5Qg'
+// NOTE: service_role key removed — all privileged operations use Edge Functions
 
 let supabaseAccessToken: string | null = null
 let supabaseUserId: string | null = null
+let supabaseRefreshToken: string | null = null
+
+function isTokenExpired(token: string | null): boolean {
+  if (!token) return true
+  try {
+    const parts = token.split('.')
+    if (parts.length < 2) return true
+    let base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    while (base64.length % 4) {
+      base64 += '='
+    }
+    const payload = JSON.parse(Buffer.from(base64, 'base64').toString('utf8'))
+    if (typeof payload.exp !== 'number') return true
+    const currentTime = Math.floor(Date.now() / 1000)
+    return payload.exp <= currentTime + 60
+  } catch {
+    return true
+  }
+}
+
+let refreshPromise: Promise<boolean> | null = null
+// Guard: once a refresh token is permanently rejected, stop retrying until user logs in again
+let sessionPermanentlyDead = false
+
+// Unrecoverable error codes from Supabase auth
+const UNRECOVERABLE_REFRESH_ERRORS = new Set([
+  'refresh_token_not_found',
+  'refresh_token_already_used',
+  'invalid_refresh_token',
+  'user_not_found',
+  'user_banned',
+  'session_not_found',
+])
+
+function forceLogout(reason: string): void {
+  console.warn(`[Supabase] Forcing logout: ${reason}`)
+  supabaseAccessToken = null
+  supabaseRefreshToken = null
+  supabaseUserId = null
+  sessionPermanentlyDead = true
+  clearSecureSession()
+  BrowserWindow.getAllWindows().forEach(win => {
+    if (!win.isDestroyed()) win.webContents.send('session-expired')
+  })
+}
+
+async function refreshSupabaseSession(): Promise<boolean> {
+  // Never retry if session is already dead
+  if (sessionPermanentlyDead) {
+    console.warn('[Supabase] Session is permanently dead, skipping refresh')
+    return false
+  }
+
+  if (refreshPromise) {
+    return refreshPromise
+  }
+
+  refreshPromise = (async () => {
+    if (!supabaseRefreshToken) {
+      console.warn('[Supabase] No refresh token available to refresh session')
+      return false
+    }
+    console.log('[Supabase] Refreshing session token...')
+    try {
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: SUPABASE_ANON_KEY
+        },
+        body: JSON.stringify({ refresh_token: supabaseRefreshToken })
+      })
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        console.error('[Supabase] Token refresh failed:', errData)
+
+        // If the error is unrecoverable, force logout immediately (no access token check)
+        if (UNRECOVERABLE_REFRESH_ERRORS.has(errData?.error_code)) {
+          forceLogout(`Unrecoverable refresh error: ${errData?.error_code}`)
+        } else if (errData?.status === 400 || errData?.status === 401) {
+          // Generic 400/401 from Supabase auth is also unrecoverable for the refresh
+          console.warn('[Supabase] Refresh rejected with non-retryable status, clearing refresh token')
+          supabaseRefreshToken = null
+          // Don't force full logout — access token might still be valid for a bit
+        }
+        return false
+      }
+      const data = await res.json()
+      supabaseAccessToken = data.access_token
+      supabaseRefreshToken = data.refresh_token
+      supabaseUserId = data.user?.id
+      sessionPermanentlyDead = false // reset on successful refresh
+      storeSecureSession({
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token,
+        userId: data.user?.id
+      })
+      console.log('[Supabase] Session token refreshed successfully')
+      return true
+    } catch (err) {
+      console.error('[Supabase] Failed to refresh session:', err)
+      return false
+    } finally {
+      refreshPromise = null
+    }
+  })()
+
+  return refreshPromise
+}
+
+async function ensureFreshSupabaseToken(): Promise<string | null> {
+  // If session is dead, return null immediately — no network call
+  if (sessionPermanentlyDead) return null
+
+  if (isTokenExpired(supabaseAccessToken) && supabaseRefreshToken) {
+    console.log('[Supabase] Token near expiry or expired, refreshing...')
+    await refreshSupabaseSession()
+  }
+  return supabaseAccessToken
+}
 
 const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
@@ -181,8 +398,9 @@ async function handleProtocolUrl(url: string): Promise<void> {
           console.log('[Main] OAuth user resolved:', userId)
           // Store in module-level vars so supabase-get-profile can use them
           supabaseAccessToken = accessToken
+          supabaseRefreshToken = refreshToken
           supabaseUserId = userId
-          storeSecureSession({ accessToken, userId })
+          storeSecureSession({ accessToken, refreshToken, userId })
         } else {
           console.error('[Main] Failed to fetch user from access token, status:', userRes.status)
           // Still store the token — profile fetch may still work
@@ -211,6 +429,8 @@ let overlayWindow: BrowserWindow | null = null
 let pendingSessionData: unknown = null
 let activeResizeInterval: NodeJS.Timeout | null = null
 let activeBlockerId: number | null = null
+let overlayVisible = true // tracks Ctrl+B stealth toggle state (monitor)
+let screenProtectionEnabled = true // tracks Ctrl+N screen share protection toggle state
 
 // Guard helper: only send if the window + webContents are still alive
 function safeSend(
@@ -227,6 +447,29 @@ function safeZoom(win: BrowserWindow | null | undefined, level: number): void {
   if (!win || win.isDestroyed()) return
   if (!win.webContents || win.webContents.isDestroyed()) return
   win.webContents.setZoomLevel(level)
+}
+
+function protectWindowFromInspection(win: BrowserWindow | null): void {
+  if (!win || is.dev) return
+
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'F12') {
+      event.preventDefault()
+    }
+    if ((input.control || input.meta) && input.shift && (input.key === 'I' || input.key === 'i')) {
+      event.preventDefault()
+    }
+    if ((input.control || input.meta) && input.shift && (input.key === 'J' || input.key === 'j')) {
+      event.preventDefault()
+    }
+    if ((input.control || input.meta) && (input.key === 'U' || input.key === 'u')) {
+      event.preventDefault()
+    }
+  })
+
+  win.webContents.on('devtools-opened', () => {
+    win.webContents.closeDevTools()
+  })
 }
 
 // ─────────────────────────────────────────────
@@ -253,6 +496,8 @@ function createMainWindow(): void {
       zoomFactor: 1.0
     }
   })
+
+  protectWindowFromInspection(mainWindow)
 
   // Disable zoom shortcuts in setup window (Ctrl+, Ctrl-, Ctrl0, and variants)
   mainWindow.webContents.on('before-input-event', (event, input) => {
@@ -328,7 +573,8 @@ function createOverlayWindow(): void {
     }
   })
 
-  overlayWindow.setContentProtection(true)
+  protectWindowFromInspection(overlayWindow)
+  applyStealthMode(overlayWindow)
   overlayWindow.setAlwaysOnTop(true, 'screen-saver')
 
   // Re-assert topmost whenever the window loses focus (Windows can demote HWND_TOPMOST)
@@ -364,10 +610,57 @@ function setupIPC(): void {
     callback(allowed.includes(permission))
   })
 
+  ipcMain.handle('get-deepgram-key', () => {
+    return process.env.DEEPGRAM_API_KEY || process.env.DEEPGRAM_STT_KEY || ''
+  })
+
+  ipcMain.handle('index-local-content', (_event, { source, content }) => {
+    return localVectorDb.indexContent(source, content)
+  })
+
+  ipcMain.handle('search-local-vector-db', (_event, { query, topK }) => {
+    return localVectorDb.search(query, topK || 3)
+  })
+
   ipcMain.handle('get-session', () => pendingSessionData)
+  ipcMain.handle('get-supabase-token', async () => {
+    return await ensureFreshSupabaseToken()
+  })
+  ipcMain.handle('get-supabase-session-data', async () => {
+    const token = await ensureFreshSupabaseToken()
+    return {
+      accessToken: token,
+      refreshToken: supabaseRefreshToken
+    }
+  })
+
+  // ── Knowledge Base IPC Handlers ──────────────────────────────
+  ipcMain.handle('kb-list', async () => {
+    return { data: [], error: null }
+  })
+
+  ipcMain.handle('kb-save', async (_event, args: { title: string; content: string }) => {
+    try {
+      localVectorDb.indexContent('kb_' + args.title, args.content)
+      return { data: { id: `kb_${Date.now()}`, title: args.title, created_at: new Date().toISOString() }, error: null }
+    } catch (err: any) {
+      console.error('[KB] Save error:', err)
+      return { error: err.message }
+    }
+  })
+
+  ipcMain.handle('kb-delete', async (_event, kbId: string) => {
+    try {
+      localVectorDb.clearSource(kbId)
+      return { error: null }
+    } catch (err: any) {
+      return { error: err.message }
+    }
+  })
 
   ipcMain.handle('get-screen-size', () => {
     const { width, height } = screen.getPrimaryDisplay().workAreaSize
+
     return { width, height }
   })
 
@@ -385,37 +678,42 @@ function setupIPC(): void {
   if (savedSession?.accessToken && savedSession?.userId) {
     supabaseAccessToken = savedSession.accessToken
     supabaseUserId = savedSession.userId
+    supabaseRefreshToken = savedSession.refreshToken || null
     console.log(`[Supabase] Restored session for user: ${supabaseUserId}`)
+    if (isTokenExpired(supabaseAccessToken)) {
+      console.log('[Supabase] Restored access token is expired, refreshing...')
+      refreshSupabaseSession().catch((err) => {
+        console.error('[Supabase] Initial session refresh failed:', err)
+      })
+    } else {
+      console.log('[Supabase] Restored access token is still valid. Skipping startup refresh.')
+    }
   }
 
   ipcMain.handle('start-interview', async (_event, sessionData: unknown) => {
-    if (!supabaseUserId) throw new Error('Not logged in')
-    const profileRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${supabaseUserId}&select=sessions_balance,trial_seconds_used`,
-      {
-        headers: {
-          apikey: SUPABASE_SERVICE_ROLE_KEY,
-          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
-        }
-      }
-    )
-    const rows = await profileRes.json()
-    const profile = rows?.[0]
-    const balance = profile?.sessions_balance ?? 0
-    const trialUsed = profile?.trial_seconds_used ?? 0
-    const TRIAL_LIMIT = 600
+    const token = await ensureFreshSupabaseToken()
+    if (!supabaseUserId || !token) throw new Error('Not logged in')
 
-    if (balance <= 0 && trialUsed >= TRIAL_LIMIT) {
-      console.warn(
-        `[Main] Blocked start-interview for ${supabaseUserId}: Balance 0, Trial exhausted.`
-      )
+    // Check balance via Edge Function — no service_role key in client
+    const balanceRes = await fetch(`${SUPABASE_URL}/functions/v1/check-balance`, {
+      method: 'GET',
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${token}`
+      }
+    })
+    if (!balanceRes.ok) throw new Error('Failed to check balance')
+    const balanceData = await balanceRes.json()
+
+    if (!balanceData.allowed) {
+      console.warn(`[Main] Blocked start-interview for ${supabaseUserId}: ${balanceData.reason}`)
       return { allowed: false, reason: 'insufficient_balance' }
     }
 
     const sessionDataWithProfile = {
       ...(sessionData as Record<string, unknown>),
-      trial_seconds_used: trialUsed,
-      sessions_balance: balance
+      trial_seconds_used: balanceData.trial_seconds_used,
+      sessions_balance: balanceData.sessions_balance
     }
     pendingSessionData = sessionDataWithProfile
 
@@ -428,6 +726,7 @@ function setupIPC(): void {
           'set-auto-answer',
           !!(sessionDataWithProfile as Record<string, unknown>).autoAnswer
         )
+        applyStealthMode(overlayWindow!)
         if (!overlayWindow!.isDestroyed()) overlayWindow!.show()
       })
     } else {
@@ -439,6 +738,7 @@ function setupIPC(): void {
           'set-auto-answer',
           !!(sessionDataWithProfile as Record<string, unknown>).autoAnswer
         )
+        applyStealthMode(overlayWindow!)
         if (!overlayWindow!.isDestroyed()) overlayWindow!.show()
       })
     }
@@ -449,6 +749,72 @@ function setupIPC(): void {
       console.log('[Main] Power save blocker started, ID:', activeBlockerId)
     }
 
+    // Register scroll shortcuts globally during the interview
+    try {
+      globalShortcut.register('Up', () => {
+        safeSend(overlayWindow, 'scroll-overlay', 'up')
+      })
+      globalShortcut.register('Down', () => {
+        safeSend(overlayWindow, 'scroll-overlay', 'down')
+      })
+      globalShortcut.register('num8', () => {
+        safeSend(overlayWindow, 'scroll-overlay', 'up')
+      })
+      globalShortcut.register('num2', () => {
+        safeSend(overlayWindow, 'scroll-overlay', 'down')
+      })
+      globalShortcut.register('num9', () => {
+        safeSend(overlayWindow, 'scroll-overlay', 'up')
+      })
+      globalShortcut.register('num3', () => {
+        safeSend(overlayWindow, 'scroll-overlay', 'down')
+      })
+      globalShortcut.register('num7', () => {
+        safeSend(overlayWindow, 'scroll-overlay', 'up')
+      })
+      globalShortcut.register('num1', () => {
+        safeSend(overlayWindow, 'scroll-overlay', 'down')
+      })
+    } catch (err) {
+      console.error('[Main] Failed to register global scroll shortcuts:', err)
+    }
+
+    // Register Ctrl+B stealth toggle — instantly hides/shows the overlay
+    overlayVisible = true
+    try {
+      globalShortcut.register('Ctrl+B', () => {
+        if (!overlayWindow || overlayWindow.isDestroyed()) return
+        overlayVisible = !overlayVisible
+        if (overlayVisible) {
+          overlayWindow.setOpacity(1)
+          overlayWindow.setIgnoreMouseEvents(false)
+        } else {
+          overlayWindow.setOpacity(0)
+          overlayWindow.setIgnoreMouseEvents(true, { forward: true })
+        }
+        safeSend(overlayWindow, 'overlay-toggled', overlayVisible)
+        console.log('[Main] Overlay stealth toggle:', overlayVisible ? 'VISIBLE' : 'HIDDEN')
+      })
+      console.log('[Main] Ctrl+B stealth toggle registered')
+    } catch (err) {
+      console.error('[Main] Failed to register Ctrl+B stealth shortcut:', err)
+    }
+
+    // Register Ctrl+N screen share protection toggle — turns Zoom/Meet invisibility ON/OFF
+    screenProtectionEnabled = true
+    try {
+      globalShortcut.register('Ctrl+N', () => {
+        if (!overlayWindow || overlayWindow.isDestroyed()) return
+        screenProtectionEnabled = !screenProtectionEnabled
+        setStealthProtection(overlayWindow, screenProtectionEnabled)
+        safeSend(overlayWindow, 'screen-protection-toggled', screenProtectionEnabled)
+        console.log('[Main] Screen share protection toggle:', screenProtectionEnabled ? 'ENABLED (Invisible)' : 'DISABLED (Visible)')
+      })
+      console.log('[Main] Ctrl+N screen share protection toggle registered')
+    } catch (err) {
+      console.error('[Main] Failed to register Ctrl+N stealth shortcut:', err)
+    }
+
     mainWindow?.hide()
     return { allowed: true }
   })
@@ -456,9 +822,22 @@ function setupIPC(): void {
   ipcMain.on('end-interview', () => {
     pendingSessionData = null
 
-    // Release only scroll shortcuts so global Alt+Space/Alt+S remain active
+    // Release scroll + stealth shortcuts
+    globalShortcut.unregister('Up')
+    globalShortcut.unregister('Down')
+    globalShortcut.unregister('Ctrl+B')
+    globalShortcut.unregister('Ctrl+N')
     const scrollKeys = ['num8', 'num2', 'num9', 'num3', 'num7', 'num1']
     scrollKeys.forEach((key) => globalShortcut.unregister(key))
+
+    // Reset overlay stealth state so next session starts visible + protected
+    overlayVisible = true
+    screenProtectionEnabled = true
+    if (overlayWindow && !overlayWindow.isDestroyed()) {
+      overlayWindow.setOpacity(1)
+      overlayWindow.setIgnoreMouseEvents(false)
+      setStealthProtection(overlayWindow, true)
+    }
 
     // Stop power save blocker when interview ends
     if (activeBlockerId !== null) {
@@ -477,26 +856,55 @@ function setupIPC(): void {
   })
 
   ipcMain.handle('supabase-login', async (_e, { email, password }) => {
-    console.log(`[Supabase] Attempting login for: ${email}`)
+    // ── Input validation (security: prevent injection & junk data) ──
+    if (typeof email !== 'string' || typeof password !== 'string') {
+      throw new Error('Invalid input types')
+    }
+    const cleanEmail = email.trim().toLowerCase()
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(cleanEmail)) {
+      throw new Error('Invalid email format')
+    }
+    if (password.length < 6 || password.length > 256) {
+      throw new Error('Invalid password length')
+    }
+
+    console.log(`[Supabase] Attempting login for: ${cleanEmail}`)
     const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY },
-      body: JSON.stringify({ email, password })
+      body: JSON.stringify({ email: cleanEmail, password })
     })
     console.log(`[Supabase] Login response status: ${res.status}`)
+
+    if (res.status === 429) {
+      throw new Error('Too many login attempts. Please wait a moment and try again.')
+    }
+
     const data = await res.json()
     if (!res.ok) {
       console.error(`[Supabase] Login failed:`, data)
       throw new Error(data.error_description || data.msg || 'Login failed')
     }
-    console.log(`[Supabase] Login successful for user: ${data.user?.id}`)
+
+    // Validate the response contains expected fields before trusting it
+    if (!data.access_token || !data.user?.id) {
+      console.error('[Supabase] Login response missing required fields:', Object.keys(data))
+      throw new Error('Invalid login response from server')
+    }
+
+    console.log(`[Supabase] Login successful for user: ${data.user.id}`)
+    // ── CRITICAL: Reset dead-session guard so get-profile works immediately ──
+    sessionPermanentlyDead = false
     supabaseAccessToken = data.access_token
-    supabaseUserId = data.user?.id
+    supabaseRefreshToken = data.refresh_token || null
+    supabaseUserId = data.user.id
     storeSecureSession({
       accessToken: data.access_token,
-      userId: data.user?.id
+      refreshToken: data.refresh_token,
+      userId: data.user.id
     })
-    return { user: data.user, accessToken: data.access_token }
+    // Return only non-sensitive metadata — never return raw tokens to renderer
+    return { userId: data.user.id, email: data.user.email }
   })
 
   ipcMain.handle('supabase-send-otp', async (_e, { phone }) => {
@@ -516,26 +924,39 @@ function setupIPC(): void {
   })
 
   ipcMain.handle('supabase-verify-otp', async (_e, { phone, token }) => {
-    console.log(`[Supabase] Verifying OTP for: ${phone}`)
+    // ── Input validation ──
+    if (typeof phone !== 'string' || typeof token !== 'string') throw new Error('Invalid input types')
+    if (!/^\+?[0-9]{8,15}$/.test(phone.trim())) throw new Error('Invalid phone number format')
+    if (!/^[0-9]{4,8}$/.test(token.trim())) throw new Error('Invalid OTP format')
+
+    console.log(`[Supabase] Verifying OTP for: ${phone.trim()}`)
     const res = await fetch(`${SUPABASE_URL}/auth/v1/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY },
-      body: JSON.stringify({ type: 'sms', phone, token })
+      body: JSON.stringify({ type: 'sms', phone: phone.trim(), token: token.trim() })
     })
     console.log(`[Supabase] Verify OTP response status: ${res.status}`)
+    if (res.status === 429) throw new Error('Too many attempts. Please wait before retrying.')
     const data = await res.json()
     if (!res.ok) {
       console.error(`[Supabase] Verify OTP failed:`, data)
       throw new Error(data.error_description || data.msg || 'Verification failed')
     }
-    console.log(`[Supabase] OTP verification successful for user: ${data.user?.id}`)
+    if (!data.access_token || !data.user?.id) {
+      throw new Error('Invalid OTP verification response')
+    }
+    console.log(`[Supabase] OTP verification successful for user: ${data.user.id}`)
+    // ── CRITICAL: Reset dead-session guard ──
+    sessionPermanentlyDead = false
     supabaseAccessToken = data.access_token
-    supabaseUserId = data.user?.id
+    supabaseRefreshToken = data.refresh_token || null
+    supabaseUserId = data.user.id
     storeSecureSession({
       accessToken: data.access_token,
-      userId: data.user?.id
+      refreshToken: data.refresh_token,
+      userId: data.user.id
     })
-    return { user: data.user, accessToken: data.access_token }
+    return { userId: data.user.id, email: data.user.email }
   })
 
   ipcMain.handle('supabase-login-google', async () => {
@@ -548,125 +969,155 @@ function setupIPC(): void {
     shell.openExternal(authUrl)
   })
 
-  ipcMain.on('supabase-manual-sync', (_e, { accessToken, userId }) => {
-    console.log('[Main] Manually syncing session for user:', userId)
+  ipcMain.handle('supabase-manual-sync', async (_e, { accessToken, refreshToken, userId }) => {
+    // ── Input validation ──
+    if (typeof accessToken !== 'string' || accessToken.length < 20) {
+      console.error('[Main] Manual sync rejected: invalid accessToken')
+      return { ok: false, userId: null }
+    }
+
+    console.log('[Main] Manually syncing session for user:', userId || '(resolving...)')
+
+    // ── CRITICAL: Reset dead-session guard on any fresh token sync ──
+    sessionPermanentlyDead = false
     supabaseAccessToken = accessToken
-    supabaseUserId = userId
-    storeSecureSession({ accessToken, userId })
+    supabaseRefreshToken = (typeof refreshToken === 'string' && refreshToken.length > 10) ? refreshToken : null
+
+    // If userId wasn't passed, resolve it from the access token directly
+    if (userId && typeof userId === 'string' && userId.length > 8) {
+      supabaseUserId = userId
+    } else if (accessToken) {
+      try {
+        const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+          headers: {
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${accessToken}`
+          }
+        })
+        if (userRes.ok) {
+          const userData = await userRes.json()
+          if (!userData.id) throw new Error('No user ID in response')
+          supabaseUserId = userData.id as string
+          console.log('[Main] Resolved userId from token during manual sync:', supabaseUserId)
+        } else {
+          console.error('[Main] Failed to resolve userId during manual sync, status:', userRes.status)
+          // Don't store a broken session
+          supabaseAccessToken = null
+          supabaseRefreshToken = null
+          return { ok: false, userId: null }
+        }
+      } catch (err) {
+        console.error('[Main] Error resolving userId during manual sync:', err)
+        supabaseAccessToken = null
+        supabaseRefreshToken = null
+        return { ok: false, userId: null }
+      }
+    }
+
+    storeSecureSession({ accessToken, refreshToken: supabaseRefreshToken, userId: supabaseUserId || '' })
+    console.log('[Main] Manual sync complete. supabaseUserId:', supabaseUserId)
+    return { ok: true, userId: supabaseUserId }
   })
 
   ipcMain.handle('supabase-logout', async () => {
     if (supabaseAccessToken) {
-      await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+      // Best-effort server-side logout — ignore errors (token may already be expired)
+      fetch(`${SUPABASE_URL}/auth/v1/logout`, {
         method: 'POST',
         headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` }
-      })
+      }).catch(() => { /* ignore */ })
     }
+    // ── CRITICAL: Reset dead-session guard so user can log in again without restart ──
+    sessionPermanentlyDead = false
     supabaseAccessToken = null
+    supabaseRefreshToken = null
     supabaseUserId = null
     clearSecureSession()
+    console.log('[Supabase] User logged out, session cleared')
   })
 
   ipcMain.handle('supabase-get-profile', async () => {
     console.log(`[Supabase] Fetching profile for: ${supabaseUserId}`)
-    if (!supabaseUserId || !supabaseAccessToken) {
+    if (!supabaseUserId) {
       console.warn('[Supabase] No session found for profile fetch')
       return null
     }
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${supabaseUserId}&select=*`, {
+
+    const token = await ensureFreshSupabaseToken()
+    if (!token) {
+      console.warn('[Supabase] No access token available for profile fetch')
+      return null
+    }
+
+    // Use Edge Function — identity derived from JWT server-side, no service_role in client
+    let res = await fetch(`${SUPABASE_URL}/functions/v1/get-profile`, {
       headers: {
-        apikey: SUPABASE_SERVICE_ROLE_KEY,
-        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${token}`
       }
     })
-    console.log(`[Supabase] Profile fetch status: ${res.status}`)
-    let rows = await res.json()
-    if (res.ok && rows.length === 0) {
-      console.log(`[Supabase] Profile missing, initializing default for: ${supabaseUserId}`)
-      const createRes = await fetch(`${SUPABASE_URL}/rest/v1/profiles`, {
-        method: 'POST',
-        headers: {
-          apikey: SUPABASE_SERVICE_ROLE_KEY,
-          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-          'Content-Type': 'application/json',
-          Prefer: 'return=representation'
-        },
-        body: JSON.stringify({
-          id: supabaseUserId,
-          sessions_balance: 0,
-          trial_seconds_used: 0
+
+    // If 401 Unauthorized, token might have been revoked/expired — refresh and retry once
+    if (res.status === 401 && supabaseRefreshToken) {
+      console.warn('[Supabase] Profile fetch returned 401, refreshing token and retrying...')
+      const refreshed = await refreshSupabaseSession()
+      if (refreshed && supabaseAccessToken) {
+        res = await fetch(`${SUPABASE_URL}/functions/v1/get-profile`, {
+          headers: {
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${supabaseAccessToken}`
+          }
         })
-      })
-      if (createRes.ok) {
-        rows = await createRes.json()
-        console.log('[Supabase] Profile initialized successfully')
-      } else {
-        const err = await createRes.json()
-        console.error('[Supabase] Profile initialization failed:', err)
       }
     }
-    if (res.ok) {
-      console.log(`[Supabase] Profile data:`, rows?.[0])
-    } else {
-      console.error(`[Supabase] Profile fetch error:`, rows)
+
+    console.log(`[Supabase] Profile fetch status: ${res.status}`)
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      console.error('[Supabase] Profile fetch error:', err)
+      return null
     }
-    return rows?.[0] ?? null
+    const profile = await res.json()
+    console.log(`[Supabase] Profile data:`, profile)
+    return profile ?? null
   })
 
   ipcMain.handle('supabase-deduct-session', async () => {
-    if (!supabaseUserId || !supabaseAccessToken) throw new Error('Not logged in')
-    const profileRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${supabaseUserId}&select=sessions_balance`,
-      {
-        headers: {
-          apikey: SUPABASE_SERVICE_ROLE_KEY,
-          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
-        }
-      }
-    )
-    const rows = await profileRes.json()
-    const current = rows?.[0]?.sessions_balance ?? 0
-    if (current <= 0) throw new Error('No sessions remaining')
-    const newBalance = current - 1
-    await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${supabaseUserId}`, {
-      method: 'PATCH',
+    const token = await ensureFreshSupabaseToken()
+    if (!supabaseUserId || !token) throw new Error('Not logged in')
+    // Atomic decrement via Edge Function — eliminates race condition (H3 fix)
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/consume-session`, {
+      method: 'POST',
       headers: {
-        apikey: SUPABASE_SERVICE_ROLE_KEY,
-        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=minimal'
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ sessions_balance: newBalance })
+      body: JSON.stringify({ sessionType: 'regular' })
     })
-    return { newBalance }
+    if (res.status === 402) throw new Error('No sessions remaining')
+    if (!res.ok) throw new Error('Failed to consume session')
+    const data = await res.json()
+    return { newBalance: data.newBalance }
   })
 
   ipcMain.handle('supabase-deduct-phone-session', async () => {
-    if (!supabaseUserId || !supabaseAccessToken) throw new Error('Not logged in')
-    const profileRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${supabaseUserId}&select=phone_sessions_balance`,
-      {
-        headers: {
-          apikey: SUPABASE_SERVICE_ROLE_KEY,
-          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
-        }
-      }
-    )
-    const rows = await profileRes.json()
-    const current = rows?.[0]?.phone_sessions_balance ?? 0
-    if (current <= 0) throw new Error('No sessions remaining')
-    const newBalance = current - 1
-    await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${supabaseUserId}`, {
-      method: 'PATCH',
+    const token = await ensureFreshSupabaseToken()
+    if (!supabaseUserId || !token) throw new Error('Not logged in')
+    // Atomic decrement via Edge Function — eliminates race condition (H3 fix)
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/consume-session`, {
+      method: 'POST',
       headers: {
-        apikey: SUPABASE_SERVICE_ROLE_KEY,
-        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=minimal'
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ phone_sessions_balance: newBalance })
+      body: JSON.stringify({ sessionType: 'phone' })
     })
-    return { newBalance }
+    if (res.status === 402) throw new Error('No sessions remaining')
+    if (!res.ok) throw new Error('Failed to consume phone session')
+    const data = await res.json()
+    return { newBalance: data.newBalance }
   })
 
   ipcMain.handle('supabase-create-razorpay-order', async (_e, { planId }) => {
@@ -701,24 +1152,25 @@ function setupIPC(): void {
     return await res.json()
   })
 
-  ipcMain.handle('supabase-update-trial', async (_e, seconds) => {
-    console.log(`[Supabase] Updating trial for ${supabaseUserId}: ${seconds}s`)
-    if (!supabaseUserId || !supabaseAccessToken) {
+  ipcMain.handle('supabase-update-trial', async (_e, delta) => {
+    console.log(`[Supabase] Bumping trial for ${supabaseUserId}: +${delta}s`)
+    const token = await ensureFreshSupabaseToken()
+    if (!supabaseUserId || !token) {
       console.warn('[Supabase] No session for trial update')
       return
     }
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${supabaseUserId}`, {
-      method: 'PATCH',
+    // Send a delta (elapsed seconds), not an absolute value — server enforces monotonicity
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/update-trial`, {
+      method: 'POST',
       headers: {
-        apikey: SUPABASE_SERVICE_ROLE_KEY,
-        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=representation'
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ trial_seconds_used: seconds })
+      body: JSON.stringify({ delta: Math.min(60, Math.max(0, Number(delta))) })
     })
     console.log(`[Supabase] Update trial status: ${res.status}`)
-    const data = await res.json()
+    const data = await res.json().catch(() => ({}))
     console.log('[Supabase] Update trial result:', data)
   })
 
@@ -786,8 +1238,28 @@ function setupIPC(): void {
     }
   })
 
-  function gatewayHeaders(extra: Record<string, string> = {}): Record<string, string> {
-    return { 'Content-Type': 'application/json', ...extra }
+  function gatewayHeaders(extra: Record<string, string> = {}, isMultipart = false): Record<string, string> {
+    const headers: Record<string, string> = { ...extra }
+    if (!isMultipart) {
+      headers['Content-Type'] = 'application/json'
+    }
+    return headers
+  }
+
+  function isWhisperPromptHallucination(text: string): boolean {
+    if (!text) return false
+    const lower = text.toLowerCase()
+    const hallucinationPatterns = [
+      /preserve hindi/i,
+      /ignore background/i,
+      /do not hallucinate/i,
+      /multilingual speech/i,
+      /speech detection/i,
+      /technical interview/i,
+      /verbatim in their/i,
+      /without translating/i
+    ]
+    return hallucinationPatterns.some((pattern) => pattern.test(lower))
   }
 
   ipcMain.handle(
@@ -803,18 +1275,25 @@ function setupIPC(): void {
         const formData = new FormData()
         formData.append('file', new Blob([buffer], { type: mimeType }), `recording.${ext}`)
         formData.append('model', 'whisper-large-v3-turbo')
-        formData.append('language', language.split('-')[0])
-        formData.append('prompt', 'Technical interview. IMPORTANT: Ignore background noise, silence, or music. Do NOT hallucinate words like "You", "Thank you", "Subscribe", "Subtitle". If no clear speech is detected, return an empty string.')
+        const isHindi = language && (language.startsWith('hi') || language === 'hi-IN')
+        // Force Whisper to use the correct language — prevents auto-translate to English
+        if (language && language !== 'auto') {
+          formData.append('language', language.split('-')[0])
+        }
+        const sttPrompt = isHindi
+          ? 'यह एक हिंदी या हिंग्लिश तकनीकी इंटरव्यू है। जो भी बोला जाए उसे वैसे ही transcribe करें — Hindi में बोले हुए को Hindi/Hinglish में रखें, English में बोले को English में। कभी translate मत करें।'
+          : 'Technical interview speech. Transcribe exactly what is spoken. May include English and Hindi (Hinglish). Keep technical terms like API, testing, QA, automation, sprint, Agile in English.'
+        formData.append('prompt', sttPrompt)
 
-        const sttHeaders: Record<string, string> = {}
-        console.log(`[AI-STT] Requesting transcription...`)
-        const sttRes = await withRetry(() => 
-          fetchWithTimeout(`${AI_GATEWAY}/gateway/stt`, { method: 'POST', headers: sttHeaders, body: formData })
+        const sttRes = await withRetry(() =>
+          fetchWithTimeout(`${AI_GATEWAY}/gateway/stt`, { method: 'POST', headers: gatewayHeaders({}, true), body: formData })
         )
         const sttData = await sttRes.json() as { text?: string }
         console.log(`[AI-STT] Received: "${sttData.text?.substring(0, 50)}..."`)
         const transcript = sttData.text || ''
-        if (!transcript) return { transcript: 'Audio captured', answer: 'Could not transcribe.' }
+        if (!transcript || isWhisperPromptHallucination(transcript)) {
+          return { transcript: '', answer: '' }
+        }
 
         const llmPayload = {
           messages: [
@@ -822,7 +1301,7 @@ function setupIPC(): void {
             { role: 'user', content: `TRANSCRIPT: ${transcript}\nRESUME: ${resumeText.substring(0, 3000)}` }
           ],
           temperature: 0.72,
-          max_tokens: 400,
+          max_tokens: 1024,
           response_format: { type: 'json_object' }
         }
 
@@ -831,7 +1310,8 @@ function setupIPC(): void {
           fetchWithTimeout(`${AI_GATEWAY}/gateway/llm`, {
             method: 'POST',
             headers: gatewayHeaders(),
-            body: JSON.stringify(llmPayload)
+            body: JSON.stringify(llmPayload),
+            timeout: 45000
           })
         )
         const llmData = await llmRes.json() as { choices?: { message?: { content?: string } }[] }
@@ -858,20 +1338,29 @@ function setupIPC(): void {
         const formData = new FormData()
         formData.append('file', new Blob([buffer], { type: mimeType }), `recording.${ext}`)
         formData.append('model', 'whisper-large-v3-turbo')
-        formData.append('language', language.split('-')[0])
+        if (language && language !== 'auto') {
+          formData.append('language', language.split('-')[0])
+        }
         
-        const defaultPrompt = 'Technical interview. IMPORTANT: Ignore background noise, silence, or music. Do NOT hallucinate words like "You", "Thank you", "Subscribe", "Subtitle". If no clear speech is detected, return an empty string.'
+        const isHindi = language && (language.startsWith('hi') || language === 'hi-IN')
+        const defaultPrompt = isHindi
+          ? 'यह एक हिंदी या हिंग्लिश तकनीकी इंटरव्यू है। जो भी बोला जाए उसे वैसे ही transcribe करें — Hindi/Hinglish में बोले को Hindi में रखें, translate मत करें। Technical terms जैसे testing, QA, sprint, Jira, automation English में रखें।'
+          : 'Technical interview speech. May include Hindi and English (Hinglish). Transcribe exactly as spoken. Keep technical terms in English.'
         const finalPrompt = context 
-          ? `${defaultPrompt} Context: ${context}`
+          ? `${defaultPrompt} Context: ${context.slice(0, 120)}`
           : defaultPrompt
-        formData.append('prompt', finalPrompt.slice(-1000))
+        formData.append('prompt', finalPrompt.slice(-300))
 
-        const sttHeaders: Record<string, string> = {}
-        const res = await withRetry(() => 
-          fetchWithTimeout(`${AI_GATEWAY}/gateway/stt`, { method: 'POST', headers: sttHeaders, body: formData })
+        const res = await withRetry(() =>
+          fetchWithTimeout(`${AI_GATEWAY}/gateway/stt`, { method: 'POST', headers: gatewayHeaders({}, true), body: formData })
         )
         const data = await res.json() as { text?: string }
-        return data.text || ''
+        const text = data.text || ''
+        if (isWhisperPromptHallucination(text)) {
+          console.log('[Main-STT] Discarded Whisper prompt hallucination:', text)
+          return ''
+        }
+        return text
       } catch (err: unknown) {
         console.error('[Gateway] transcribe-only error:', err)
         throw err
@@ -897,10 +1386,11 @@ function setupIPC(): void {
                 { role: 'user', content: transcript }
               ],
               temperature: temperature ?? 0.65,
-              max_tokens: maxTokens ?? 280,
+              max_tokens: maxTokens ?? 1024,
               presence_penalty: presencePenalty ?? 0.4,
               frequency_penalty: frequencyPenalty ?? 0.4
-            })
+            }),
+            timeout: 45000
           })
         )
         const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
@@ -918,11 +1408,11 @@ function setupIPC(): void {
     try {
       const sources = await desktopCapturer.getSources({
         types: ['screen'],
-        thumbnailSize: screen.getPrimaryDisplay().size
+        thumbnailSize: { width: 1280, height: 720 }
       })
       const primarySource = sources[0]
       if (!primarySource) throw new Error('No screen source found')
-      const base64Image = primarySource.thumbnail.toDataURL()
+      const base64Image = 'data:image/jpeg;base64,' + primarySource.thumbnail.toJPEG(85).toString('base64')
 
       const res = await withRetry(() => 
         fetchWithTimeout(`${AI_GATEWAY}/gateway/vision`, {
@@ -938,14 +1428,110 @@ function setupIPC(): void {
                   { type: 'image_url', image_url: { url: base64Image } }
                 ]
               }
-            ]
-          })
+            ],
+            max_tokens: 1024
+          }),
+          timeout: 45000
         })
       )
       const data = await res.json() as { choices?: { message?: { content?: string } }[] }
       return data.choices?.[0]?.message?.content || 'No content found on screen.'
     } catch (err: any) {
       console.error('[Gateway] analyze-screen error:', err)
+      throw err
+    }
+  })
+
+  ipcMain.handle('capture-screenshot', async () => {
+    try {
+      // ── Ghostly Micro-Blink Stealth Screenshot Protocol ──
+      // Temporarily hide overlayWindow from GPU framebuffer before capture
+      if (overlayWindow && !overlayWindow.isDestroyed()) {
+        overlayWindow.setOpacity(0)
+      }
+
+      // Wait 120ms for DWM / GPU compositor framebuffer to clear overlay pixels
+      await new Promise((resolve) => setTimeout(resolve, 120))
+
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: 1280, height: 720 }
+      })
+
+      // Restore overlay visibility immediately after capturing screen
+      if (overlayWindow && !overlayWindow.isDestroyed()) {
+        overlayWindow.setOpacity(1)
+        nudgeRepaint(overlayWindow)
+      }
+
+      const primarySource = sources[0]
+      if (!primarySource) throw new Error('No screen source found')
+      const jpegBuffer = primarySource.thumbnail.toJPEG(85)
+      return 'data:image/jpeg;base64,' + jpegBuffer.toString('base64')
+    } catch (err) {
+      if (overlayWindow && !overlayWindow.isDestroyed()) {
+        overlayWindow.setOpacity(1)
+      }
+      console.error('[Gateway] capture-screenshot error:', err)
+      throw err
+    }
+  })
+
+  ipcMain.handle('query-vision', async (_event, { systemPrompt, base64Image }) => {
+    try {
+      const res = await withRetry(() => 
+        fetchWithTimeout(`${AI_GATEWAY}/gateway/vision`, {
+          method: 'POST',
+          headers: gatewayHeaders(),
+          body: JSON.stringify({
+            messages: [
+              { role: 'system', content: systemPrompt },
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: 'Look at this screenshot. Identify ANY interview question visible (coding, MCQ, behavioral, HR, technical). Provide the answer the candidate should say out loud, per system prompt instructions.' },
+                  { type: 'image_url', image_url: { url: base64Image } }
+                ]
+              }
+            ],
+            max_tokens: 1024
+          }),
+          timeout: 45000
+        })
+      )
+      const data = await res.json() as { choices?: { message?: { content?: string } }[] }
+      return data.choices?.[0]?.message?.content || 'No response.'
+    } catch (err: unknown) {
+      console.error('[Gateway] query-vision error:', err)
+      throw err
+    }
+  })
+
+  ipcMain.handle('extract-question-from-image', async (_event, { base64Image }) => {
+    try {
+      const res = await withRetry(() => 
+        fetchWithTimeout(`${AI_GATEWAY}/gateway/vision`, {
+          method: 'POST',
+          headers: gatewayHeaders(),
+          body: JSON.stringify({
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: 'Analyze this screenshot. Identify the primary technical question, coding problem, or multiple-choice question visible on the screen. Extract and output ONLY the raw question text. Do NOT answer the question. If no question is visible, output an empty string.' },
+                  { type: 'image_url', image_url: { url: base64Image } }
+                ]
+              }
+            ],
+            max_tokens: 256
+          }),
+          timeout: 45000
+        })
+      )
+      const data = await res.json() as { choices?: { message?: { content?: string } }[] }
+      return data.choices?.[0]?.message?.content || ''
+    } catch (err: unknown) {
+      console.error('[Gateway] extract-question-from-image error:', err)
       throw err
     }
   })
@@ -958,6 +1544,14 @@ function setupIPC(): void {
       Math.max(0, Math.min(x, s.width - size[0])),
       Math.max(0, Math.min(y, s.height - size[1]))
     )
+  })
+
+  ipcMain.on('toggle-screen-protection', (_event, enabled?: boolean) => {
+    if (!overlayWindow || overlayWindow.isDestroyed()) return
+    screenProtectionEnabled = typeof enabled === 'boolean' ? enabled : !screenProtectionEnabled
+    setStealthProtection(overlayWindow, screenProtectionEnabled)
+    safeSend(overlayWindow, 'screen-protection-toggled', screenProtectionEnabled)
+    console.log('[Main] Manual screen protection toggle:', screenProtectionEnabled ? 'ENABLED' : 'DISABLED')
   })
 
   ipcMain.on('set-overlay-size', (_event, { width, height }) => {
@@ -1000,10 +1594,16 @@ function setupIPC(): void {
     const startBounds = mainWindow.getBounds()
     const startWidth = startBounds.width
     const startHeight = startBounds.height
+
+    // If already at target dimensions, do nothing to prevent fight with user dragging!
+    if (Math.abs(startWidth - width) < 2 && Math.abs(startHeight - height) < 2) {
+      return
+    }
+
     const deltaWidth = width - startWidth
     const deltaHeight = height - startHeight
     const startTime = Date.now()
-    const durationMs = 650
+    const durationMs = 280
 
     activeResizeInterval = setInterval(() => {
       if (!mainWindow || mainWindow.isDestroyed()) {
@@ -1025,8 +1625,10 @@ function setupIPC(): void {
       const currentWidth = Math.round(startWidth + deltaWidth * ease)
       const currentHeight = Math.round(startHeight + deltaHeight * ease)
 
-      const currentX = Math.round(startBounds.x + (startBounds.width - currentWidth) / 2)
-      const currentY = Math.round(startBounds.y + (startBounds.height - currentHeight) / 2)
+      // Maintain live window origin when resizing
+      const liveBounds = mainWindow.getBounds()
+      const currentX = Math.round(liveBounds.x + (liveBounds.width - currentWidth) / 2)
+      const currentY = Math.round(liveBounds.y + (liveBounds.height - currentHeight) / 2)
 
       mainWindow.setBounds({
         x: currentX,
@@ -1041,10 +1643,11 @@ function setupIPC(): void {
           activeResizeInterval = null
         }
       }
-    }, 20)
+    }, 16)
   })
 
   ipcMain.on('reload-window', (): void => mainWindow?.reload())
+  ipcMain.on('minimize-window', (): void => mainWindow?.minimize())
   ipcMain.on('close-window', (): void => mainWindow?.close())
 
   ipcMain.handle('install-update', (): void => {

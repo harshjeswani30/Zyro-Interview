@@ -1,30 +1,65 @@
 import { useState } from 'react'
 import { AlertCircle, RefreshCw, X, Mail, Lock } from 'lucide-react'
 import ZyroMascot from './ZyroMascot'
+import { supabase } from '../lib/supabase'
 
 export default function LoginPage({
   onLogin
 }: {
   onLogin: (password: string) => void
 }): JSX.Element {
+  const [email, setEmail] = useState('admin@zyro.ai')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const handleSubmit = (e: React.FormEvent): void => {
+  const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
     setLoading(true)
     setError('')
 
-    // Delay to show loading state
-    setTimeout(() => {
-      if (password === 'Peeyush0000..') {
-        onLogin(password)
-      } else {
-        setError('Invalid admin credentials')
+    try {
+      // 1. Try real Supabase auth
+      const { data, error: authErr } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password: password.trim()
+      })
+
+      if (authErr || !data.user) {
+        // Fallback for transition phase: check fallback password if DB is not setup yet
+        if (password === 'Peeyush0000..') {
+          onLogin(password)
+          return
+        }
+        setError(authErr?.message || 'Invalid admin credentials')
         setLoading(false)
+        return
       }
-    }, 800)
+
+      // 2. Verify is_admin field on profile
+      const { data: profile, error: profileErr } = await supabase
+        .from('profiles')
+        .select('is_admin')
+        .eq('id', data.user.id)
+        .single()
+
+      if (profileErr || !profile?.is_admin) {
+        // Allow fallback password for now
+        if (password === 'Peeyush0000..') {
+          onLogin(password)
+          return
+        }
+        await supabase.auth.signOut()
+        setError('This account does not have admin permissions.')
+        setLoading(false)
+        return
+      }
+
+      onLogin(password)
+    } catch (err: any) {
+      setError(err.message || 'Authentication error')
+      setLoading(false)
+    }
   }
 
   return (
@@ -40,10 +75,16 @@ export default function LoginPage({
 
         <form onSubmit={handleSubmit} className="login-form-simple">
           <div className="login-field-simple">
-            <label>Master Email</label>
+            <label>Admin Email</label>
             <div className="login-input-box-simple">
               <Mail size={16} />
-              <input type="email" value="admin@zyro.ai" disabled />
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="admin@zyro-ai.in"
+                required
+              />
             </div>
           </div>
 

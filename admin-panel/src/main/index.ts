@@ -6,22 +6,184 @@ import { config as dotenvConfig } from 'dotenv'
 import { resolve } from 'path'
 import { createClient } from '@supabase/supabase-js'
 
+// Prevent multiple instances from running simultaneously and locking the Chromium cache
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+  app.quit()
+  process.exit(0)
+}
+
 // Load .env from project root (dev) or app resources (prod)
 const envPath = is.dev ? resolve(__dirname, '../../.env') : resolve(process.resourcesPath, '.env')
 console.log('[Main] Loading .env from:', envPath)
 dotenvConfig({ path: envPath })
 
 // ─── Supabase client (service role — main process only) ───────────────────────
+let supabaseInstance: ReturnType<typeof createClient> | null = null
+
 function getSupabase() {
+  if (supabaseInstance) return supabaseInstance
+
   const url = process.env.SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
-  console.log('[Main] Validating Supabase config...')
+  console.log('[Main] Initializing Supabase client...')
   if (!url || !key) {
     console.error('[Main] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY')
     throw new Error('SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set in .env')
   }
-  return createClient(url, key)
+  supabaseInstance = createClient(url, key)
+  return supabaseInstance
 }
+
+// ─── Admin DB IPC Handlers (all use service role) ────────────────────────────
+
+// Fetch all profiles
+ipcMain.handle('admin:list-profiles', async () => {
+  const supabase = getSupabase()
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, email, full_name, sessions_balance, phone_sessions_balance, trial_seconds_used, is_admin, created_at, updated_at')
+    .order('created_at', { ascending: false })
+  if (error) throw new Error(error.message)
+  return data ?? []
+})
+
+// Fetch all staff permissions
+ipcMain.handle('admin:list-staff-permissions', async () => {
+  const supabase = getSupabase()
+  const { data, error } = await supabase
+    .from('staff_permissions')
+    .select('*')
+  if (error) throw new Error(error.message)
+  return data ?? []
+})
+
+// Upsert staff permission
+ipcMain.handle('admin:upsert-staff-permission', async (_event, perm: Record<string, unknown>) => {
+  const supabase = getSupabase()
+  const { error } = await supabase
+    .from('staff_permissions')
+    .upsert(perm, { onConflict: 'staff_id' })
+  if (error) throw new Error(error.message)
+  return { success: true }
+})
+
+// Delete staff permission
+ipcMain.handle('admin:delete-staff-permission', async (_event, staffId: string) => {
+  const supabase = getSupabase()
+  const { error } = await supabase
+    .from('staff_permissions')
+    .delete()
+    .eq('staff_id', staffId)
+  if (error) throw new Error(error.message)
+  return { success: true }
+})
+
+// Delete profile
+ipcMain.handle('admin:delete-profile', async (_event, userId: string) => {
+  const supabase = getSupabase()
+  const { error } = await supabase
+    .from('profiles')
+    .delete()
+    .eq('id', userId)
+  if (error) throw new Error(error.message)
+  return { success: true }
+})
+
+// Delete auth user (admin)
+ipcMain.handle('admin:delete-auth-user', async (_event, userId: string) => {
+  const supabase = getSupabase()
+  const { error } = await supabase.auth.admin.deleteUser(userId)
+  if (error) throw new Error(error.message)
+  return { success: true }
+})
+
+// Fetch support tickets
+ipcMain.handle('admin:list-tickets', async () => {
+  const supabase = getSupabase()
+  const { data, error } = await supabase
+    .from('support_tickets')
+    .select('*')
+    .order('created_at', { ascending: false })
+  if (error) throw new Error(error.message)
+  return data ?? []
+})
+
+// Delete support ticket (and its messages)
+ipcMain.handle('admin:delete-ticket', async (_event, ticketId: string) => {
+  const supabase = getSupabase()
+  await supabase.from('ticket_messages').delete().eq('ticket_id', ticketId).catch(console.warn)
+  const { error } = await supabase.from('support_tickets').delete().eq('id', ticketId)
+  if (error) throw new Error(error.message)
+  return { success: true }
+})
+
+// Update user balance (sessions or phone sessions)
+ipcMain.handle('admin:update-user-balance', async (_event, { userId, field, value }: { userId: string; field: string; value: number }) => {
+  const supabase = getSupabase()
+  const { error } = await supabase
+    .from('profiles')
+    .update({ [field]: value, updated_at: new Date().toISOString() })
+    .eq('id', userId)
+  if (error) throw new Error(error.message)
+  return { success: true }
+})
+
+// Send in-app notification to user
+ipcMain.handle(
+  'admin:send-user-notification',
+  async (
+    _event,
+    {
+      userId,
+      title,
+      message,
+      type = 'session_credit',
+      metadata = {}
+    }: {
+      userId: string
+      title: string
+      message: string
+      type?: string
+      metadata?: Record<string, unknown>
+    }
+  ) => {
+    const supabase = getSupabase()
+    const { data, error } = await supabase.from('notifications').insert({
+      user_id: userId,
+      title: title.trim(),
+      message: message.trim(),
+      type,
+      metadata,
+      is_read: false,
+      created_at: new Date().toISOString()
+    }).select().single()
+    if (error) throw new Error(error.message)
+    return data
+  }
+)
+
+// List notifications (admin overview or per user)
+ipcMain.handle('admin:list-notifications', async (_event, userId?: string) => {
+  const supabase = getSupabase()
+  try {
+    let query = supabase
+      .from('notifications')
+      .select('*, profiles:user_id(email, full_name)')
+      .order('created_at', { ascending: false })
+      .limit(100)
+    if (userId) query = query.eq('user_id', userId)
+    const { data, error } = await query
+    if (error) throw error
+    return data ?? []
+  } catch (_e) {
+    let query = supabase.from('notifications').select('*').order('created_at', { ascending: false }).limit(100)
+    if (userId) query = query.eq('user_id', userId)
+    const { data, error } = await query
+    if (error) throw new Error(error.message)
+    return data ?? []
+  }
+})
 
 // ─── Coupon IPC handlers (Supabase-only, no Razorpay API needed) ─────────────
 // Discounts are calculated server-side in razorpay-create-order edge function.
@@ -132,6 +294,17 @@ ipcMain.handle(
     if (error) throw new Error(error.message)
   }
 )
+
+// List all coupons
+ipcMain.handle('stripe:list-coupons', async () => {
+  const supabase = getSupabase()
+  const { data, error } = await supabase
+    .from('coupons')
+    .select('*')
+    .order('created_at', { ascending: false })
+  if (error) throw new Error(error.message)
+  return data ?? []
+})
 
 // List redemptions: reads from Supabase transactions table, joined with profiles
 ipcMain.handle('stripe:list-redemptions', async () => {

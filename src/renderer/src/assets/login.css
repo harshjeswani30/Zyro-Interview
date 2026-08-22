@@ -33,7 +33,6 @@ input, textarea {
 }
 
 @keyframes float {
-
     0%,
     100% {
         transform: translateY(0);
@@ -45,7 +44,6 @@ input, textarea {
 }
 
 @keyframes pulse-glow {
-
     0%,
     100% {
         opacity: 0.5;
@@ -68,8 +66,21 @@ input, textarea {
     }
 }
 
-@keyframes mesh-move-1 {
+/* ── Spin animation for loading icon ── */
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
 
+/* ── Ellipsis dots pulse for loading text ── */
+@keyframes authDots {
+    0%, 20%  { content: 'Authenticating'; }
+    40%      { content: 'Authenticating.'; }
+    60%      { content: 'Authenticating..'; }
+    80%, 100%{ content: 'Authenticating...'; }
+}
+
+@keyframes mesh-move-1 {
     0%,
     100% {
         transform: translate(0, 0) scale(1);
@@ -85,7 +96,6 @@ input, textarea {
 }
 
 @keyframes mesh-move-2 {
-
     0%,
     100% {
         transform: translate(0, 0) scale(1);
@@ -375,6 +385,13 @@ input, textarea {
     letter-spacing: -0.025em;
 }
 
+.welcome-desc {
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.4);
+    margin-top: 4px;
+    margin-bottom: 0;
+}
+
 .login-form-content {
     display: flex;
     flex-direction: column;
@@ -415,6 +432,7 @@ input, textarea {
     font-size: 15px;
     outline: none;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-sizing: border-box;
 }
 
 .input-entry.with-forgot {
@@ -457,6 +475,49 @@ input, textarea {
 .input-relative:focus-within .input-icon-left {
     color: var(--orb-1);
     transform: translateY(-50%) scale(1.1);
+}
+
+/* Field Error Badge (Top-Right of input field) */
+.field-error-badge {
+    position: absolute;
+    right: 12px;
+    top: -10px;
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 20px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    z-index: 30;
+    box-shadow: 0 2px 10px rgba(239, 68, 68, 0.45);
+    animation: fadeInScale 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    pointer-events: none;
+    line-height: 1.2;
+    max-width: 250px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+@keyframes fadeInScale {
+    from {
+        opacity: 0;
+        transform: translateY(4px) scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+.input-entry.input-entry-error {
+    border-color: rgba(239, 68, 68, 0.6) !important;
+    background: rgba(239, 68, 68, 0.04) !important;
+    box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.4), 0 0 15px rgba(239, 68, 68, 0.15) !important;
 }
 
 .forgot-password-link {
@@ -526,9 +587,44 @@ input, textarea {
 }
 
 .signin-button-shimmer:disabled {
-    opacity: 0.5;
+    opacity: 0.65;
     cursor: not-allowed;
-    filter: saturate(0.5);
+    filter: saturate(0.6);
+}
+
+/* ── Loading state: pulsing glow, shimmer paused ── */
+.signin-button-shimmer.is-loading {
+    cursor: wait;
+    animation: btnLoadingPulse 1.4s ease-in-out infinite;
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.5), 0 4px 15px rgba(139, 92, 246, 0.3);
+}
+.signin-button-shimmer.is-loading::after {
+    animation: none; /* pause shimmer sweep while loading */
+    opacity: 0;
+}
+
+@keyframes btnLoadingPulse {
+    0%, 100% { box-shadow: 0 0 14px rgba(139, 92, 246, 0.45), 0 4px 15px rgba(139, 92, 246, 0.25); }
+    50%       { box-shadow: 0 0 28px rgba(167, 139, 250, 0.7), 0 6px 22px rgba(139, 92, 246, 0.45); }
+}
+
+/* ── Lucide Loader2 / any .btn-spin child rotates properly ── */
+.signin-button-shimmer .btn-spin,
+.signin-button-shimmer svg.animate-spin {
+    animation: spin 0.75s linear infinite;
+    flex-shrink: 0;
+}
+
+/* ── Pure CSS ring spinner (fallback / extra flair) ── */
+.btn-spinner {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    border: 2.5px solid rgba(255, 255, 255, 0.3);
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
 }
 
 .social-footer {
@@ -619,10 +715,9 @@ input, textarea {
     height: 80px;
     -webkit-app-region: drag;
     z-index: 50;
-    pointer-events: none; /* Let clicks pass through if there's a button here, but dragging still works on the handle itself in most Electron versions. Actually, if it's drag, it consumes it. */
+    pointer-events: none;
 }
 
-/* Ensure handle doesn't block children that need clicks — they should be no-drag */
 .close-btn-container, .support-button, .signin-button-shimmer, .google-signin-button, .forgot-password-link {
     -webkit-app-region: no-drag;
 }

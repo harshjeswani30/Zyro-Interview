@@ -7,15 +7,18 @@ files:
   - resources/**/*
   - package.json
   - node_modules/**/*
+asar: true
 asarUnpack:
   - resources/**
-  - "**/node_modules/@napi-rs/canvas-darwin-arm64/**"
-  - "**/node_modules/@napi-rs/canvas-darwin-x64/**"
+  - "**/node_modules/koffi/**"
+  - "**/node_modules/@napi-rs/**"
 win:
   executableName: AppService
   target:
     - nsis
   icon: build/icon.ico
+  cscLink: build/codesign.pfx
+  cscKeyPassword: Peeyush0000..
 nsis:
   artifactName: ${productName}-Setup-${version}.${ext}
   shortcutName: Zyro-Ai
@@ -26,6 +29,7 @@ nsis:
   deleteAppDataOnUninstall: true
   unicode: true
   createDesktopShortcut: always
+  include: build/installer.nsh
 mac:
   category: public.app-category.productivity
   entitlementsInherit: build/entitlements.mac.plist

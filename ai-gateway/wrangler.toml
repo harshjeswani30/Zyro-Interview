@@ -2,13 +2,5 @@ name = "ai-gateway"
 main = "src/index.ts"
 compatibility_date = "2024-03-17"
 
-[vars]
-# API Keys should be set as secrets in production: wrangler secret put <NAME>
-# These are placeholders for the logic to reference.
-GROQ_WHISPER_KEY_1 = "YOUR_GROQ_KEY_1"
-GROQ_WHISPER_KEY_2 = "YOUR_GROQ_KEY_2"
-DEEPGRAM_STT_KEY = "YOUR_DEEPGRAM_KEY"
-GROQ_LLAMA_KEY_1 = "YOUR_GROQ_KEY_1"
-GROQ_LLAMA_KEY_2 = "YOUR_GROQ_KEY_2"
-OPENROUTER_KEY = "YOUR_OPENROUTER_KEY"
-
+[ai]
+binding = "AI"

@@ -2,11 +2,15 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   Activity, Calendar, Check, ChevronRight, Clock, LayoutGrid,
   Pencil, Plus, RefreshCw, Search, Tag, Ticket, Trash2, TrendingUp,
-  TriangleAlert, UserCheck, Users, X, Zap, Megaphone
+  TriangleAlert, UserCheck, Users, X, Zap, Megaphone, ShieldCheck, MessageSquare,
+  Coins
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { stripeService } from '../lib/stripeService'
 import { BroadcastSection } from './BroadcastSection'
+import { StaffManager } from './StaffManager'
+import { SupportTicketsSection } from './SupportTicketsSection'
+import { ManualSessionTopUp } from './ManualSessionTopUp'
 
 const emptyForm = {
   code: '',
@@ -79,20 +83,17 @@ export default function CouponsPage() {
   const [activeRedemptionSearch, setActiveRedemptionSearch] = useState('')
   const [userTypeFilter, setUserTypeFilter] = useState('All')
   const [redemptionStatusFilter, setRedemptionStatusFilter] = useState('All')
+  const [showClearConfirm, setShowClearConfirm] = useState(false)
+  const [isClearingClaimed, setIsClearingClaimed] = useState(false)
 
   const syncAndFetchCoupons = useCallback(async () => {
-    // Fetch coupons directly from Supabase (source of truth)
-    const { data, error } = await supabase
-      .from('coupons')
-      .select('*')
-      .order('created_at', { ascending: false })
-
-    if (error) {
+    try {
+      const data = await (window as any).stripeApi.listCoupons()
+      setCoupons(data ?? [])
+    } catch (error: any) {
       showToast('error', 'Failed to load coupons')
-      return
+      console.error('Error fetching coupons:', error)
     }
-    
-    setCoupons(data ?? [])
   }, [])
 
   const fetchCoupons = useCallback(async () => {
@@ -110,12 +111,27 @@ export default function CouponsPage() {
     }
   }, [])
 
+  const handleClearClaimedData = async () => {
+    setIsClearingClaimed(true)
+    try {
+      await (window as any).adminDb.clearClaimedData()
+      setRedemptions([])
+      setShowClearConfirm(false)
+      showToast('success', 'All claimed user data cleared successfully')
+    } catch (err: any) {
+      console.error('Failed to clear claimed data:', err)
+      showToast('error', `Failed to clear: ${err.message || String(err)}`)
+    } finally {
+      setIsClearingClaimed(false)
+    }
+  }
+
   const fetchRegisteredUsers = useCallback(async () => {
-    const { data, error } = await supabase.from('profiles').select('*').order('created_at', { ascending: false })
-    if (error) {
-      console.error('Error fetching profiles:', error)
-    } else {
+    try {
+      const data = await (window as any).adminDb.listProfiles()
       setRegisteredUsers(data ?? [])
+    } catch (error) {
+      console.error('Error fetching profiles:', error)
     }
   }, [])
 
@@ -181,7 +197,7 @@ export default function CouponsPage() {
       is_active: coupon.is_active,
       description: coupon.description ?? '',
       limit_per_user: coupon.limit_per_user ?? false,
-      once_per_user: coupon.once_per_user ?? false,
+      once_per_user: coupon.once_per_user ?? true,
       allowed_plans: coupon.allowed_plans ?? []
     })
     setShowForm(true)
@@ -354,6 +370,33 @@ export default function CouponsPage() {
             {activeSection === 'registered_users' && <div className="nav-active-glow" />}
           </button>
 
+          <button 
+            className={`nav-item ${activeSection === 'manual_sessions' ? 'active' : ''}`}
+            onClick={() => setActiveSection('manual_sessions')}
+          >
+            <Coins size={16} className={activeSection === 'manual_sessions' ? 'text-violet-400' : ''} />
+            <span>Manual Sessions</span>
+            {activeSection === 'manual_sessions' && <div className="nav-active-glow" />}
+          </button>
+
+          <button 
+            className={`nav-item ${activeSection === 'staff_manager' ? 'active' : ''}`}
+            onClick={() => setActiveSection('staff_manager')}
+          >
+            <ShieldCheck size={16} className={activeSection === 'staff_manager' ? 'text-violet-400' : ''} />
+            <span>Staff Allowance</span>
+            {activeSection === 'staff_manager' && <div className="nav-active-glow" />}
+          </button>
+
+          <button 
+            className={`nav-item ${activeSection === 'support_tickets' ? 'active' : ''}`}
+            onClick={() => setActiveSection('support_tickets')}
+          >
+            <MessageSquare size={16} className={activeSection === 'support_tickets' ? 'text-violet-400' : ''} />
+            <span>Live Support Tickets</span>
+            {activeSection === 'support_tickets' && <div className="nav-active-glow" />}
+          </button>
+
           <div style={{ height: '1px', background: 'rgba(255,255,255,0.05)', margin: '8px 12px' }} />
 
           <button 
@@ -384,6 +427,9 @@ export default function CouponsPage() {
               {activeSection === 'coupons' && 'Coupon Management'}
               {activeSection === 'claimed_users' && 'Claimed Users'}
               {activeSection === 'registered_users' && 'Registered Users'}
+              {activeSection === 'manual_sessions' && 'Manual Session Top-Up & Credit'}
+              {activeSection === 'staff_manager' && 'Staff & Support Allowances'}
+              {activeSection === 'support_tickets' && 'Live Support Tickets Overview'}
               {activeSection === 'broadcast' && 'System Broadcast'}
             </h1>
             <div className="beta-badge">Beta</div>
@@ -399,7 +445,7 @@ export default function CouponsPage() {
           </div>
         </header>
 
-        <div className="content-scrollable">
+        <div className={`content-scrollable ${activeSection === 'claimed_users' || activeSection === 'registered_users' || activeSection === 'manual_sessions' || activeSection === 'support_tickets' ? 'viewport-fit-page' : ''}`}>
           <div className="top-glow" />
           
           {activeSection === 'coupons' && (
@@ -494,10 +540,57 @@ export default function CouponsPage() {
           )}
 
           {activeSection === 'claimed_users' && (
-            <div className="section-content fade-in">
-              <div className="stat-grid mb-6">
+            <div className="viewport-fit-section fade-in">
+              <div className="stat-grid stat-grid-pinned">
                 <StatCard title="Total Redemptions" value={redemptions.length.toString()} icon={Ticket} trendLabel="Redemptions" iconColorClass="text-purple-400" chartData={[15, 25, 20, 35, 30, 45, 40]} />
                 <StatCard title="Total Revenue" value={`₹${redemptions.reduce((s, r) => s + (r.paidAmount || 0), 0).toLocaleString()}`} icon={TrendingUp} trendLabel="Actual money paid" iconColorClass="text-emerald-400" chartData={[20, 35, 30, 50, 45, 65, 55]} />
+                
+                {/* Danger: Reset All Claimed Data */}
+                <div
+                  className="stat-card-enhanced relative overflow-hidden"
+                  style={{ border: '1px solid rgba(239, 68, 68, 0.2)', cursor: 'default' }}
+                >
+                  <div className="layout-row justify-between items-start z-10">
+                    <p className="stat-label" style={{ color: '#f87171' }}>Reset Claimed Users</p>
+                    <div className="coupon-icon-box" style={{ width: '24px', height: '24px', borderRadius: '4px', background: 'rgba(239,68,68,0.15)', color: '#f87171' }}>
+                      <Trash2 size={13} />
+                    </div>
+                  </div>
+                  <div className="layout-col z-10 mt-2">
+                    <p style={{ fontSize: '10px', color: '#94a3b8', lineHeight: 1.5, marginBottom: '8px' }}>
+                      Permanently deletes all transaction records and resets coupon usage counts to 0.
+                    </p>
+                    <button
+                      onClick={() => setShowClearConfirm(true)}
+                      style={{
+                        padding: '5px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid rgba(239,68,68,0.4)',
+                        background: 'rgba(239,68,68,0.12)',
+                        color: '#f87171',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '5px',
+                        transition: 'all 0.15s',
+                        width: 'fit-content'
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(239,68,68,0.22)'
+                        e.currentTarget.style.borderColor = 'rgba(239,68,68,0.7)'
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'rgba(239,68,68,0.12)'
+                        e.currentTarget.style.borderColor = 'rgba(239,68,68,0.4)'
+                      }}
+                    >
+                      <Trash2 size={11} />
+                      Start Fresh
+                    </button>
+                  </div>
+                </div>
                 
                 <div className="stat-card-enhanced search-pill-card relative overflow-hidden">
                   <div className="layout-row justify-between items-start z-10">
@@ -523,67 +616,145 @@ export default function CouponsPage() {
                 </div>
               </div>
 
-              <div className="table-container shadow-inner">
-                <table className="admin-table compact">
+              <div className="table-container-viewport">
+                <table
+                  style={{
+                    width: '100%',
+                    minWidth: '0px',
+                    tableLayout: 'fixed',
+                    borderCollapse: 'collapse',
+                    fontSize: '11px'
+                  }}
+                >
                   <thead>
-                    <tr>
-                      <th style={{ width: '25%' }}>Customer Details</th>
-                      <th style={{ textAlign: 'center' }}>Coupon</th>
-                      <th style={{ textAlign: 'center' }}>Package</th>
-                      <th style={{ textAlign: 'center' }}>Amount</th>
-                      <th style={{ textAlign: 'center' }}>Savings</th>
-                      <th style={{ textAlign: 'right' }}>Date</th>
+                    <tr style={{ background: '#0d071a', borderBottom: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                      <th style={{ width: '28%', padding: '8px 10px', textAlign: 'left', fontSize: '9.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.4px', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        Customer Details
+                      </th>
+                      <th style={{ width: '14%', padding: '8px 8px', textAlign: 'center', fontSize: '9.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.4px', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        Coupon
+                      </th>
+                      <th style={{ width: '16%', padding: '8px 8px', textAlign: 'center', fontSize: '9.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.4px', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        Package
+                      </th>
+                      <th style={{ width: '14%', padding: '8px 8px', textAlign: 'center', fontSize: '9.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.4px', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        Amount
+                      </th>
+                      <th style={{ width: '13%', padding: '8px 8px', textAlign: 'center', fontSize: '9.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.4px', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        Savings
+                      </th>
+                      <th style={{ width: '15%', padding: '8px 10px', textAlign: 'right', fontSize: '9.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.4px', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        Date
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
                     {filteredRedemptions.length > 0 ? filteredRedemptions.map((r, i) => (
-                      <tr key={i}>
-                        <td>
-                          <div className="layout-row row-compact">
-                            <div className="w-7 h-7 rounded-lg bg-emerald-600/10 border border-emerald-500/20 flex items-center justify-center text-[9px] font-bold text-emerald-400 shrink-0">
+                      <tr
+                        key={i}
+                        style={{
+                          borderBottom: '1px solid rgba(255, 255, 255, 0.03)',
+                          transition: 'background 0.15s'
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.03)' }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+                      >
+                        <td style={{ padding: '6px 10px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0, overflow: 'hidden' }} title={`${r.name || 'User'} (${r.email || ''})`}>
+                            <div
+                              style={{
+                                width: '22px',
+                                height: '22px',
+                                borderRadius: '5px',
+                                background: 'rgba(16, 185, 129, 0.15)',
+                                border: '1px solid rgba(16, 185, 129, 0.3)',
+                                color: '#34d399',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontSize: '8.5px',
+                                fontWeight: 800,
+                                flexShrink: 0
+                              }}
+                            >
                               {r.email?.substring(0, 2).toUpperCase() || '??'}
                             </div>
-                            <div className="layout-col overflow-hidden">
-                              <span className="font-semibold text-[13px] text-white truncate leading-none mb-1">{r.name || 'Unknown'}</span>
-                              <span className="text-[11px] text-slate-500 truncate">{r.email}</span>
+                            <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
+                              <span style={{ fontSize: '11px', fontWeight: 700, color: 'white', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: '1.2' }}>
+                                {r.name || 'Unknown'}
+                              </span>
+                              <span style={{ fontSize: '9.5px', color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {r.email}
+                              </span>
                             </div>
                           </div>
                         </td>
-                        <td style={{ textAlign: 'center' }}>
-                          <span className="px-2 py-0.5 rounded bg-violet-500/10 text-violet-400 border border-violet-500/20 text-[10px] font-mono font-bold uppercase">
+                        <td style={{ padding: '6px 8px', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                          <span
+                            style={{
+                              display: 'inline-block',
+                              padding: '2px 6px',
+                              borderRadius: '4px',
+                              background: 'rgba(139, 92, 246, 0.15)',
+                              color: '#c4b5fd',
+                              border: '1px solid rgba(139, 92, 246, 0.3)',
+                              fontSize: '9.5px',
+                              fontFamily: 'JetBrains Mono, monospace',
+                              fontWeight: 700,
+                              textTransform: 'uppercase'
+                            }}
+                          >
                             {r.couponCode}
                           </span>
                         </td>
-                        <td style={{ textAlign: 'center' }}>
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                            r.planName?.toLowerCase().includes('ultimate') ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20' :
-                            r.planName?.toLowerCase().includes('pro') ? 'bg-purple-500/10 text-purple-500 border border-purple-500/20' :
-                            r.planName === 'premium_agent_help' ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20' :
-                            'bg-blue-500/10 text-blue-500 border border-blue-500/20'
-                          }`}>
+                        <td style={{ padding: '6px 8px', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                          <span
+                            style={{
+                              display: 'inline-block',
+                              padding: '2px 6px',
+                              borderRadius: '4px',
+                              fontSize: '9.5px',
+                              fontWeight: 700,
+                              textTransform: 'uppercase',
+                              background: r.planName?.toLowerCase().includes('ultimate') ? 'rgba(245, 158, 11, 0.15)' :
+                                          r.planName?.toLowerCase().includes('pro') ? 'rgba(168, 85, 247, 0.15)' :
+                                          r.planName === 'premium_agent_help' ? 'rgba(99, 102, 241, 0.15)' :
+                                          'rgba(59, 130, 246, 0.15)',
+                              color: r.planName?.toLowerCase().includes('ultimate') ? '#fbbf24' :
+                                     r.planName?.toLowerCase().includes('pro') ? '#c084fc' :
+                                     r.planName === 'premium_agent_help' ? '#818cf8' :
+                                     '#60a5fa',
+                              border: r.planName?.toLowerCase().includes('ultimate') ? '1px solid rgba(245, 158, 11, 0.3)' :
+                                      r.planName?.toLowerCase().includes('pro') ? '1px solid rgba(168, 85, 247, 0.3)' :
+                                      r.planName === 'premium_agent_help' ? '1px solid rgba(99, 102, 241, 0.3)' :
+                                      '1px solid rgba(59, 130, 246, 0.3)'
+                            }}
+                          >
                             {r.planName === 'premium_agent_help' ? 'Agent Help' : (r.planName || 'Standard')}
                           </span>
                         </td>
-                        <td style={{ textAlign: 'center' }}>
-                          <span className={`font-bold text-[13px] ${r.paidAmount === 0 ? 'text-emerald-400' : 'text-white'}`}>
+                        <td style={{ padding: '6px 8px', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                          <span style={{ fontSize: '11px', fontWeight: 800, color: r.paidAmount === 0 ? '#34d399' : 'white' }}>
                             {r.paidAmount === 0 ? 'FREE' : `₹${r.paidAmount.toLocaleString()}`}
                           </span>
                         </td>
-                        <td style={{ textAlign: 'center' }}>
-                          <span className="text-slate-400 text-[11px] font-medium opacity-60">₹{r.amountOff.toLocaleString()}</span>
+                        <td style={{ padding: '6px 8px', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                          <span style={{ fontSize: '10px', fontWeight: 600, color: '#94a3b8' }}>
+                            ₹{r.amountOff.toLocaleString()}
+                          </span>
                         </td>
-                        <td style={{ textAlign: 'right' }}>
-                          <span className="text-[11px] font-medium text-slate-500">
-                            {new Date(r.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                        <td style={{ padding: '6px 10px', textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                          <span style={{ fontSize: '9.5px', fontWeight: 500, color: '#94a3b8' }}>
+                            {new Date(r.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
                           </span>
                         </td>
                       </tr>
                     )) : (
                       <tr>
-                        <td colSpan={5} style={{ textAlign: 'center', padding: '48px', color: '#64748b' }}>
+                        <td colSpan={6} style={{ textAlign: 'center', padding: '40px', color: '#64748b' }}>
                           <div className="layout-col items-center gap-2">
-                            <Ticket size={32} style={{ opacity: 0.1 }} />
-                            <span>No redemptions tracked yet</span>
+                            <Ticket size={28} style={{ opacity: 0.15 }} />
+                            <span style={{ fontSize: '11px' }}>No redemptions tracked yet</span>
                           </div>
                         </td>
                       </tr>
@@ -595,8 +766,8 @@ export default function CouponsPage() {
           )}
 
           {activeSection === 'registered_users' && (
-            <div className="section-content fade-in">
-              <div className="stat-grid mb-6">
+            <div className="viewport-fit-section fade-in">
+              <div className="stat-grid stat-grid-pinned">
                 <StatCard title="Total Accounts" value={registeredUsers.length.toString()} icon={Users} trendLabel="Profiles" iconColorClass="text-purple-400" chartData={[10, 20, 15, 30, 25, 40, 35]} />
                 <StatCard title="Total Credits" value={registeredUsers.reduce((s, u) => s + u.sessions_balance, 0).toLocaleString()} icon={Zap} trendLabel="Sessions" iconColorClass="text-amber-400" chartData={[20, 30, 25, 45, 35, 55, 45]} />
                 
@@ -624,58 +795,97 @@ export default function CouponsPage() {
                 </div>
               </div>
 
-              <div className="table-container shadow-inner">
-                <table className="admin-table compact">
+              <div className="table-container-viewport">
+                <table
+                  style={{
+                    width: '100%',
+                    minWidth: '0px',
+                    tableLayout: 'fixed',
+                    borderCollapse: 'collapse',
+                    fontSize: '11px'
+                  }}
+                >
                   <thead>
-                    <tr>
-                      <th style={{ width: '40%' }}>Account Details</th>
-                      <th style={{ textAlign: 'center' }}>Balance</th>
-                      <th style={{ textAlign: 'center' }}>Trial Usage</th>
-                      <th style={{ textAlign: 'right' }}>Member Since</th>
+                    <tr style={{ background: '#0d071a', borderBottom: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                      <th style={{ width: '38%', padding: '8px 10px', textAlign: 'left', fontSize: '9.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.4px', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        Account Details
+                      </th>
+                      <th style={{ width: '20%', padding: '8px 8px', textAlign: 'center', fontSize: '9.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.4px', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        Balance
+                      </th>
+                      <th style={{ width: '20%', padding: '8px 8px', textAlign: 'center', fontSize: '9.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.4px', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        Trial Usage
+                      </th>
+                      <th style={{ width: '22%', padding: '8px 10px', textAlign: 'right', fontSize: '9.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.4px', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        Member Since
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
                     {filteredUsers.length > 0 ? filteredUsers.map(u => (
-                      <tr key={u.id}>
-                        <td>
-                          <div className="layout-row row-compact">
-                            <div className="w-7 h-7 rounded-lg bg-violet-600/10 border border-violet-500/20 flex items-center justify-center text-[9px] font-bold text-violet-400 shrink-0">
+                      <tr
+                        key={u.id}
+                        style={{
+                          borderBottom: '1px solid rgba(255, 255, 255, 0.03)',
+                          transition: 'background 0.15s'
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.03)' }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+                      >
+                        <td style={{ padding: '6px 10px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0, overflow: 'hidden' }} title={`${u.full_name || 'User'} (${u.email || u.phone || ''})`}>
+                            <div
+                              style={{
+                                width: '22px',
+                                height: '22px',
+                                borderRadius: '5px',
+                                background: 'rgba(139, 92, 246, 0.15)',
+                                border: '1px solid rgba(139, 92, 246, 0.3)',
+                                color: '#c4b5fd',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontSize: '8.5px',
+                                fontWeight: 800,
+                                flexShrink: 0
+                              }}
+                            >
                               {u.email?.substring(0, 2).toUpperCase() || u.phone?.substring(0, 2).toUpperCase() || '??'}
                             </div>
-                            <div className="layout-col overflow-hidden">
-                              <span className="font-semibold text-[13px] text-white truncate leading-none mb-1">
+                            <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
+                              <span style={{ fontSize: '11px', fontWeight: 700, color: 'white', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: '1.2' }}>
                                 {u.full_name || (u.phone ? `User (${u.phone})` : 'Anonymous User')}
                               </span>
-                              <span className="text-[11px] text-slate-500 truncate">
+                              <span style={{ fontSize: '9.5px', color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                 {u.email || u.phone || 'No Contact Info'}
                               </span>
                             </div>
                           </div>
                         </td>
-                        <td style={{ textAlign: 'center' }}>
-                          <div className="layout-row justify-center items-center gap-1">
-                            <Zap size={10} className="text-amber-400" />
-                            <span className="font-bold text-white text-[13px]">{u.sessions_balance}</span>
-                            <span className="text-[10px] text-slate-500">sessions</span>
+                        <td style={{ padding: '6px 8px', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                            <Zap size={11} className="text-amber-400" />
+                            <span style={{ fontSize: '11px', fontWeight: 700, color: 'white' }}>{u.sessions_balance}</span>
+                            <span style={{ fontSize: '9px', color: '#64748b' }}>sess</span>
                           </div>
                         </td>
-                        <td style={{ textAlign: 'center' }}>
-                          <span className="text-[12px] font-medium text-slate-400 tabular-nums">
+                        <td style={{ padding: '6px 8px', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                          <span style={{ fontSize: '10.5px', fontWeight: 600, color: '#cbd5e1', fontFamily: 'JetBrains Mono, monospace' }}>
                             {Math.floor((u.trial_seconds_used || 0) / 60)}m {(u.trial_seconds_used || 0) % 60}s
                           </span>
                         </td>
-                        <td style={{ textAlign: 'right' }}>
-                          <span className="text-[11px] font-medium text-slate-500">
+                        <td style={{ padding: '6px 10px', textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                          <span style={{ fontSize: '9.5px', fontWeight: 500, color: '#94a3b8' }}>
                             {u.created_at ? new Date(u.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A'}
                           </span>
                         </td>
                       </tr>
                     )) : (
                       <tr>
-                        <td colSpan={4} style={{ textAlign: 'center', padding: '48px', color: '#64748b' }}>
+                        <td colSpan={4} style={{ textAlign: 'center', padding: '40px', color: '#64748b' }}>
                           <div className="layout-col items-center gap-2">
-                            <Users size={32} style={{ opacity: 0.1 }} />
-                            <span>Registry is empty</span>
+                            <Users size={28} style={{ opacity: 0.15 }} />
+                            <span style={{ fontSize: '11px' }}>Registry is empty</span>
                           </div>
                         </td>
                       </tr>
@@ -686,9 +896,21 @@ export default function CouponsPage() {
             </div>
           )}
 
-          {activeSection === 'broadcast' && (
+          <div style={{ display: activeSection === 'manual_sessions' ? 'block' : 'none', height: '100%' }} className="section-content fade-in">
+            <ManualSessionTopUp />
+          </div>
+
+          <div style={{ display: activeSection === 'staff_manager' ? 'block' : 'none', height: '100%' }} className="section-content fade-in">
+            <StaffManager />
+          </div>
+
+          <div style={{ display: activeSection === 'support_tickets' ? 'block' : 'none', height: '100%' }} className="section-content fade-in">
+            <SupportTicketsSection />
+          </div>
+
+          <div style={{ display: activeSection === 'broadcast' ? 'block' : 'none', height: '100%' }}>
             <BroadcastSection />
-          )}
+          </div>
         </div>
       </section>
 
