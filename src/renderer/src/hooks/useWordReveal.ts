@@ -68,13 +68,16 @@ export function useWordReveal(
 
             // Matcher for markdown tokens or words
             // Groups: [1] whitespace, [2] markdown punctuation, [3] words
-            const match = remaining.match(/^(\s+)|(^[\*#_`>]+)|(^[^\s\*#_`>]+)/)
-            
+            // The bullet hyphen counts as markdown punctuation so a "- " marker
+            // is revealed together with its first word, instead of flashing an
+            // empty bullet for one frame.
+            const match = remaining.match(/^(\s+)|(^[\*#_`>\-]+)|(^[^\s\*#_`>\-]+)/)
+
             if (match) {
                 next += match[0].length
                 // If it was just punctuation, grab the next word too to avoid flicker
                 if (match[2] && next < full.length) {
-                    const nextMatch = full.slice(next).match(/^[^\s\*#_`>]+/)
+                    const nextMatch = full.slice(next).match(/^[ \t]*[^\s\*#_`>\-]+/)
                     if (nextMatch) next += nextMatch[0].length
                 }
                 // Always eat trailing spaces

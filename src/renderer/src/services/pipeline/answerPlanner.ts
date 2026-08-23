@@ -17,6 +17,9 @@ export interface AnswerPlan {
   targetSeconds: number
   requiresExample: boolean
   scaffoldScored: boolean
+  /** Bullet budget for the answer. Every answer is rendered as a point list. */
+  bulletsMin: number
+  bulletsMax: number
 }
 
 export function planAnswer(intentResult: IntentResult): AnswerPlan {
@@ -28,7 +31,9 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         maxSentences: 3,
         targetSeconds: 45,
         requiresExample: false,
-        scaffoldScored: true
+        scaffoldScored: true,
+        bulletsMin: 3,
+        bulletsMax: 4
       }
 
     case 'system_design':
@@ -38,7 +43,9 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         maxSentences: 5,
         targetSeconds: 40,
         requiresExample: true,
-        scaffoldScored: false
+        scaffoldScored: false,
+        bulletsMin: 5,
+        bulletsMax: 7
       }
 
     case 'definitional':
@@ -48,7 +55,9 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         maxSentences: 3,
         targetSeconds: 20,
         requiresExample: true,
-        scaffoldScored: false
+        scaffoldScored: false,
+        bulletsMin: 4,
+        bulletsMax: 5
       }
 
     case 'technical_concept':
@@ -58,7 +67,9 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         maxSentences: 4,
         targetSeconds: 25,
         requiresExample: true,
-        scaffoldScored: false
+        scaffoldScored: false,
+        bulletsMin: 5,
+        bulletsMax: 7
       }
 
     case 'identity':
@@ -68,7 +79,9 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         maxSentences: 6,
         targetSeconds: 40,
         requiresExample: false,
-        scaffoldScored: false
+        scaffoldScored: false,
+        bulletsMin: 5,
+        bulletsMax: 7
       }
 
     case 'behavioral':
@@ -78,7 +91,9 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         maxSentences: 5,
         targetSeconds: 35,
         requiresExample: false,
-        scaffoldScored: false
+        scaffoldScored: false,
+        bulletsMin: 5,
+        bulletsMax: 6
       }
 
     case 'project_deepdive':
@@ -88,7 +103,9 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         maxSentences: 5,
         targetSeconds: 35,
         requiresExample: true,
-        scaffoldScored: false
+        scaffoldScored: false,
+        bulletsMin: 5,
+        bulletsMax: 6
       }
 
     case 'followup':
@@ -98,7 +115,9 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         maxSentences: 3,
         targetSeconds: 20,
         requiresExample: true,
-        scaffoldScored: false
+        scaffoldScored: false,
+        bulletsMin: 3,
+        bulletsMax: 4
       }
 
     default:
@@ -108,7 +127,9 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         maxSentences: 4,
         targetSeconds: 25,
         requiresExample: false,
-        scaffoldScored: false
+        scaffoldScored: false,
+        bulletsMin: 4,
+        bulletsMax: 6
       }
   }
 }

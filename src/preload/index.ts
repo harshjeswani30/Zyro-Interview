@@ -53,7 +53,7 @@ const api = {
     base64Audio: string
     mimeType: string
     language: string
-    context?: string
+    isPartial?: boolean
   }): Promise<string> => ipcRenderer.invoke('transcribe-only', data),
   generateAnswer: (data: {
     transcript: string

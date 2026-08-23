@@ -1,7 +1,5 @@
 import { useCallback } from 'react'
-
-// Default overlay width — must match the width set in main/index.ts createOverlayWindow()
-const DEFAULT_WIDTH = 850
+import { MIN_OVERLAY_WIDTH, DEFAULT_OVERLAY_WIDTH } from './useHeaderScale'
 
 // direction: 'e'|'w'|'ne'|'nw'|'se'|'sw' (height is locked — width only)
 export function useResize(direction: string): { onPointerDown: (e: React.PointerEvent) => Promise<void> } {
@@ -24,25 +22,27 @@ export function useResize(direction: string): { onPointerDown: (e: React.Pointer
       let { x, width } = { ...startBounds }
       let { y, height } = startBounds
 
-      // Width minimum = default width (panel never shrinks below original)
-      const minW = DEFAULT_WIDTH
-      const minH = 180
+      // Width minimum matches the header scale floor, so the header keeps shrinking
+      // proportionally right down to the smallest allowed width.
+      const minW = MIN_OVERLAY_WIDTH
+      const maxW = DEFAULT_OVERLAY_WIDTH
+      const minH = 400
 
       if (direction.includes('e')) {
         // Right-side drag: grow right
-        width = Math.max(minW, startBounds.width + dx)
+        width = Math.min(maxW, Math.max(minW, startBounds.width + dx))
       }
 
       if (direction.includes('w')) {
         // Left-side drag: grow left (move x left, increase width)
-        const potentialW = startBounds.width - dx
-        if (potentialW >= minW) {
-          x = startBounds.x + dx
-          width = potentialW
-        } else {
-          x = startBounds.x + (startBounds.width - minW)
-          width = minW
-        }
+        let potentialW = startBounds.width - dx
+        
+        // Clamp between min and max width
+        if (potentialW > maxW) potentialW = maxW
+        if (potentialW < minW) potentialW = minW
+        
+        x = startBounds.x + (startBounds.width - potentialW)
+        width = potentialW
       }
 
       if (direction.includes('s')) {

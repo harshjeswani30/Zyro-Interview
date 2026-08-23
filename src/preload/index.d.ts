@@ -47,7 +47,7 @@ interface Api {
     base64Audio: string
     mimeType: string
     language: string
-    context?: string
+    isPartial?: boolean
   }) => Promise<string>
   generateAnswer: (data: {
     transcript: string
