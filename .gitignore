@@ -35,3 +35,6 @@ ENV/
 # Wrangler local secrets
 .dev.vars
 
+# Scratch directory
+scratch/
+

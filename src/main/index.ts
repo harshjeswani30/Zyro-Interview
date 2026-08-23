@@ -547,12 +547,15 @@ function createMainWindow(): void {
 // ─────────────────────────────────────────────
 function createOverlayWindow(): void {
   const { width } = screen.getPrimaryDisplay().workAreaSize
-  const overlayW = 850
-  const overlayH = 600
+  const overlayW = 840
+  const overlayH = 620
 
   overlayWindow = new BrowserWindow({
     width: overlayW,
     height: overlayH,
+    minWidth: 540, // Responsive minimum width allowing flexible shrinking
+    maxWidth: overlayW, // Prevent width from exceeding the default width
+    minHeight: 400,
     x: Math.floor((width - overlayW) / 2),
     y: 12,
     show: false,
@@ -730,6 +733,13 @@ function setupIPC(): void {
         if (!overlayWindow!.isDestroyed()) overlayWindow!.show()
       })
     } else {
+      const { width } = screen.getPrimaryDisplay().workAreaSize
+      overlayWindow.setBounds({
+        x: Math.floor((width - 820) / 2),
+        y: 12,
+        width: 820,
+        height: 620
+      })
       overlayWindow.reload()
       overlayWindow.webContents.once('did-finish-load', () => {
         safeSend(overlayWindow, 'init-session', sessionDataWithProfile)
@@ -1246,18 +1256,68 @@ function setupIPC(): void {
     return headers
   }
 
+  // Only 'auto' asks Whisper to detect the language itself. Everything the user
+  // explicitly picked — including `hi` and `en` — is pinned.
+  //
+  // Leaving `hi` and `en` unpinned was a hallucination source, not a feature:
+  // Whisper decides the language from the first ~1s of the clip, so on the short
+  // clips this pipeline sends it flips per chunk, and a Hindi clip detected as
+  // English is decoded as fluent-but-invented English. Pinning does NOT translate —
+  // that is `task=translate`, which we never send.
+  function resolveSttLanguage(language?: string): string | null {
+    if (!language) return null
+    const base = language.split('-')[0].toLowerCase()
+    if (!base || base === 'auto') return null
+    return base
+  }
+
+  // Whisper's `prompt` is not an instruction channel — it is fed to the decoder as
+  // *text preceding the audio*, so whatever it contains is something the model tries
+  // to continue. It therefore holds a bare domain vocabulary list and nothing else:
+  //
+  //  - No instructions ("never translate", "write down exactly what is spoken").
+  //    Those got transcribed into the output verbatim, which is why
+  //    isWhisperPromptHallucination() below had to exist.
+  //  - No previous transcript. Conditioning on the last utterance is precisely what
+  //    makes Whisper repeat or continue it when the new audio is quiet or short —
+  //    the reported "text from previous audio" symptom.
+  //  - No Devanagari. A Devanagari prompt biases the decoder towards Hindi output
+  //    even when the audio is pure English.
+  const STT_VOCABULARY_PROMPT =
+    'QA, regression testing, automation, Selenium, API, Jira, Agile, sprint, CI/CD, database, framework, deployment, test case, defect.'
+
+  function buildSttPrompt(language?: string): string {
+    const base = resolveSttLanguage(language)
+    // The list is English/Hinglish technical vocabulary; sending it on an es/fr/ja
+    // session would only bias that session's decoder towards English.
+    if (base && base !== 'en' && base !== 'hi') return ''
+    return STT_VOCABULARY_PROMPT
+  }
+
   function isWhisperPromptHallucination(text: string): boolean {
     if (!text) return false
     const lower = text.toLowerCase()
+    // Safety net for echoes of the STT prompt. The prompt no longer contains
+    // instructions, so this should stop firing; the older phrasings are kept because
+    // the deployed gateway may still be on the previous prompt for a while.
+    // Deliberately narrow and phrase-specific — a broad pattern like
+    // /technical interview/ also discards legitimate speech such as
+    // "so this is a technical interview for the QA role".
     const hallucinationPatterns = [
       /preserve hindi/i,
       /ignore background/i,
       /do not hallucinate/i,
       /multilingual speech/i,
       /speech detection/i,
-      /technical interview/i,
       /verbatim in their/i,
-      /without translating/i
+      /without translating/i,
+      /never translate/i,
+      /speakers mix hindi and english/i,
+      /write down exactly what is spoken/i,
+      /keep technical words in english/i,
+      /^interview conversation[.,]/i,
+      // Echo of the vocabulary list itself
+      /regression testing, automation, selenium/i
     ]
     return hallucinationPatterns.some((pattern) => pattern.test(lower))
   }
@@ -1275,21 +1335,20 @@ function setupIPC(): void {
         const formData = new FormData()
         formData.append('file', new Blob([buffer], { type: mimeType }), `recording.${ext}`)
         formData.append('model', 'whisper-large-v3-turbo')
-        const isHindi = language && (language.startsWith('hi') || language === 'hi-IN')
-        // Force Whisper to use the correct language — prevents auto-translate to English
-        if (language && language !== 'auto') {
-          formData.append('language', language.split('-')[0])
+        const sttLanguage = resolveSttLanguage(language)
+        if (sttLanguage) {
+          formData.append('language', sttLanguage)
         }
-        const sttPrompt = isHindi
-          ? 'यह एक हिंदी या हिंग्लिश तकनीकी इंटरव्यू है। जो भी बोला जाए उसे वैसे ही transcribe करें — Hindi में बोले हुए को Hindi/Hinglish में रखें, English में बोले को English में। कभी translate मत करें।'
-          : 'Technical interview speech. Transcribe exactly what is spoken. May include English and Hindi (Hinglish). Keep technical terms like API, testing, QA, automation, sprint, Agile in English.'
-        formData.append('prompt', sttPrompt)
+        const sttPrompt = buildSttPrompt(language)
+        if (sttPrompt) formData.append('prompt', sttPrompt)
 
         const sttRes = await withRetry(() =>
           fetchWithTimeout(`${AI_GATEWAY}/gateway/stt`, { method: 'POST', headers: gatewayHeaders({}, true), body: formData })
         )
         const sttData = await sttRes.json() as { text?: string }
-        console.log(`[AI-STT] Received: "${sttData.text?.substring(0, 50)}..."`)
+        // Length only — transcript content is interview-sensitive and must not reach
+        // a production log file.
+        console.log(`[AI-STT] Received ${sttData.text?.length ?? 0} chars`)
         const transcript = sttData.text || ''
         if (!transcript || isWhisperPromptHallucination(transcript)) {
           return { transcript: '', answer: '' }
@@ -1328,7 +1387,7 @@ function setupIPC(): void {
 
   ipcMain.handle(
     'transcribe-only',
-    async (_event, { base64Audio, mimeType, language, context }) => {
+    async (_event, { base64Audio, mimeType, language, isPartial }) => {
       try {
         const ext = (mimeType as string)?.includes('wav') ? 'wav'
           : (mimeType as string)?.includes('ogg') ? 'ogg'
@@ -1338,30 +1397,39 @@ function setupIPC(): void {
         const formData = new FormData()
         formData.append('file', new Blob([buffer], { type: mimeType }), `recording.${ext}`)
         formData.append('model', 'whisper-large-v3-turbo')
-        if (language && language !== 'auto') {
-          formData.append('language', language.split('-')[0])
+        const sttLanguage = resolveSttLanguage(language)
+        if (sttLanguage) {
+          formData.append('language', sttLanguage)
         }
-        
-        const isHindi = language && (language.startsWith('hi') || language === 'hi-IN')
-        const defaultPrompt = isHindi
-          ? 'यह एक हिंदी या हिंग्लिश तकनीकी इंटरव्यू है। जो भी बोला जाए उसे वैसे ही transcribe करें — Hindi/Hinglish में बोले को Hindi में रखें, translate मत करें। Technical terms जैसे testing, QA, sprint, Jira, automation English में रखें।'
-          : 'Technical interview speech. May include Hindi and English (Hinglish). Transcribe exactly as spoken. Keep technical terms in English.'
-        const finalPrompt = context 
-          ? `${defaultPrompt} Context: ${context.slice(0, 120)}`
-          : defaultPrompt
-        formData.append('prompt', finalPrompt.slice(-300))
+        // Fixed-length vocabulary hint, sent whole. It used to be
+        // `buildSttPrompt(language, context).slice(-300)`, which both fed Whisper the
+        // previous transcript and cut the prompt mid-word, leaving a fragment as the
+        // decoder's leading context.
+        const prompt = buildSttPrompt(language)
+        if (prompt) formData.append('prompt', prompt)
 
-        const res = await withRetry(() =>
-          fetchWithTimeout(`${AI_GATEWAY}/gateway/stt`, { method: 'POST', headers: gatewayHeaders({}, true), body: formData })
-        )
+        // Partials feed the live transcript ticker and are superseded ~3x/sec, so a
+        // retry/backoff on one of them is wasted work that only adds lag. Finals go
+        // to the LLM and keep the full retry path.
+        const doFetch = (): Promise<Response> =>
+          fetchWithTimeout(`${AI_GATEWAY}/gateway/stt`, {
+            method: 'POST',
+            headers: gatewayHeaders({}, true),
+            body: formData,
+            timeout: isPartial ? 6000 : 15000
+          })
+        const res = isPartial ? await doFetch() : await withRetry(doFetch)
+        if (!res.ok) return ''
         const data = await res.json() as { text?: string }
         const text = data.text || ''
         if (isWhisperPromptHallucination(text)) {
-          console.log('[Main-STT] Discarded Whisper prompt hallucination:', text)
+          if (is.dev) console.log('[Main-STT] Discarded Whisper prompt hallucination:', text)
           return ''
         }
         return text
       } catch (err: unknown) {
+        // A dropped partial is normal under load — never surface it as a session error
+        if (isPartial) return ''
         console.error('[Gateway] transcribe-only error:', err)
         throw err
       }
@@ -1572,10 +1640,8 @@ function setupIPC(): void {
     overlayWindow?.setIgnoreMouseEvents(ignore, options)
   })
 
-  ipcMain.on('toggle-compact', (_event, minimized: boolean) => {
-    if (!overlayWindow) return
-    const [w] = overlayWindow.getSize()
-    overlayWindow.setSize(w, minimized ? 48 : 600, true)
+  ipcMain.on('toggle-compact', (_event, _minimized: boolean) => {
+    if (!overlayWindow || overlayWindow.isDestroyed()) return
     overlayWindow.setAlwaysOnTop(true, 'screen-saver')
   })
 

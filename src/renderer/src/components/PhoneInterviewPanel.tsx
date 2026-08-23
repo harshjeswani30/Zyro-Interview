@@ -425,14 +425,15 @@ ${resumeText.substring(0, 3500)}
       const reader = new FileReader()
       reader.onloadend = async () => {
         const base64Audio = (reader.result as string).split(',')[1]
-        
-        const sttPrompt = 'Technical interview. Multilingual speech detection (English, Hindi, Hinglish). Transcribe exact spoken words verbatim in their original spoken language without translating. Preserve Hindi words accurately. Ignore background noise, silence, or music. Do NOT hallucinate.'
-        
+
+        // No `context` here on purpose, and the IPC payload no longer accepts one:
+        // Whisper's `prompt` field is decoder conditioning, so passing the previous
+        // transcript made it repeat or continue that transcript on short/quiet audio.
+        // The domain vocabulary hint lives in main's buildSttPrompt() instead.
         const transcript = await window.api.transcribeOnly({
           base64Audio,
           mimeType: 'audio/wav',
-          language: language,
-          context: sttPrompt
+          language: language
         })
 
         const cleaned = transcript.trim()

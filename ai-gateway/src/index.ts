@@ -25,10 +25,11 @@ interface Env {
   CARTESIA_VOICE_ID?: string
   ELEVENLABS_API_KEY?: string
   ELEVENLABS_VOICE_ID?: string
+  GEMINI_API_KEY?: string
   AI?: any
 }
 
-// 5 Verified Groq API Keys
+// 5 Verified Groq API Keys (configured via Cloudflare Worker env secrets)
 const DEFAULT_GROQ_KEYS: string[] = []
 
 const DEFAULT_CARTESIA_KEY = ''
@@ -333,6 +334,51 @@ app.post('/gateway/embeddings', async (c) => {
 // ─────────────────────────────────────────────
 // 2. STT (Audio Transcription with 5-Key Whisper + Deepgram Fallback)
 // ─────────────────────────────────────────────
+
+/** One entry of Whisper's verbose_json `segments` array (fields we care about). */
+interface WhisperSegment {
+  text?: string
+  avg_logprob?: number
+  compression_ratio?: number
+  no_speech_prob?: number
+}
+
+/**
+ * Drops hallucinated segments using Whisper's own published decoding heuristics
+ * instead of a word blacklist.
+ *
+ * - `no_speech_prob > 0.6` together with `avg_logprob < -1.0` is how Whisper itself
+ *   classifies a segment as silence. This is what produces confident nonsense out of
+ *   a pause or of room noise.
+ * - `compression_ratio > 2.4` is Whisper's degenerate-repetition test: a segment that
+ *   gzips that well is a stuck decoder loop ("haan haan haan haan…"), not speech.
+ * - A very low `avg_logprob` on its own means the decoder was guessing.
+ *
+ * Anything without segment metadata falls back to the plain `text` field unchanged.
+ */
+function filterHallucinatedSegments(data: { text?: string; segments?: WhisperSegment[] }): string {
+  const segments = Array.isArray(data?.segments) ? data.segments : null
+  if (!segments || segments.length === 0) return data?.text || ''
+
+  const kept: string[] = []
+  for (const seg of segments) {
+    const text = (seg?.text || '').trim()
+    if (!text) continue
+    const noSpeech = typeof seg.no_speech_prob === 'number' ? seg.no_speech_prob : 0
+    const logprob = typeof seg.avg_logprob === 'number' ? seg.avg_logprob : 0
+    const ratio = typeof seg.compression_ratio === 'number' ? seg.compression_ratio : 1
+
+    if (noSpeech > 0.6 && logprob < -1.0) continue // silence decoded as words
+    if (ratio > 2.4) continue                      // stuck repetition loop
+    if (logprob < -1.4) continue                   // decoder was guessing
+    kept.push(text)
+  }
+
+  // Every segment failing the checks means the clip really was silence/noise. Return
+  // empty rather than the unfiltered text — passing it through defeats the filter.
+  return kept.join(' ').replace(/\s+/g, ' ').trim()
+}
+
 app.post('/gateway/stt', async (c) => {
   const userApiKey = c.req.header('x-user-api-key')
   const allKeys = userApiKey && userApiKey.trim().startsWith('gsk_')
@@ -370,6 +416,18 @@ app.post('/gateway/stt', async (c) => {
     return c.json({ error: 'No audio file provided in form data' }, 400)
   }
 
+  // Only 'auto' means "let Whisper detect it". A caller that explicitly picked a
+  // language gets it pinned, including `hi` and `en`: auto-detect on a short clip
+  // flips language mid-utterance and is the single largest source of invented words.
+  // Mirrors resolveSttLanguage() in the desktop main process, repeated here so
+  // already-installed clients get the fix without an app update.
+  const sttLanguage = (() => {
+    if (!language) return null
+    const base = language.split('-')[0].toLowerCase()
+    if (!base || base === 'auto') return null
+    return base
+  })()
+
   // 1. Try Groq Whisper rotation across all 5 keys
   for (let i = 0; i < orderedKeys.length; i++) {
     const apiKey = orderedKeys[i]
@@ -378,12 +436,21 @@ app.post('/gateway/stt', async (c) => {
     const formData = new FormData()
     formData.append('file', audioBlob, 'recording.wav')
     formData.append('model', requestedModel || 'whisper-large-v3-turbo')
-    if (language && language !== 'auto') {
-      formData.append('language', language.split('-')[0])
+    if (sttLanguage) {
+      formData.append('language', sttLanguage)
     }
     if (prompt) {
-      formData.append('prompt', prompt.slice(-400))
+      // slice(0, …) not slice(-…): the prompt is a fixed vocabulary hint, and
+      // left-truncating it fed Whisper a half-word fragment as leading context.
+      formData.append('prompt', prompt.slice(0, 400))
     }
+    // Greedy decoding. Whisper's default temperature fallback re-samples a segment
+    // when it looks degenerate, and those re-samples are where fluent-but-invented
+    // sentences come from.
+    formData.append('temperature', '0')
+    // verbose_json exposes the per-segment confidence fields we need to drop
+    // silence/repetition hallucinations at the source instead of by word blacklist.
+    formData.append('response_format', 'verbose_json')
 
     try {
       const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
@@ -396,7 +463,7 @@ app.post('/gateway/stt', async (c) => {
 
       if (res.ok) {
         const data = await res.json() as any
-        return c.json({ text: data.text || '' }, 200, {
+        return c.json({ text: filterHallucinatedSegments(data) }, 200, {
           'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
           'Access-Control-Allow-Credentials': 'true'
         })
@@ -420,9 +487,15 @@ app.post('/gateway/stt', async (c) => {
   const deepgramKey = c.env.DEEPGRAM_STT_KEY || 'f4e051a4656912a23e451ffd65132e529b2b4575'
   if (deepgramKey) {
     try {
-      console.log('[Gateway STT] Falling back to Deepgram Nova-2 STT...')
+      // Only the unpinned ('auto') case needs nova-3 language=multi, which is the
+      // only Deepgram model that keeps both halves of a Hinglish sentence. An
+      // explicitly picked locale is honoured on nova-2.
+      const dgQuery = sttLanguage
+        ? `model=nova-2&language=${encodeURIComponent(sttLanguage)}`
+        : 'model=nova-3&language=multi'
+      console.log(`[Gateway STT] Falling back to Deepgram STT (${dgQuery})...`)
       const arrayBuf = await audioBlob.arrayBuffer()
-      const dgRes = await fetch('https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&encoding=linear16', {
+      const dgRes = await fetch(`https://api.deepgram.com/v1/listen?${dgQuery}&smart_format=true&encoding=linear16`, {
         method: 'POST',
         headers: {
           'Authorization': `Token ${deepgramKey}`,
@@ -587,7 +660,7 @@ app.post('/gateway/vision', async (c) => {
       }
     }
 
-    const GEMINI_API_KEY = c.env.GEMINI_API_KEY || 'AIzaSyBSy8zZTzkjifdTq0ChJTmk1JsFJ4VARGA'
+    const GEMINI_API_KEY = c.env.GEMINI_API_KEY || ''
     const systemInstruction = messages.find((m: any) => m.role === 'system')?.content || ''
 
     const parts: any[] = [{ text: promptText }]
@@ -610,10 +683,7 @@ app.post('/gateway/vision', async (c) => {
     }
 
     const endpoints = [
-      { url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${GEMINI_API_KEY}`, model: 'gemini-3.5-flash-lite' },
-      { url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${GEMINI_API_KEY}`, model: 'gemini-3.5-flash' },
-      { url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${GEMINI_API_KEY}`, model: 'gemini-2.5-flash-lite' },
-      { url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${GEMINI_API_KEY}`, model: 'gemini-flash-latest' }
+      { url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${GEMINI_API_KEY}`, model: 'gemini-3.5-flash-lite' }
     ]
 
     let res: Response | null = null

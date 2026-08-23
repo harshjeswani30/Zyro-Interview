@@ -137,6 +137,10 @@ function AnimatedHamburgerButton({
 const STORAGE_KEY = 'interview_assistant_session'
 
 const LANGUAGES = [
+  // 'auto' lets Whisper detect the language per utterance, which is the only way
+  // to handle a Hindi/English code-switched interview — pinning en-US made Whisper
+  // translate Hindi speech into garbled English. Kept first so it is the default.
+  { code: 'auto', label: '🌐 Hinglish / Auto-detect' },
   { code: 'en-US', label: '🇺🇸 English (US)' },
   { code: 'en-GB', label: '🇬🇧 English (UK)' },
   { code: 'hi-IN', label: '🇮🇳 Hindi' },
