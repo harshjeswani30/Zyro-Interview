@@ -21,7 +21,7 @@ importers:
         specifier: ^2.99.1
         version: 2.99.1
       '@supabase/supabase-js':
-        specifier: ^2.49.4
+        specifier: ^2.98.0
         version: 2.98.0
       dotenv:
         specifier: ^17.3.1

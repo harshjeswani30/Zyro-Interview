@@ -8,9 +8,11 @@ directories:
 files:
   - out/**/*
 
-extraResources:
-  - from: .env
-    to: .env
+# SECURITY (audit C2): never bundle .env into installers — it holds the
+# Supabase service_role key, admin password and provider keys. The packaged
+# app loads credentials at runtime from the user's own machine (or an
+# operator-provided location), not from the install directory.
+extraResources: []
 
 win:
   target:

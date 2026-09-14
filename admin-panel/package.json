@@ -22,7 +22,7 @@
     "@capacitor/cli": "^8.2.0",
     "@capacitor/core": "^8.2.0",
     "@supabase/functions-js": "^2.99.1",
-    "@supabase/supabase-js": "^2.49.4",
+    "@supabase/supabase-js": "^2.98.0",
     "dotenv": "^17.3.1",
     "framer-motion": "^12.38.0",
     "lucide-react": "^0.468.0"

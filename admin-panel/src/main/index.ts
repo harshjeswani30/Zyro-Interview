@@ -13,8 +13,14 @@ if (!gotTheLock) {
   process.exit(0)
 }
 
-// Load .env from project root (dev) or app resources (prod)
-const envPath = is.dev ? resolve(__dirname, '../../.env') : resolve(process.resourcesPath, '.env')
+// Load .env from project root (dev) or a per-machine location (prod).
+// SECURITY (audit C2): the packaged app must NOT ship a .env inside its
+// resources — that practice leaked the service_role key in distributed
+// installers. Operators place credentials at userData/.env on each machine
+// instead; if neither location has them, fail with instructions.
+const envPath = is.dev
+  ? resolve(__dirname, '../../.env')
+  : resolve(app.getPath('userData'), '.env')
 console.log('[Main] Loading .env from:', envPath)
 dotenvConfig({ path: envPath })
 

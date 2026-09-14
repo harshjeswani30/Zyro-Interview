@@ -366,9 +366,15 @@ export const BroadcastSection: React.FC = (): React.ReactElement => {
             {/* Preview Rendered Content */}
             <div style={{ flex: 1, overflow: 'auto', background: '#ffffff', minHeight: '300px' }}>
               {htmlContent ? (
-                <div
-                  style={{ padding: '24px', color: '#111', fontSize: '14px', lineHeight: 1.7 }}
-                  dangerouslySetInnerHTML={{ __html: htmlContent }}
+                // SECURITY (audit H8): the preview renders inside a sandboxed
+                // iframe — no script execution, no access to the renderer or
+                // the preload bridge. The raw HTML still goes to the Edge
+                // Function unchanged.
+                <iframe
+                  title="Broadcast preview"
+                  sandbox=""
+                  srcDoc={`<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;padding:24px;color:#111;font:14px/1.7 system-ui,sans-serif;word-break:break-word}</style></head><body>${htmlContent}</body></html>`}
+                  style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
                 />
               ) : (
                 <div style={{

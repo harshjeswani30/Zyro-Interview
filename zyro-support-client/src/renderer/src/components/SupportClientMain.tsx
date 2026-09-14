@@ -17,7 +17,7 @@ import {
   Filter,
   Trash2
 } from 'lucide-react'
-import { supabase, supabaseAdmin } from '../lib/supabase'
+import { supabase } from '../lib/supabase'
 
 interface StaffPermission {
   id?: string
@@ -95,30 +95,8 @@ export function SupportClientMain(): React.JSX.Element {
       }
       setCurrentUser(user)
 
-      let permData: any = null
-      const { data: byId } = await supabaseAdmin
-        .from('staff_permissions')
-        .select('*')
-        .eq('staff_id', user.id)
-        .maybeSingle()
-
-      if (byId) {
-        permData = byId
-      } else if (user.email) {
-        const { data: byEmail } = await supabaseAdmin
-          .from('staff_permissions')
-          .select('*')
-          .ilike('staff_email', user.email.toLowerCase().trim())
-          .maybeSingle()
-
-        if (byEmail) {
-          permData = byEmail
-          await supabaseAdmin
-            .from('staff_permissions')
-            .update({ staff_id: user.id, updated_at: new Date().toISOString() })
-            .eq('id', byEmail.id)
-        }
-      }
+      // Privileged read runs in the main process (audit C3) — by id, healing by email.
+      const permData = await window.staffApi.getPermissions(user.id, user.email || undefined)
 
       if (permData) {
         const allRevoked =
@@ -144,19 +122,9 @@ export function SupportClientMain(): React.JSX.Element {
           })
         }
       } else {
-        const { data: newPerm } = await supabaseAdmin.from('staff_permissions').upsert(
-          {
-            staff_id: user.id,
-            staff_email: (user.email || '').toLowerCase().trim(),
-            can_access_general: false,
-            can_access_payment: false,
-            can_access_feature_request: false,
-            updated_at: new Date().toISOString()
-          },
-          { onConflict: 'staff_id' }
-        ).select().maybeSingle()
-
-        setPermissions(newPerm || null)
+        // No permission row: the admin has not provisioned this staff member
+        // (audit C10 — the renderer no longer self-inserts one).
+        setPermissions(null)
         setActiveCategory(null)
         setSelectedTicket(null)
       }
@@ -175,23 +143,8 @@ export function SupportClientMain(): React.JSX.Element {
       loadUserAndPermissions(false)
     }, 2000)
 
-    const permChannel = supabaseAdmin
-      .channel('staff_perms_admin_realtime')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'staff_permissions' },
-        (payload) => {
-          console.log('[Realtime] staff_permissions change →', payload.eventType, payload.new)
-          loadUserAndPermissions(false)
-        }
-      )
-      .subscribe((status) => {
-        console.log('[Realtime] channel status:', status)
-      })
-
     return () => {
       clearInterval(pollInterval)
-      supabaseAdmin.removeChannel(permChannel)
     }
   }, [])
 
@@ -207,13 +160,9 @@ export function SupportClientMain(): React.JSX.Element {
     if (allowed.length === 0) return
 
     try {
-      const { data, error } = await supabaseAdmin
-        .from('support_tickets')
-        .select('*')
-        .in('category', allowed)
-        .order('created_at', { ascending: false })
+      const data = await window.staffApi.listTickets(allowed)
 
-      if (!error && data) {
+      if (data) {
         setTicketsCache(prev => {
           const newCache = { ...prev }
           allowed.forEach(cat => { newCache[cat] = [] }) // clear allowed
@@ -224,7 +173,7 @@ export function SupportClientMain(): React.JSX.Element {
           })
           return newCache
         })
-        
+
         if (selectedTicket) {
           const updated = data.find((t) => t.id === selectedTicket.id)
           if (updated) setSelectedTicket(updated)
@@ -239,39 +188,23 @@ export function SupportClientMain(): React.JSX.Element {
     if (!permissions) return
     fetchTickets()
 
-    // Fallback polling to guarantee real-time updates
+    // Polling guarantees near-real-time updates without a privileged
+    // realtime channel (the service client no longer lives in the renderer).
     const pollInterval = setInterval(() => {
       fetchTickets()
     }, 3000)
 
-    // Realtime tickets subscription for all tickets
-    const ticketChannel = supabaseAdmin
-      .channel(`tickets_admin_all_allowed`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'support_tickets' },
-        () => {
-          fetchTickets()
-        }
-      )
-      .subscribe()
-
     return () => {
       clearInterval(pollInterval)
-      supabaseAdmin.removeChannel(ticketChannel)
     }
   }, [permissions])
 
   // 3. Fetch messages for selected ticket
   const fetchMessages = async (ticketId: string) => {
     try {
-      const { data, error } = await supabaseAdmin
-        .from('ticket_messages')
-        .select('*')
-        .eq('ticket_id', ticketId)
-        .order('created_at', { ascending: true })
+      const data = await window.staffApi.getTicketMessages(ticketId)
 
-      if (!error && data) {
+      if (data) {
         setMessagesCache(prev => ({ ...prev, [ticketId]: data }))
       }
     } catch (err) {
@@ -283,30 +216,13 @@ export function SupportClientMain(): React.JSX.Element {
     if (!selectedTicket) return
     fetchMessages(selectedTicket.id)
 
-    // Fallback polling for instant chat feel
+    // Polling for instant chat feel
     const pollInterval = setInterval(() => {
       fetchMessages(selectedTicket.id)
     }, 2000)
 
-    const msgChannel = supabaseAdmin
-      .channel(`msg_${selectedTicket.id}_admin`)
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'ticket_messages', filter: `ticket_id=eq.${selectedTicket.id}` },
-        (payload) => {
-          setMessagesCache((prev) => {
-            const ticketMsgs = prev[selectedTicket.id] || []
-            const newMsg = payload.new as Message
-            if (ticketMsgs.some(m => m.id === newMsg.id)) return prev
-            return { ...prev, [selectedTicket.id]: [...ticketMsgs, newMsg] }
-          })
-        }
-      )
-      .subscribe()
-
     return () => {
       clearInterval(pollInterval)
-      supabaseAdmin.removeChannel(msgChannel)
     }
   }, [selectedTicket])
 
@@ -335,53 +251,50 @@ export function SupportClientMain(): React.JSX.Element {
 
     setIsSending(true)
     try {
-      const { error: msgErr } = await supabaseAdmin.from('ticket_messages').insert({
-        ticket_id: selectedTicket.id,
-        sender_id: currentUser.id,
-        sender_email: currentUser.email,
-        sender_type: 'staff',
+      await window.staffApi.sendTicketReply({
+        ticketId: selectedTicket.id,
+        senderId: currentUser.id,
+        senderEmail: currentUser.email,
         message: replyText.trim()
       })
 
-      if (msgErr) throw msgErr
-
-      // Trigger email notification to user via Edge Function
+      // Trigger email notification to user via Edge Function (main process).
+      // Forwards the staff member's own JWT — send-ticket-reply verifies it
+      // server-side (audit C4) and no longer accepts the service key alone.
       try {
-        const { data: fnData, error: fnErr } = await supabaseAdmin.functions.invoke('send-ticket-reply', {
-          body: {
-            ticketId: selectedTicket.id,
-            userEmail: selectedTicket.user_email,
-            subject: selectedTicket.subject,
-            replyText: replyText.trim(),
-            staffEmail: currentUser.email
-          }
+        const { data: { session } } = await supabase.auth.getSession()
+        await window.staffApi.notifyTicketEmail({
+          ticketId: selectedTicket.id,
+          userEmail: selectedTicket.user_email,
+          subject: selectedTicket.subject,
+          replyText: replyText.trim(),
+          staffJwt: session?.access_token
         })
-
-        if (fnErr) {
-          console.error('[TicketReply] Email invocation failed:', fnErr)
-        }
       } catch (emailErr: any) {
-        console.error('[TicketReply] Unexpected email exception:', emailErr)
+        console.error('[TicketReply] Email invocation failed:', emailErr)
       }
 
       // Automatically assign to me & mark in_progress if open or unassigned
-      const ticketUpdate: any = { updated_at: new Date().toISOString() }
+      const ticketUpdate: {
+        updated_at: string
+        status?: string
+        assignedStaffEmail?: string | null
+      } = { updated_at: new Date().toISOString() }
       if (selectedTicket.status === 'open') {
         ticketUpdate.status = 'in_progress'
       }
       if (!selectedTicket.assigned_staff_email) {
-        ticketUpdate.assigned_staff_email = currentUser.email
+        ticketUpdate.assignedStaffEmail = currentUser.email
       }
 
-      const { error: updErr } = await supabaseAdmin
-        .from('support_tickets')
-        .update(ticketUpdate)
-        .eq('id', selectedTicket.id)
+      await window.staffApi.updateTicket({
+        ticketId: selectedTicket.id,
+        status: ticketUpdate.status,
+        assignedStaffEmail: ticketUpdate.assignedStaffEmail
+      })
 
-      if (!updErr) {
-        setSelectedTicket((prev) => (prev ? { ...prev, ...ticketUpdate } : null))
-        fetchTickets()
-      }
+      setSelectedTicket((prev) => (prev ? { ...prev, ...ticketUpdate } : null))
+      fetchTickets()
 
       setReplyText('')
     } catch (err) {
@@ -402,56 +315,63 @@ export function SupportClientMain(): React.JSX.Element {
     }
 
     try {
-      let updatePayload: any = {
-        updated_at: new Date().toISOString()
-      }
+      let statusValue: string | undefined
+      let assignedStaffEmail: string | null | undefined
+      let resolvedByEmail: string | null | undefined
 
       if (status === 'release') {
-        updatePayload.status = 'open'
-        updatePayload.assigned_staff_email = null
+        statusValue = 'open'
+        assignedStaffEmail = null
       } else if (status === 'in_progress') {
-        updatePayload.status = 'in_progress'
-        updatePayload.assigned_staff_email = currentUser.email
+        statusValue = 'in_progress'
+        assignedStaffEmail = currentUser.email
       } else if (status === 'resolved') {
-        updatePayload.status = 'resolved'
-        updatePayload.resolved_by_email = currentUser.email
+        statusValue = 'resolved'
+        resolvedByEmail = currentUser.email
         if (!selectedTicket.assigned_staff_email) {
-          updatePayload.assigned_staff_email = currentUser.email
+          assignedStaffEmail = currentUser.email
         }
       } else if (status === 'closed') {
-        updatePayload.status = 'closed'
+        statusValue = 'closed'
         if (!selectedTicket.assigned_staff_email) {
-          updatePayload.assigned_staff_email = currentUser.email
+          assignedStaffEmail = currentUser.email
         }
       } else {
-        updatePayload.status = status
+        statusValue = status
       }
 
-      const { error } = await supabaseAdmin
-        .from('support_tickets')
-        .update(updatePayload)
-        .eq('id', selectedTicket.id)
+      await window.staffApi.updateTicket({
+        ticketId: selectedTicket.id,
+        status: statusValue,
+        assignedStaffEmail,
+        resolvedByEmail
+      })
 
-      if (error) {
-        console.error('Error updating status:', error)
-        alert(`Failed to update status: ${error.message}`)
-        return
-      }
-
-      setSelectedTicket((prev) => (prev ? { ...prev, ...updatePayload } : null))
+      setSelectedTicket((prev) =>
+        prev
+          ? {
+              ...prev,
+              ...(statusValue ? { status: statusValue as Ticket['status'] } : {}),
+              ...(assignedStaffEmail !== undefined
+                ? { assigned_staff_email: assignedStaffEmail }
+                : {}),
+              ...(resolvedByEmail !== undefined ? { resolved_by_email: resolvedByEmail } : {})
+            }
+          : null
+      )
       fetchTickets()
 
       // If ticket resolved/closed, dispatch closure email notification to customer
       if (status === 'resolved' || status === 'closed') {
         try {
-          await supabaseAdmin.functions.invoke('send-ticket-reply', {
-            body: {
-              ticketId: selectedTicket.id,
-              userEmail: selectedTicket.user_email,
-              subject: selectedTicket.subject,
-              replyText: `Your support ticket #${selectedTicket.id.slice(0, 8)} has been successfully resolved and closed by our Customer Support Team. If you have further questions or require additional assistance, please submit a new ticket on our website.`,
-              isClosedOrResolved: true
-            }
+          const { data: { session } } = await supabase.auth.getSession()
+          await window.staffApi.notifyTicketEmail({
+            ticketId: selectedTicket.id,
+            userEmail: selectedTicket.user_email,
+            subject: selectedTicket.subject,
+            replyText: `Your support ticket #${selectedTicket.id.slice(0, 8)} has been successfully resolved and closed by our Customer Support Team. If you have further questions or require additional assistance, please submit a new ticket on our website.`,
+            isClosedOrResolved: true,
+            staffJwt: session?.access_token
           })
         } catch (_e) {}
       }
@@ -469,16 +389,8 @@ export function SupportClientMain(): React.JSX.Element {
     const targetCategory = ticketToDelete.category
 
     try {
-      // 1. Delete associated messages first (ignore errors if no messages exist)
-      try {
-        await supabaseAdmin.from('ticket_messages').delete().eq('ticket_id', targetId)
-      } catch (_) {
-        // non-fatal: ticket may have no messages
-      }
-
-      // 2. Delete the support ticket
-      const { error } = await supabaseAdmin.from('support_tickets').delete().eq('id', targetId)
-      if (error) throw error
+      // Main process deletes the thread and the ticket in one handler.
+      await window.staffApi.deleteTicket(targetId)
 
       // 3. Clean from cache immediately
       setTicketsCache((prev) => {
