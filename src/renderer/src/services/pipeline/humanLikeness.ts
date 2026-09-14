@@ -1,5 +1,7 @@
 // humanLikeness.ts - Natively-style Anti-AI Tells & Human Speech Enforcer
 
+import { type LanguageCode, exampleFillerFor } from './languagePolicy'
+
 const BUZZWORD_REPLACEMENTS: [RegExp, string][] = [
   [/\bdelve into\b/gi, 'explore'],
   [/\bdelves into\b/gi, 'explores'],
@@ -84,7 +86,11 @@ export function normalizeBulletFormatting(text: string): string {
   return out.trim()
 }
 
-export function enforceHumanLikeness(rawAnswer: string, requiresExample: boolean = false): string {
+export function enforceHumanLikeness(
+  rawAnswer: string,
+  requiresExample: boolean = false,
+  responseLang: LanguageCode = 'en'
+): string {
   if (!rawAnswer || !rawAnswer.trim()) return ''
 
   let text = rawAnswer.trim()
@@ -121,15 +127,25 @@ export function enforceHumanLikeness(rawAnswer: string, requiresExample: boolean
   // 3. Canonicalise the bullet markers before anything is appended.
   text = normalizeBulletFormatting(text)
 
-  // 4. Ensure definition questions have a real-world example if required and missing
+  // 4. Ensure definition questions have a real-world example if required and missing.
+  // The filler is language-aware: we only inject when we have a safe connector for
+  // the answer language (English / Hinglish today). For any other language we SKIP
+  // rather than append an English sentence into a non-English answer.
   if (requiresExample && !text.includes('```')) {
-    const hasExampleCue = /\b(for example|for instance|a real example|such as|like when|jaise ki|example ke liye)\b/i.test(text)
-    if (!hasExampleCue && text.length > 30) {
+    const filler = exampleFillerFor(responseLang)
+    const hasExampleCue =
+      /\b(for example|for instance|a real example|such as|like when|jaise ki|jaise|example ke liye|udaharan|maslan|maan lo)\b/i.test(
+        text
+      )
+    if (filler && !hasExampleCue && text.length > 30) {
       // Append as its own point so the bullet layout survives.
       const isBulleted = /^\s*-\s+/m.test(text)
-      const filler =
-        'For example, in practical usage, this helps streamline processing and prevent unexpected failures.'
-      text += isBulleted ? `\n- ${filler}` : ` ${filler}`
+      const body =
+        responseLang === 'hi'
+          ? 'real-world usage mein yeh processing ko streamline karta hai aur unexpected failures rokta hai.'
+          : 'in practical usage, this helps streamline processing and prevent unexpected failures.'
+      const sentence = `${filler}${body}`
+      text += isBulleted ? `\n- ${sentence}` : ` ${sentence}`
     }
   }
 

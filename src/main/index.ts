@@ -10,7 +10,8 @@ import {
   desktopCapturer,
   session,
   globalShortcut,
-  powerSaveBlocker
+  powerSaveBlocker,
+  clipboard
 } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -23,6 +24,8 @@ import { loadSecureSession, storeSecureSession, clearSecureSession } from './sec
 import icon from '../../resources/icon.png?asset'
 import { autoUpdater } from 'electron-updater'
 import { localVectorDb } from './localVectorDb'
+import { prepareInterviewStart } from './interviewReadiness'
+import { drainSseEvents, extractDelta, stripThinkBlocks, SSE_DONE } from './sseParser'
 
 // ── Native Windows Stealth Engine (Ghostly Algorithm via Koffi FFI) ──
 const WDA_MONITOR = 1
@@ -209,12 +212,19 @@ const AI_GATEWAY = 'https://ai-gateway.harshjeswani30.workers.dev'
 // ─────────────────────────────────────────────
 const SUPABASE_URL = 'https://weqwxoihdfsvjwwcgtat.supabase.co'
 const SUPABASE_ANON_KEY =
-  '***REMOVED***'
+  'sb_publishable_RzCwEWjxwtqGclqY5SKCdQ_uoikKwsL'
 // NOTE: service_role key removed — all privileged operations use Edge Functions
 
 let supabaseAccessToken: string | null = null
 let supabaseUserId: string | null = null
 let supabaseRefreshToken: string | null = null
+
+// ── Gateway token state ──
+// Short-lived HMAC token issued by the Supabase Edge Function.
+// Used in every AI gateway request via gatewayHeaders().
+// Refreshed automatically when < 10 minutes remain.
+let gatewayToken: string | null = null
+let gatewayTokenExpiresAt: number = 0
 
 function isTokenExpired(token: string | null): boolean {
   if (!token) return true
@@ -254,10 +264,74 @@ function forceLogout(reason: string): void {
   supabaseRefreshToken = null
   supabaseUserId = null
   sessionPermanentlyDead = true
+  // Clear gateway token too
+  gatewayToken = null
+  gatewayTokenExpiresAt = 0
   clearSecureSession()
   BrowserWindow.getAllWindows().forEach(win => {
     if (!win.isDestroyed()) win.webContents.send('session-expired')
   })
+}
+
+/**
+ * Fetches a fresh HMAC gateway token from the Supabase Edge Function.
+ * The token encodes {userId, expiry} and is signed with the shared HMAC secret.
+ * Valid 2h for free/trial users, 6h for paid — avoids per-request Supabase calls.
+ */
+async function fetchGatewayToken(): Promise<string> {
+  const accessToken = await ensureFreshSupabaseToken()
+  if (!accessToken) {
+    throw new Error('No Supabase token available')
+  }
+  const res = await fetch(
+    `${SUPABASE_URL}/functions/v1/generate-gateway-token`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+        apikey: SUPABASE_ANON_KEY,
+      },
+    }
+  )
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    console.warn('[GatewayToken] Failed to fetch token:', res.status, err)
+    if (err?.error === 'trial_expired') {
+      BrowserWindow.getAllWindows().forEach(win => {
+        if (!win.isDestroyed()) win.webContents.send('trial-expired')
+      })
+    }
+    throw new Error(`Gateway token request failed (${res.status})`)
+  }
+  const data = await res.json() as { token?: string; expiresAt?: number; tier?: string }
+  if (!data.token || !data.expiresAt) {
+    throw new Error('Gateway token response was incomplete')
+  }
+  gatewayToken = data.token
+  gatewayTokenExpiresAt = data.expiresAt
+  console.log(`[GatewayToken] Token issued (tier: ${data.tier}, expires: ${new Date(gatewayTokenExpiresAt).toISOString()})`)
+  return gatewayToken
+}
+
+/**
+ * Returns the current gateway token, refreshing it if < 1 minute remains.
+ * 1 minute threshold (not 10) because free user tokens are tightly scoped
+ * to remaining trial time — a 10-minute threshold would cause refresh loops.
+ */
+let gatewayTokenPromise: Promise<string> | null = null
+
+async function ensureFreshGatewayToken(): Promise<string> {
+  const ONE_MINUTE = 60 * 1000
+  if (!gatewayToken || Date.now() > gatewayTokenExpiresAt - ONE_MINUTE) {
+    if (!gatewayTokenPromise) {
+      gatewayTokenPromise = fetchGatewayToken().finally(() => {
+        gatewayTokenPromise = null
+      })
+    }
+    return gatewayTokenPromise
+  }
+  return gatewayToken
 }
 
 async function refreshSupabaseSession(): Promise<boolean> {
@@ -418,6 +492,8 @@ async function handleProtocolUrl(url: string): Promise<void> {
         console.log('[Main] mainWindow not ready, queuing token...')
         pendingSessionData = { accessToken, refreshToken }
       }
+      // Fetch gateway token immediately after successful auth (fire-and-forget)
+      fetchGatewayToken().catch((e) => console.warn('[GatewayToken] Initial fetch failed:', e))
     } else {
       console.warn('[Main] Protocol URL received but no access_token found:', url)
     }
@@ -547,16 +623,17 @@ function createMainWindow(): void {
 // ─────────────────────────────────────────────
 function createOverlayWindow(): void {
   const { width } = screen.getPrimaryDisplay().workAreaSize
-  const overlayW = 840
-  const overlayH = 620
+  const defaultOverlayW = 940
+  const maxOverlayW = 1040
+  const overlayH = 700
 
   overlayWindow = new BrowserWindow({
-    width: overlayW,
+    width: defaultOverlayW,
     height: overlayH,
-    minWidth: 540, // Responsive minimum width allowing flexible shrinking
-    maxWidth: overlayW, // Prevent width from exceeding the default width
-    minHeight: 400,
-    x: Math.floor((width - overlayW) / 2),
+    minWidth: 720, // Responsive minimum width allowing flexible shrinking
+    maxWidth: maxOverlayW, // Allow resizing up to 1040px max
+    minHeight: 420,
+    x: Math.floor((width - defaultOverlayW) / 2),
     y: 12,
     show: false,
     frame: false,
@@ -612,6 +689,17 @@ function setupIPC(): void {
     const allowed = ['media', 'microphone', 'camera', 'display-capture', 'audioCapture']
     callback(allowed.includes(permission))
   })
+
+  // Clipboard write — navigator.clipboard.writeText() silently fails in overlay
+  // windows (alwaysOnTop + skipTaskbar lose clipboard permission in Chromium).
+  // Route through main process which always has access via Electron's clipboard module.
+  ipcMain.handle('write-clipboard', (_event, text: string) => {
+    clipboard.writeText(String(text ?? ''))
+  })
+
+  // The renderer needs this for the live-STT WebSocket. Every other gateway call is
+  // made from here in main, so the URL had no reason to leave this file before.
+  ipcMain.handle('get-ai-gateway-url', () => AI_GATEWAY)
 
   ipcMain.handle('get-deepgram-key', () => {
     return process.env.DEEPGRAM_API_KEY || process.env.DEEPGRAM_STT_KEY || ''
@@ -676,6 +764,26 @@ function setupIPC(): void {
 
   ipcMain.handle('get-bounds', () => overlayWindow?.getBounds())
 
+  // Lightweight pre-warm: fetches the gateway token in the background while the user
+  // is on the mic/speaker test screen, so the first LLM answer has zero token-fetch delay.
+  ipcMain.handle('prewarm-gateway-token', async () => {
+    ensureFreshGatewayToken().catch(err =>
+      console.warn('[GatewayToken] Pre-warm (mic-test screen) failed:', err)
+    )
+    return { ok: true }
+  })
+
+  // The live STT WebSocket authenticates via `?token=` on the URL (browsers cannot
+  // set headers on a WS handshake). The renderer asks for the token right here —
+  // it never handles the Supabase session itself.
+  ipcMain.handle('get-gateway-token', async () => {
+    try {
+      return await ensureFreshGatewayToken()
+    } catch {
+      return null
+    }
+  })
+
   // Use module-level Supabase constants & session vars (shared with handleProtocolUrl)
   const savedSession = loadSecureSession()
   if (savedSession?.accessToken && savedSession?.userId) {
@@ -697,16 +805,20 @@ function setupIPC(): void {
     const token = await ensureFreshSupabaseToken()
     if (!supabaseUserId || !token) throw new Error('Not logged in')
 
-    // Check balance via Edge Function — no service_role key in client
-    const balanceRes = await fetch(`${SUPABASE_URL}/functions/v1/check-balance`, {
-      method: 'GET',
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${token}`
+    const balanceData = await prepareInterviewStart({
+      prewarmGatewayToken: ensureFreshGatewayToken,
+      checkBalance: async () => {
+        const balanceRes = await fetch(`${SUPABASE_URL}/functions/v1/check-balance`, {
+          method: 'GET',
+          headers: {
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${token}`
+          }
+        })
+        if (!balanceRes.ok) throw new Error('Failed to check balance')
+        return balanceRes.json()
       }
     })
-    if (!balanceRes.ok) throw new Error('Failed to check balance')
-    const balanceData = await balanceRes.json()
 
     if (!balanceData.allowed) {
       console.warn(`[Main] Blocked start-interview for ${supabaseUserId}: ${balanceData.reason}`)
@@ -734,11 +846,12 @@ function setupIPC(): void {
       })
     } else {
       const { width } = screen.getPrimaryDisplay().workAreaSize
+      // Reset a reused overlay back to the default size (940x700)
       overlayWindow.setBounds({
-        x: Math.floor((width - 820) / 2),
+        x: Math.floor((width - 940) / 2),
         y: 12,
-        width: 820,
-        height: 620
+        width: 940,
+        height: 700
       })
       overlayWindow.reload()
       overlayWindow.webContents.once('did-finish-load', () => {
@@ -784,6 +897,21 @@ function setupIPC(): void {
       })
       globalShortcut.register('num1', () => {
         safeSend(overlayWindow, 'scroll-overlay', 'down')
+      })
+      // Left/Right page through already-answered Q&A (prev = older, next = newer).
+      // Bare arrows match the existing bare Up/Down convention above, with the
+      // numpad 4/6 aliases for keyboards where the arrow cluster is awkward.
+      globalShortcut.register('Left', () => {
+        safeSend(overlayWindow, 'history-nav', 'prev')
+      })
+      globalShortcut.register('Right', () => {
+        safeSend(overlayWindow, 'history-nav', 'next')
+      })
+      globalShortcut.register('num4', () => {
+        safeSend(overlayWindow, 'history-nav', 'prev')
+      })
+      globalShortcut.register('num6', () => {
+        safeSend(overlayWindow, 'history-nav', 'next')
       })
     } catch (err) {
       console.error('[Main] Failed to register global scroll shortcuts:', err)
@@ -832,13 +960,21 @@ function setupIPC(): void {
   ipcMain.on('end-interview', () => {
     pendingSessionData = null
 
+    // Clear cached gateway token so the next session fetches a fresh one.
+    // Free user tokens now encode remaining trial time — keeping a stale token
+    // would mean the next session starts with the wrong (already-used) expiry.
+    gatewayToken = null
+    gatewayTokenExpiresAt = 0
+
     // Release scroll + stealth shortcuts
     globalShortcut.unregister('Up')
     globalShortcut.unregister('Down')
+    globalShortcut.unregister('Left')
+    globalShortcut.unregister('Right')
     globalShortcut.unregister('Ctrl+B')
     globalShortcut.unregister('Ctrl+N')
-    const scrollKeys = ['num8', 'num2', 'num9', 'num3', 'num7', 'num1']
-    scrollKeys.forEach((key) => globalShortcut.unregister(key))
+    const numpadKeys = ['num8', 'num2', 'num9', 'num3', 'num7', 'num1', 'num4', 'num6']
+    numpadKeys.forEach((key) => globalShortcut.unregister(key))
 
     // Reset overlay stealth state so next session starts visible + protected
     overlayVisible = true
@@ -1192,7 +1328,7 @@ function setupIPC(): void {
       )
       if (!supabaseUserId || !supabaseAccessToken) {
         console.warn('[Supabase] No session for session log')
-        return
+        return null
       }
       const res = await fetch(`${SUPABASE_URL}/rest/v1/session_logs`, {
         method: 'POST',
@@ -1213,8 +1349,209 @@ function setupIPC(): void {
       console.log(`[Supabase] Log session status: ${res.status}`)
       const data = await res.json()
       console.log('[Supabase] Log session result:', data)
+      // The created row's id lets the transcript insert link back to its session.
+      return Array.isArray(data) && data[0]?.id ? (data[0].id as string) : null
     }
   )
+
+  /**
+   * Persists the live-session Q&A record captured by the overlay.
+   * Body lives in saveTranscriptInternal, shared with the exit flow.
+   */
+  ipcMain.handle('supabase-save-transcript', (_e, payload) => saveTranscriptInternal(payload))
+
+  /**
+   * End-of-interview handoff with a hard time budget.
+   *
+   * The renderer hands over the serialized Q&A record and session metadata and
+   * returns; this handler performs every cloud write (trial/credit accounting,
+   * session log, transcript + Drive copy) and only then exits the app. This
+   * replaces the old renderer-orchestrated sequence whose final `app.exit(0)`
+   * could kill in-flight network writes.
+   */
+  const logSessionReturningId = async (
+    durationSeconds: number,
+    startedAt: string,
+    sessionType: string
+  ): Promise<string | null> => {
+    if (!supabaseUserId || !supabaseAccessToken) return null
+    const token = (await ensureFreshSupabaseToken()) ?? supabaseAccessToken
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/session_logs`, {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=representation'
+        },
+        body: JSON.stringify({
+          user_id: supabaseUserId,
+          duration_seconds: durationSeconds,
+          started_at: startedAt,
+          ended_at: new Date().toISOString(),
+          session_type: sessionType
+        })
+      })
+      if (!res.ok) return null
+      const rows = await res.json()
+      return Array.isArray(rows) && rows[0]?.id ? (rows[0].id as string) : null
+    } catch {
+      return null
+    }
+  }
+
+  /** Shared body of 'supabase-save-transcript' — used by both the IPC handle and the exit flow. */
+  const saveTranscriptInternal = async (args: {
+    startedAt: string
+    endedAt: string
+    durationSeconds: number
+    sessionType: string
+    sessionId?: string
+    qa: { id: string; question: string; answer: string; timestamp: string }[]
+  }): Promise<{ ok: boolean; transcriptId?: string }> => {
+    if (!supabaseUserId || !supabaseAccessToken) return { ok: false }
+    try {
+      const token = await ensureFreshSupabaseToken()
+      if (!token) return { ok: false }
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/session_transcripts`, {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=representation'
+        },
+        body: JSON.stringify({
+          user_id: supabaseUserId,
+          session_id: args.sessionId ?? null,
+          session_type: args.sessionType,
+          started_at: args.startedAt,
+          ended_at: args.endedAt,
+          duration_seconds: args.durationSeconds,
+          qa: args.qa
+        })
+      })
+      if (!res.ok) {
+        console.error(`[Supabase] Transcript save failed: ${res.status}`)
+        return { ok: false }
+      }
+      const rows = await res.json()
+      const transcriptId = Array.isArray(rows) && rows[0]?.id ? (rows[0].id as string) : null
+      console.log(`[Supabase] Transcript saved: ${transcriptId} (${args.qa.length} Q&A pairs)`)
+
+      // Best-effort Drive copy. The edge function no-ops for users who are
+      // not connected; failures here never affect the DB record.
+      if (transcriptId) {
+        fetch(`${SUPABASE_URL}/functions/v1/drive-sync-transcript`, {
+          method: 'POST',
+          headers: {
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ transcriptId })
+        }).catch((err) => console.warn('[Supabase] Drive sync skipped:', err))
+      }
+      return { ok: true, transcriptId: transcriptId ?? undefined }
+    } catch (err) {
+      console.error('[Supabase] Transcript save error:', err)
+      return { ok: false }
+    }
+  }
+
+  /** Trial accounting for free users during the exit flow (delta seconds). */
+  const invokeUpdateTrial = async (delta: number): Promise<void> => {
+    if (delta <= 0) return
+    const token = await ensureFreshSupabaseToken()
+    if (!supabaseUserId || !token) return
+    await fetch(`${SUPABASE_URL}/functions/v1/update-trial`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ delta: Math.min(60, Math.max(0, delta)) })
+    }).catch(() => {})
+  }
+
+  /**
+   * Credit-hour accounting for premium users during the exit flow. Calls the
+   * deduct-credit-hours edge function directly (the standalone IPC handler for
+   * this was never registered, so the renderer's invoke path was dead anyway).
+   */
+  const invokeDeductCreditHours = async (args: {
+    durationSeconds: number
+    releaseHold?: boolean
+  }): Promise<void> => {
+    const token = await ensureFreshSupabaseToken()
+    if (!supabaseUserId || !token) return
+    await fetch(`${SUPABASE_URL}/functions/v1/deduct-credit-hours`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        durationSeconds: args.durationSeconds,
+        releaseHold: args.releaseHold ?? false
+      })
+    }).catch(() => {})
+  }
+
+  ipcMain.on('end-interview-and-exit', async (_e, payload) => {
+    const {
+      elapsed,
+      startedAt,
+      sessionType,
+      premium,
+      releaseHold,
+      qa
+    } = payload as {
+      elapsed: number
+      startedAt: string
+      sessionType: string
+      premium: boolean
+      releaseHold?: boolean
+      qa: { id: string; question: string; answer: string; timestamp: string }[]
+    }
+
+    // Everything below runs against a 10s budget so a dead network can never
+    // hang the exit — the app must always quit.
+    await Promise.race([
+      (async () => {
+        try {
+          if (premium) {
+            await invokeDeductCreditHours({ durationSeconds: elapsed, releaseHold })
+          } else {
+            await invokeUpdateTrial(Math.max(0, elapsed))
+          }
+        } catch (err) {
+          console.warn('[EndInterview] billing step failed:', err)
+        }
+        try {
+          const sessionId = await logSessionReturningId(elapsed, startedAt, sessionType)
+          if (qa.length > 0) {
+            await saveTranscriptInternal({
+              startedAt,
+              endedAt: new Date().toISOString(),
+              durationSeconds: elapsed,
+              sessionType,
+              sessionId: sessionId ?? undefined,
+              qa
+            })
+          }
+        } catch (err) {
+          console.warn('[EndInterview] logging step failed:', err)
+        }
+      })(),
+      new Promise((resolve) => setTimeout(resolve, 10000))
+    ])
+
+    app.exit(0)
+  })
 
   ipcMain.handle('pick-resume', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
@@ -1252,6 +1589,11 @@ function setupIPC(): void {
     const headers: Record<string, string> = { ...extra }
     if (!isMultipart) {
       headers['Content-Type'] = 'application/json'
+    }
+    // Attach the HMAC gateway token so the Worker can authenticate this request.
+    // Token may be null in dev mode (Worker runs open when GATEWAY_HMAC_SECRET is unset).
+    if (gatewayToken) {
+      headers['x-gateway-token'] = gatewayToken
     }
     return headers
   }
@@ -1343,9 +1685,15 @@ function setupIPC(): void {
         if (sttPrompt) formData.append('prompt', sttPrompt)
 
         const sttRes = await withRetry(() =>
-          fetchWithTimeout(`${AI_GATEWAY}/gateway/stt`, { method: 'POST', headers: gatewayHeaders({}, true), body: formData })
+          fetchWithTimeout(`${AI_GATEWAY}/gateway/stt`, {
+            method: 'POST',
+            // STT requires the gateway token like every other route (audit C7 —
+            // the worker-side exemption is gone).
+            headers: gatewayHeaders({}, true),
+            body: formData
+          })
         )
-        const sttData = await sttRes.json() as { text?: string }
+        const sttData = await sttRes.json() as { text?: string; language?: string }
         // Length only — transcript content is interview-sensitive and must not reach
         // a production log file.
         console.log(`[AI-STT] Received ${sttData.text?.length ?? 0} chars`)
@@ -1414,23 +1762,24 @@ function setupIPC(): void {
         const doFetch = (): Promise<Response> =>
           fetchWithTimeout(`${AI_GATEWAY}/gateway/stt`, {
             method: 'POST',
+            // STT requires the gateway token like every other route (audit C7).
             headers: gatewayHeaders({}, true),
             body: formData,
             timeout: isPartial ? 6000 : 15000
           })
         const res = isPartial ? await doFetch() : await withRetry(doFetch)
-        if (!res.ok) return ''
-        const data = await res.json() as { text?: string }
+        if (!res.ok) return { text: '' }
+        const data = await res.json() as { text?: string; language?: string }
         const text = data.text || ''
         if (isWhisperPromptHallucination(text)) {
           if (is.dev) console.log('[Main-STT] Discarded Whisper prompt hallucination:', text)
-          return ''
+          return { text: '' }
         }
-        return text
+        return { text, language: data.language }
       } catch (err: unknown) {
-        // A dropped partial is normal under load — never surface it as a session error
-        if (isPartial) return ''
-        console.error('[Gateway] transcribe-only error:', err)
+        // Log dropped partials temporarily for debugging
+        console.error('[Gateway] transcribe-only partial error:', err)
+        if (isPartial) return { text: '' }
         throw err
       }
     }
@@ -1443,6 +1792,8 @@ function setupIPC(): void {
       { transcript, systemPrompt, temperature, maxTokens, presencePenalty, frequencyPenalty }
     ) => {
       try {
+        // Ensure gateway token is fresh before every AI request
+        await ensureFreshGatewayToken()
         console.log(`[AI-LLM] Requesting answer... (Tokens: ${maxTokens})`)
         const res = await withRetry(() =>
           fetchWithTimeout(`${AI_GATEWAY}/gateway/llm`, {
@@ -1462,6 +1813,9 @@ function setupIPC(): void {
           })
         )
         const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
+        if (res.headers.get('x-finish-reason') === 'length') {
+          console.warn('[generate-answer] answer truncated by the token ceiling')
+        }
         const content = data.choices?.[0]?.message?.content || ''
         console.log(`[AI-LLM] Answer received (${content.length} chars)`)
         return content || 'No response.'
@@ -1470,6 +1824,156 @@ function setupIPC(): void {
         throw err
       }
     }
+  )
+
+  const STREAM_FIRST_BYTE_MS = 20000
+  const STREAM_IDLE_MS = 12000
+  const STREAM_FLUSH_MS = 50
+
+  /** Shared by the streaming text path and the streaming screenshot path. */
+  const VISION_USER_PROMPT =
+    'Look at this screenshot. Identify ANY interview question visible (coding, MCQ, behavioral, HR, technical). Provide the answer the candidate should say out loud, per system prompt instructions.'
+
+  /**
+   * One SSE reader for every streaming gateway route. The text-answer path and the
+   * screenshot path differ only in URL and body; everything downstream — <think>
+   * stripping, 50ms coalesced flushes, first-byte/idle timeouts and the `answer-chunk`
+   * contract — has to behave identically, so it lives here once.
+   */
+  async function streamGatewayCompletion(
+    event: Electron.IpcMainInvokeEvent,
+    opts: { requestId: string; path: string; body: unknown; firstByteMs?: number }
+  ): Promise<string> {
+    const { requestId } = opts
+    const send = (payload: Record<string, unknown>): void => {
+      if (!event.sender.isDestroyed()) event.sender.send('answer-chunk', { requestId, ...payload })
+    }
+
+    const controller = new AbortController()
+    let timer = setTimeout(() => controller.abort(), opts.firstByteMs ?? STREAM_FIRST_BYTE_MS)
+    const bumpIdle = (): void => {
+      clearTimeout(timer)
+      timer = setTimeout(() => controller.abort(), STREAM_IDLE_MS)
+    }
+
+    // `raw` is what Groq sent; `visible` is what the user may see. They differ whenever
+    // a <think> block is open, which is why only the sanitized text is ever sent.
+    let raw = ''
+    let lastSent = ''
+    let flushTimer: NodeJS.Timeout | null = null
+
+    const flush = (): void => {
+      if (flushTimer) {
+        clearTimeout(flushTimer)
+        flushTimer = null
+      }
+      const visible = stripThinkBlocks(raw)
+      if (visible === lastSent) return
+      lastSent = visible
+      send({ full: visible, done: false })
+    }
+    const scheduleFlush = (): void => {
+      if (!flushTimer) flushTimer = setTimeout(flush, STREAM_FLUSH_MS)
+    }
+    try {
+      await ensureFreshGatewayToken()
+      const res = await fetch(`${AI_GATEWAY}${opts.path}`, {
+        method: 'POST',
+        headers: gatewayHeaders(),
+        signal: controller.signal,
+        body: JSON.stringify(opts.body)
+      })
+
+      if (!res.ok || !res.body) {
+        clearTimeout(timer)
+        send({ done: true, error: `Gateway ${res.status}`, full: '' })
+        return ''
+      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let finished = false
+
+      while (!finished) {
+        const { done, value } = await reader.read()
+        if (done) break
+        bumpIdle()
+        buffer += decoder.decode(value, { stream: true })
+
+        const drained = drainSseEvents(buffer)
+        buffer = drained.rest
+
+        for (const frame of drained.events) {
+          if (frame === SSE_DONE) {
+            finished = true
+            break
+          }
+          // extractDelta reads delta.content only — a reasoning delta adds nothing.
+          raw += extractDelta(frame)
+        }
+        scheduleFlush()
+      }
+
+      clearTimeout(timer)
+      if (flushTimer) clearTimeout(flushTimer)
+      const finalVisible = stripThinkBlocks(raw)
+      send({ done: true, full: finalVisible })
+      return finalVisible
+    } catch (e: unknown) {
+      clearTimeout(timer)
+      if (flushTimer) clearTimeout(flushTimer)
+      const err = e as { name?: string; message?: string }
+      const aborted = err?.name === 'AbortError'
+      const partial = stripThinkBlocks(raw)
+      send({ done: true, error: aborted ? 'stream timed out' : String(err?.message || e), full: partial })
+      return partial
+    }
+  }
+
+  ipcMain.handle('generate-answer-stream', async (event, data) =>
+    streamGatewayCompletion(event, {
+      requestId: data.requestId,
+      path: '/gateway/llm',
+      body: {
+        stream: true,
+        model: data.model || 'openai/gpt-oss-120b',
+        messages: [
+          { role: 'system', content: data.systemPrompt },
+          { role: 'user', content: data.transcript }
+        ],
+        temperature: data.temperature ?? 0.65,
+        max_completion_tokens: data.maxTokens ?? 1024,
+        presence_penalty: data.presencePenalty ?? 0.4,
+        frequency_penalty: data.frequencyPenalty ?? 0.4
+      }
+    })
+  )
+
+  // Streaming screenshot analysis. Same channel and same requestId contract as the text
+  // path, so the renderer reuses onAnswerChunk untouched. The screenshot itself still
+  // comes from `capture-screenshot` (stealth micro-blink) in the renderer.
+  ipcMain.handle('analyze-screen-stream', async (event, data) =>
+    streamGatewayCompletion(event, {
+      requestId: data.requestId,
+      path: '/gateway/vision',
+      // Image prefill is heavier than text, so the first token needs more headroom than
+      // the 20s text default before the abort fires.
+      firstByteMs: 25000,
+      body: {
+        stream: true,
+        max_completion_tokens: data.maxTokens ?? 2048,
+        messages: [
+          { role: 'system', content: data.systemPrompt },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: data.userPrompt || VISION_USER_PROMPT },
+              { type: 'image_url', image_url: { url: data.base64Image } }
+            ]
+          }
+        ]
+      }
+    })
   )
 
   ipcMain.handle('analyze-screen', async (_event, { systemPrompt, model: _model }) => {
@@ -1482,6 +1986,7 @@ function setupIPC(): void {
       if (!primarySource) throw new Error('No screen source found')
       const base64Image = 'data:image/jpeg;base64,' + primarySource.thumbnail.toJPEG(85).toString('base64')
 
+      await ensureFreshGatewayToken()
       const res = await withRetry(() => 
         fetchWithTimeout(`${AI_GATEWAY}/gateway/vision`, {
           method: 'POST',
@@ -1547,7 +2052,7 @@ function setupIPC(): void {
 
   ipcMain.handle('query-vision', async (_event, { systemPrompt, base64Image }) => {
     try {
-      const res = await withRetry(() => 
+      const res = await withRetry(() =>
         fetchWithTimeout(`${AI_GATEWAY}/gateway/vision`, {
           method: 'POST',
           headers: gatewayHeaders(),
@@ -1557,7 +2062,9 @@ function setupIPC(): void {
               {
                 role: 'user',
                 content: [
-                  { type: 'text', text: 'Look at this screenshot. Identify ANY interview question visible (coding, MCQ, behavioral, HR, technical). Provide the answer the candidate should say out loud, per system prompt instructions.' },
+                  // Same constant the streaming path sends, so the buffered fallback can
+                  // never drift into asking for a differently-shaped answer.
+                  { type: 'text', text: VISION_USER_PROMPT },
                   { type: 'image_url', image_url: { url: base64Image } }
                 ]
               }
@@ -1591,7 +2098,10 @@ function setupIPC(): void {
                 ]
               }
             ],
-            max_tokens: 256
+            max_tokens: 256,
+            // Extraction, not generation: the gateway's 0.6 answer default would
+            // paraphrase the question instead of transcribing it.
+            temperature: 0.2
           }),
           timeout: 45000
         })

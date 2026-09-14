@@ -3,6 +3,7 @@
 import electron from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
+import { selectRelevantChunks } from './vectorRelevance'
 
 export interface VectorChunk {
   id: string
@@ -162,9 +163,7 @@ class LocalVectorDb {
       return { text: chunk.text, score: totalScore }
     })
 
-    scored.sort((a, b) => b.score - a.score)
-    const top = scored.slice(0, topK).filter((item) => item.score > 0.04)
-    return top.map((item) => item.text)
+    return selectRelevantChunks(scored, topK)
   }
 
   public clearSource(source: string): void {

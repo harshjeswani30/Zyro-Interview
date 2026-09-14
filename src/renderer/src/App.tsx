@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import SetupPage from './components/SetupPage'
 import OverlayPage from './components/OverlayPage'
+import MicSpeakerTest from './components/MicSpeakerTest'
 import { DesktopLoginPage } from './components/DesktopLoginPage'
 import PegtopLoader from './components/PegtopLoader'
 import { supabase } from './lib/supabase'
@@ -14,11 +15,13 @@ interface UserProfile {
   [key: string]: unknown
 }
 
-type Page = 'login' | 'setup' | 'overlay' | 'loading'
+type Page = 'login' | 'setup' | 'mic-test' | 'overlay' | 'loading'
 
 function App(): React.ReactElement {
   const [page, setPage] = useState<Page>('loading')
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
+  // Holds the sessionData that SetupPage built, passed through mic-test to startInterview
+  const pendingSessionDataRef = useRef<any>(null)
 
   useEffect(() => {
     const hash = window.location.hash
@@ -137,6 +140,35 @@ function App(): React.ReactElement {
     setPage('login')
   }
 
+  /**
+   * Called by SetupPage when the user clicks "Start Interview".
+   * Saves the session data, pre-warms the gateway token in background,
+   * then routes to the mic/speaker test screen while the token fetches.
+   */
+  const handleGoToMicTest = useCallback((sessionData: unknown): void => {
+    pendingSessionDataRef.current = sessionData
+    setPage('mic-test')
+  }, [])
+
+  /**
+   * Called by MicSpeakerTest when the user clicks "Start Interview" / auto-proceeds.
+   * By now the gateway token is pre-warmed and cached — startInterview will not pay
+   * the token-fetch latency, so the first LLM answer arrives at full raw speed.
+   */
+  const handleProceedFromMicTest = useCallback((): void => {
+    const sessionData = pendingSessionDataRef.current
+    if (!sessionData) return
+    window.api.startInterview(sessionData).then((res: { allowed: boolean } | null) => {
+      if (res && !res.allowed) {
+        // Balance check failed (e.g. trial ended between form fill and mic test)
+        // Go back to setup so the paywall can show.
+        setPage('setup')
+      }
+      // On success: the main process opens the overlay BrowserWindow automatically.
+      // This main window just stays in the background — no page change needed.
+    }).catch(() => setPage('setup'))
+  }, [])
+
   if (page === 'loading') {
     return (
       <div
@@ -158,9 +190,15 @@ function App(): React.ReactElement {
   if (page === 'login') return (
     <DesktopLoginPage onLoginSuccess={handleLoginSuccess} />
   )
+  if (page === 'mic-test') return (
+    <MicSpeakerTest
+      onProceed={handleProceedFromMicTest}
+      onBack={() => setPage('setup')}
+    />
+  )
   return (
     <>
-      <SetupPage userProfile={userProfile} onLogout={handleLogout} />
+      <SetupPage userProfile={userProfile} onLogout={handleLogout} onGoToMicTest={handleGoToMicTest} />
     </>
   )
 }

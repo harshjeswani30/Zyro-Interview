@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, ChevronDown } from 'lucide-react'
+import { buildLanguageDirective, detectUtteranceLanguage } from '../services/pipeline/languagePolicy'
 import './PhoneInterviewPanel.css'
 
 
@@ -185,7 +186,12 @@ export default function PhoneInterviewPanel({
 
   // ── Copy to Clipboard Helper ──
   const handleCopy = (blockId: string, text: string) => {
-    navigator.clipboard.writeText(text)
+    // Route through main process — navigator.clipboard fails silently in overlay (no focus/permission)
+    if (window.api?.writeClipboard) {
+      window.api.writeClipboard(text).catch(() => {})
+    } else {
+      navigator.clipboard.writeText(text)
+    }
     setCopiedBlockId(blockId)
     setTimeout(() => setCopiedBlockId(null), 1500)
   }
@@ -243,6 +249,13 @@ export default function PhoneInterviewPanel({
 
       const resumeText = resumes.find((r) => r.id === selectedResumeId)?.text || ''
 
+      // Per-utterance answer language: detect from the actual spoken question and emit
+      // one authoritative language lock. Paragraph surface, so bulletFormat is off.
+      const answerLanguageDirective = buildLanguageDirective(
+        detectUtteranceLanguage({ text: block.question }),
+        { bulletFormat: false }
+      )
+
       const lowerQuestion = block.question.toLowerCase()
       const needsDetail = /elaborate|detail|deep dive|explain more|tell me more|expand on/i.test(lowerQuestion)
       const lengthInstruction = needsDetail
@@ -263,14 +276,12 @@ The context is candidate-provided interview preparation material.
 
 Rules:
 1. Treat the supplied context as the primary factual source.
-2. Cross-Lingual Rule: The context may be in English, but if the question is in Hindi/Hinglish, you MUST translate and explain the concepts in fluent HINGLISH (Conversational Hindi written in English/Latin alphabet).
-3. If the question is in pure English, answer in English.
-4. Make the answer sound like something the candidate can naturally speak during a live interview.
-5. Keep technical terms in standard English.
-6. Start directly with the answer. Avoid unnecessary introductions.
-7. Do not mention 'context', 'knowledge base', 'retrieved chunks', or RAG.
-8. If the supplied material does not contain enough information to answer reliably, output exactly: NO_RELEVANT_CONTEXT
-
+2. Make the answer sound like something the candidate can naturally speak during a live interview.
+3. Keep technical terms in standard English.
+4. Start directly with the answer. Avoid unnecessary introductions.
+5. Do not mention 'context', 'knowledge base', 'retrieved chunks', or RAG.
+6. If the supplied material does not contain enough information to answer reliably, output exactly: NO_RELEVANT_CONTEXT
+${answerLanguageDirective}
 INTERVIEW CONTEXT:
 ${ragContext}
 
@@ -304,14 +315,8 @@ IDENTITY:
 - You ARE the candidate — ${name}, applying for the role of ${role} at ${company || 'the target company'}.
 - Always answer in the first person ("I" / "Main"). Never say "Certainly", "Great question", or "As an AI model...". Start the answer directly.
 - NEVER invent or exaggerate experience beyond the resume.
-
-TONE & LANGUAGE RULES (CRITICAL):
-1. **HINDI / HINGLISH QUESTIONS**: If the interviewer speaks or asks the question in Hindi, Hinglish, or Devanagari script:
-   - You MUST answer in **fluent, natural HINGLISH** (Conversational Hindi written in English/Latin alphabet, e.g. "Main regression testing perform karne ke liye sabse pehle...", "Hum critical test cases execute karte hain...").
-   - **STRICT PROHIBITION 1**: DO NOT use Devanagari script (NO हिंदी लिपि like मैं, आप, यह). Always write in English alphabets.
-   - **STRICT PROHIBITION 2**: DO NOT answer in pure English when the question was in Hindi/Hinglish. Answer in Hinglish.
-   - Keep all technical terms, tool names, framework names, and processes in standard ENGLISH (e.g. QA Lead, Regression Testing, Test Plan, Selenium, Postman, Jira, Agile, Sprint, Bug Lifecycle, CI/CD).
-2. **ENGLISH QUESTIONS**: If the interviewer asks in pure English, answer in clear, professional English.
+${answerLanguageDirective}
+TONE & OUTPUT RULES (CRITICAL):
 - Short active sentences. No corporate filler phrases.
 - NEVER use bullet points. Always output clean, flowing paragraph sentences.
 - ${lengthInstruction}
@@ -328,9 +333,8 @@ ${interviewContent.trim()}
 
 RULES FOR USING INTERVIEW CONTENT:
 1. When the interviewer's question matches, refers to, or is related to any topics/information in the "INTERVIEW CONTENT CHEAT SHEET" above, you MUST prioritize answering from that content.
-2. Cross-Lingual Adaptation: Even if the cheat sheet is in English, if the question is in Hindi/Hinglish, explain the concepts seamlessly in HINGLISH (English alphabet Hindi).
-3. When answering from the cheat sheet, explain it smartly, clearly, and in simple conversational terms. Keep it natural.
-4. If the interviewer asks something "out of the box" that is NOT covered or related to the cheat sheet, you should answer on your own using your general knowledge and the candidate's resume/profile context. Do NOT force a match if it is not related.
+2. When answering from the cheat sheet, explain it smartly, clearly, and in simple conversational terms. Keep it natural. Follow the LANGUAGE LOCK above regardless of the cheat sheet's own language.
+3. If the interviewer asks something "out of the box" that is NOT covered or related to the cheat sheet, you should answer on your own using your general knowledge and the candidate's resume/profile context. Do NOT force a match if it is not related.
 ` : ''}
 
 ### RECENT CONVERSATION HISTORY (CRITICAL FOR FOLLOW-UP QUESTIONS):
@@ -436,7 +440,7 @@ ${resumeText.substring(0, 3500)}
           language: language
         })
 
-        const cleaned = transcript.trim()
+        const cleaned = transcript.text.trim()
         if (!cleaned || cleaned.length < 3) {
           setStatusText('🎙️ Listening for call audio...')
           return

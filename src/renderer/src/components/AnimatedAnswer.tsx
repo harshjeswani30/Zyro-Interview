@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useWordReveal } from '../hooks/useWordReveal'
+import { closeOpenCodeFence } from '../services/pipeline/streamMarkdown'
 
 /* ─── Original Thinking Indicator (Restored) ─────────────────── */
 function OldThinkingIndicator(): React.ReactElement {
@@ -24,11 +24,6 @@ function OldThinkingIndicator(): React.ReactElement {
             <div className="skeleton-modern" style={{ width: '60%' }} />
         </div>
     )
-}
-
-/* ─── Blinking cursor ─────────────────────────────────────────── */
-function Cursor(): React.ReactElement {
-    return <span className="animated-answer-cursor" aria-hidden />
 }
 
 /* ─── Copy / check glyphs ─────────────────────────────────────── */
@@ -79,7 +74,16 @@ function CodeBlock({ children }: { children?: React.ReactNode }): React.ReactEle
     const handleCopy = (): void => {
         const text = preRef.current?.innerText?.replace(/\n+$/, '') ?? ''
         if (!text) return
-        navigator.clipboard.writeText(text).catch(() => {})
+        // Route through the main process — navigator.clipboard fails silently in the
+        // overlay window (alwaysOnTop + skipTaskbar means Chromium denies the
+        // clipboard-write permission). typeof, not truthiness: writeClipboard is
+        // non-optional in the Api type, so `if (api?.writeClipboard)` is a condition
+        // TypeScript knows can never be false.
+        if (typeof window.api?.writeClipboard === 'function') {
+            window.api.writeClipboard(text).catch(() => {})
+        } else {
+            navigator.clipboard.writeText(text).catch(() => {})
+        }
         setCopied(true)
         if (resetRef.current) clearTimeout(resetRef.current)
         resetRef.current = setTimeout(() => setCopied(false), 1600)
@@ -103,25 +107,13 @@ function CodeBlock({ children }: { children?: React.ReactNode }): React.ReactEle
 
 /* ─── Main component ─────────────────────────────────────────── */
 interface AnimatedAnswerProps {
-    /** Full answer markdown string */
+    /** Full answer markdown. Under streaming this grows between renders. */
     answer: string
-    /** Show skeleton loader instead of answer */
+    /** Show the skeleton loader instead of the answer. */
     isThinking: boolean
-    /** Reveal speed in ms (default 20ms for snappier feel) */
-    wordDelayMs?: number
 }
 
-export function AnimatedAnswer({
-    answer,
-    isThinking,
-    wordDelayMs = 8,
-}: AnimatedAnswerProps): React.ReactElement {
-
-    const { visibleLength, isStreaming } = useWordReveal(
-        isThinking ? undefined : answer,
-        wordDelayMs
-    )
-
+export function AnimatedAnswer({ answer, isThinking }: AnimatedAnswerProps): React.ReactElement {
     // ── Thinking state: Original Neural Flow ──────────────────────
     if (isThinking) {
         return (
@@ -139,57 +131,18 @@ export function AnimatedAnswer({
         )
     }
 
-    const visibleText = answer.slice(0, visibleLength)
-
-    // The cursor belongs to the LAST rendered block only. Answers are now point
-    // lists, so it has to be able to land inside an <li> as well as a <p>, and
-    // it must not be duplicated into every earlier bullet. hast node positions
-    // are offsets into visibleText, so the tail block is the one ending at the
-    // end of the trimmed visible text.
-    const tailOffset = visibleText.trimEnd().length
-    const isTailNode = (node?: { position?: { end?: { offset?: number } } }): boolean => {
-        if (!isStreaming || visibleLength === 0) return false
-        const end = node?.position?.end?.offset
-        return typeof end === 'number' ? end >= tailOffset : false
-    }
-
-    // A "loose" list wraps each bullet's text in a <p>, and that <p> ends at the
-    // same offset as its <li>. Only the innermost one may own the cursor.
-    const wrapsParagraph = (node?: { children?: unknown[] }): boolean =>
-        Boolean(
-            node?.children?.some(
-                (child) =>
-                    typeof child === 'object' &&
-                    child !== null &&
-                    (child as { tagName?: string }).tagName === 'p'
-            )
-        )
+    // A stream can pause inside an unclosed fence. Repair it for display only.
+    const renderable = closeOpenCodeFence(answer)
 
     return (
         <div className="animated-answer-content qa-answer markdown-content">
             <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 rehypePlugins={[rehypeHighlight]}
-                components={{
-                    p: ({ node, children }) => (
-                        <p>
-                            {children}
-                            {isTailNode(node) && <Cursor />}
-                        </p>
-                    ),
-                    li: ({ node, children }) => (
-                        <li>
-                            {children}
-                            {!wrapsParagraph(node) && isTailNode(node) && <Cursor />}
-                        </li>
-                    ),
-                    pre: ({ children }) => <CodeBlock>{children}</CodeBlock>
-                }}
+                components={{ pre: ({ children }) => <CodeBlock>{children}</CodeBlock> }}
             >
-                {visibleText}
+                {renderable}
             </ReactMarkdown>
-            {/* Fallback cursor if there are no paragraphs (rare) */}
-            {isStreaming && visibleLength === 0 && <Cursor />}
         </div>
     )
 }

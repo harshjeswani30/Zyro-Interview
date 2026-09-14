@@ -330,7 +330,7 @@ export function DesktopLoginPage({ onLoginSuccess }: DesktopLoginPageProps): Rea
                 type="button"
                 className="support-button"
                 onClick={() =>
-                  window.api.openExternal('https://zyro-ai.in/login')
+                  window.api.openExternal('https://www.zyro-ai.in/login')
                 }
               >
                 Sign Up on Web

@@ -1,5 +1,7 @@
 // intentClassifier.ts - Natively-style Question & Intent Classification Engine
 
+import { detectUtteranceLanguage } from './languagePolicy'
+
 export type QuestionIntent =
   | 'definitional'
   | 'technical_concept'
@@ -35,31 +37,17 @@ const HINGLISH = {
   followup: /\b(aur batao|thoda aur|detail mein batao|detail me batao|elaborate karo|iske aage|aur kuch|example do|example batao)\b|(\u0914\u0930 \u092C\u0924\u093E\u0913|\u0925\u094B\u0921\u093C\u093E \u0914\u0930|\u0909\u0926\u093E\u0939\u0930\u0923 (\u0926\u094B|\u092C\u0924\u093E\u0913))/i
 }
 
-// Unambiguous Hindi/Hinglish tokens. None of these is an English word, so a single
-// hit settles the language.
-const HINDI_STRONG =
-  /\b(aap|aapka|aapke|aapko|hume|humein|mujhe|mera|mere|meri|kya|kyun|kyu|kaise|kaisa|kaisi|kab|kahan|konsa|kaunsa|kitna|kitne|batao|bataiye|bata|samjhao|karo|karein|karna|karte|karta|karti|kiya|kiye|karega|karenge|hota|hoti|hote|hai|hain|tha|thi|hoga|hogi|honge|mein|nahi|nahin|matlab|baare|bare|kabhi|accha|acha|theek|samajh|madad|chahiye|boliye|sunte|bilkul|zaroori|zyada)\b/i
-
-// Short function words that are also plausible mis-hearings of English words
-// ("ki"/"key", "se"/"say", "ko"/"co"). One of these on its own is not evidence \u2014
-// two independent ones are. Requiring two is what stops a single odd word from
-// flipping an English question into the Hinglish answer path.
-const HINDI_WEAK =
-  /\b(se|ko|ki|ke|par|pe|aur|ya|hum|kuch|bhi|toh|jo|woh|wo|yeh|ye|abhi|phir|lekin|magar|sirf|bahut|jaise|thoda)\b/gi
+// Language detection (Hindi/Hinglish vs the rest) lives in languagePolicy so there
+// is ONE detector shared by the answer-language policy and this classifier. The
+// HINDI_STRONG / HINDI_WEAK token lists moved there with it.
 
 export function classifyIntent(query: string): IntentResult {
   const lower = query.toLowerCase().trim()
 
-  // 1. Detect language (Hindi / Hinglish)
-  //
-  // `the` and `me` used to be in this list, which made almost every English
-  // question ("tell me about the project") classify as Hindi and pick up the
-  // Hinglish LANGUAGE LOCK in the answer prompt. They are English words and cannot
-  // be used as Hindi cues; the Hindi readings ("\u0925\u0947", "\u092E\u0947\u0902") are always accompanied
-  // by a strong marker anyway.
-  const weakHits = new Set(lower.match(HINDI_WEAK) || [])
-  const isHindi =
-    /[\u0900-\u097F]/.test(query) || HINDI_STRONG.test(lower) || weakHits.size >= 2
+  // 1. Detect language via the shared detector. `isHindi` stays a binary flag
+  // (consumed by answerPlanner and the intent routing below); it is now true iff
+  // the shared per-utterance detector resolves the text to Hindi.
+  const isHindi = detectUtteranceLanguage({ text: query }) === 'hi'
 
   // 2. Detect DSA / Coding problem
   const isCoding =

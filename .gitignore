@@ -41,6 +41,9 @@ ENV/
 # Scratch directory
 scratch/
 
+# Supabase/Deno CLI artifacts
+deno.lock
+
 # Local scratch scripts (not part of the app)
 check-json.js
 get-models.js

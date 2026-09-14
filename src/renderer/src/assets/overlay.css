@@ -1,0 +1,2381 @@
+/* =====================================================================
+   Zyro live overlay -- v2 design system
+   ---------------------------------------------------------------------
+   Every selector here is scoped under .zv-overlay on purpose. The mockup
+   this is built from uses short generic names (.dock, .key, .chip, .feed)
+   and main.css is a single global sheet shared with SetupPage, so without
+   the scope these would collide. Nothing in this file may be written as a
+   bare element or bare class selector.
+
+   Three deliberate departures from the mockup, all forced by Electron:
+     1. No body background/gradient -- the overlay window is transparent
+        and must stay that way, so only the glass panels paint.
+     2. .dock is the drag region; every interactive descendant is no-drag.
+     3. Cursors stay default (body.overlay-mode * rule in main.css) -- the
+        overlay must not betray itself with pointer/grab cursors.
+   ===================================================================== */
+
+.zv-overlay {
+  --overlay-op: var(--overlay-opacity, 0.85);
+  --black: #07060b;
+  --bg: rgba(9, 7, 15, var(--overlay-op));
+  --bg-2: rgba(255, 255, 255, calc(0.01 + 0.03 * var(--overlay-op)));
+  --bg-3: rgba(255, 255, 255, calc(0.02 + 0.05 * var(--overlay-op)));
+  --line: rgba(255, 255, 255, calc(0.02 + 0.06 * var(--overlay-op)));
+  --line-2: rgba(255, 255, 255, calc(0.04 + 0.11 * var(--overlay-op)));
+  --white: #f7f5ff;
+  --fg: #EEF1F5;
+  --fg-2: #A7AFBB;
+  --fg-3: #6B7380;
+  --acc: #8DF0C4;      /* signal mint */
+  --acc-dim: rgba(141, 240, 196, 0.14);
+  --think: #9BB8FF;
+  --think-dim: rgba(155, 184, 255, 0.14);
+  --p: #b79cff;
+  --p2: #8b5cf6;
+  --p3: #5b2edb;
+  --p-dim: rgba(139, 92, 246, 0.16);
+  --p-line: rgba(183, 156, 255, 0.35);
+  --ok: #8DF0C4;
+  --ok-dim: rgba(141, 240, 196, 0.14);
+  --bad: #FF6B6B;
+  --bad-dim: rgba(255, 107, 107, 0.14);
+  --warn: #FFB454;
+  --warn-dim: rgba(255, 180, 84, 0.14);
+  --sans: 'Inter', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --r-xl: 24px;
+  --r-lg: 22px;
+  --r-md: 14px;
+  --r-sm: 9px;
+  --d-scale: var(--hdr-scale, 1);
+  --rail-w: clamp(210px, calc(270px * var(--d-scale)), 270px);
+
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  padding: 6px 12px 12px;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 0;
+  font-family: var(--sans);
+  color: var(--white);
+  background: transparent;
+  overflow: visible;
+  animation: zv-enter 0.5s var(--ease) both;
+  user-select: none;
+}
+
+.zv-overlay *,
+.zv-overlay *::before,
+.zv-overlay *::after {
+  box-sizing: border-box;
+}
+
+/* Universal undetectable cursor: force standard arrow pointer everywhere across the overlay */
+.zv-overlay,
+.zv-overlay *,
+.zv-overlay *::before,
+.zv-overlay *::after,
+.zv-overlay button,
+.zv-overlay input,
+.zv-overlay select,
+.zv-overlay textarea,
+.zv-overlay a,
+.zv-overlay [role="button"],
+.zv-overlay input[type='range'],
+.zv-overlay input[type='range']::-webkit-slider-thumb,
+.zv-overlay input[type='range']::-webkit-slider-runnable-track,
+.zv-overlay input[type='range']::-moz-range-thumb,
+.zv-overlay input[type='range']::-moz-range-track {
+  cursor: default !important;
+}
+
+.zv-overlay button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.zv-overlay button:disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.zv-overlay kbd {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  padding: 1px 5px;
+  border: 1px solid var(--line-2);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  color: var(--fg-2);
+  background: rgba(0, 0, 0, 0.3);
+  line-height: 1.5;
+}
+
+.zv-overlay svg.i {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+}
+
+@keyframes zv-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Drag region: the dock and the dash symbol pill move the window via JavaScript pointer-capture.
+   Using no-drag ensures Chromium always dispatches DOM pointer events even from inactive windows. */
+.zv-overlay .dock,
+.zv-overlay .dock-drag-bar__pill {
+  -webkit-app-region: no-drag;
+  user-select: none;
+}
+
+.zv-overlay .dock,
+.zv-overlay .dock-drag-bar__pill {
+  cursor: default !important;
+}
+
+.zv-overlay .dock:active,
+.zv-overlay .dock-drag-bar__pill:active {
+  cursor: default !important;
+}
+
+.zv-overlay .deck,
+.zv-overlay .ttab,
+.zv-overlay .no-drag,
+.zv-overlay button,
+.zv-overlay input {
+  -webkit-app-region: no-drag;
+}
+
+/* No outer drop shadow. The mockup had `0 40px 100px -40px rgba(0,0,0,.9)` here,
+   which worked because that page had an opaque dark background to absorb it. This
+   window is transparent, so the same shadow painted a black smudge onto whatever
+   was behind the overlay -- and made it noticeably easier to spot. Separation now
+   comes from the border, the backdrop blur and the two inset highlights. */
+.zv-overlay .glass {
+  background: rgba(9, 7, 15, var(--overlay-op));
+  backdrop-filter: blur(calc(30px * var(--overlay-op))) saturate(calc(100% + 60% * var(--overlay-op)));
+  -webkit-backdrop-filter: blur(calc(30px * var(--overlay-op))) saturate(calc(100% + 60% * var(--overlay-op)));
+  border: 1px solid var(--line);
+  box-shadow:
+    0 0 0 1px rgba(139, 92, 246, calc(0.06 * var(--overlay-op))) inset,
+    inset 0 1px 0 rgba(255, 255, 255, calc(0.06 * var(--overlay-op)));
+}
+
+/* ---------------------------------------------------------------------
+   DOCK WRAPPER & TIMER TAB -- bound together so no gap can ever form
+   ------------------------------------------------------------------ */
+
+.zv-overlay .dock-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  width: 100%;
+  flex-shrink: 0;
+  z-index: 2;
+}
+
+.zv-overlay .ttab {
+  position: relative;
+  height: max(22px, calc(34px * var(--d-scale)));
+  margin-right: calc(42px * var(--d-scale));
+  margin-bottom: -1px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: calc(9px * var(--d-scale));
+  padding: 0 calc(14px * var(--d-scale)) 0 calc(12px * var(--d-scale));
+  border-radius: calc(14px * var(--d-scale)) calc(14px * var(--d-scale)) 0 0;
+  background: rgba(12, 9, 20, calc(0.1 + 0.9 * var(--overlay-op)));
+  border: 1px solid var(--line-2);
+  border-bottom: 0;
+  box-shadow: none;
+  transition: background 0.3s, border-color 0.3s;
+  flex-shrink: 0;
+}
+
+.zv-overlay .ttab::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 3px;
+  background: rgba(12, 9, 20, calc(0.1 + 0.9 * var(--overlay-op)));
+}
+
+.zv-overlay .ttab::before {
+  content: '';
+  position: absolute;
+  left: calc(14px * var(--d-scale));
+  right: calc(14px * var(--d-scale));
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--p), transparent);
+  opacity: 0.8;
+}
+
+.zv-overlay .ttab .pip {
+  width: calc(7px * var(--d-scale));
+  height: calc(7px * var(--d-scale));
+  border-radius: 50%;
+  background: var(--p);
+  box-shadow: 0 0 6px var(--p);
+  animation: zv-blink 1.6s infinite;
+}
+
+.zv-overlay .ttab .num {
+  font-family: var(--mono);
+  font-size: calc(15px * var(--d-scale));
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+  transition: color 0.3s;
+}
+
+.zv-overlay .ttab .lbl {
+  font-family: var(--mono);
+  font-size: calc(9px * var(--d-scale));
+  letter-spacing: 0.16em;
+  color: var(--fg-3);
+  text-transform: uppercase;
+  padding-left: calc(9px * var(--d-scale));
+  border-left: 1px solid var(--line-2);
+}
+
+.zv-overlay .ttab .bar {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 0;
+  height: 2px;
+  background: var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.zv-overlay .ttab .bar i {
+  display: block;
+  height: 100%;
+  background: var(--p);
+  transition: width 1s linear, background 0.4s;
+  transform-origin: left;
+}
+
+.zv-overlay[data-time='warn'] .ttab {
+  border-color: rgba(251, 191, 36, 0.45);
+  box-shadow: none;
+}
+
+.zv-overlay[data-time='warn'] .ttab .num {
+  color: var(--warn);
+}
+
+.zv-overlay[data-time='warn'] .ttab .pip,
+.zv-overlay[data-time='warn'] .ttab .bar i {
+  background: var(--warn);
+  box-shadow: 0 0 6px var(--warn);
+}
+
+.zv-overlay[data-time='warn'] .ttab::before {
+  background: linear-gradient(90deg, transparent, var(--warn), transparent);
+}
+
+.zv-overlay[data-time='crit'] .ttab {
+  border-color: rgba(251, 113, 133, 0.55);
+  box-shadow: none;
+  animation: zv-crit 1.1s ease-in-out infinite;
+}
+
+.zv-overlay[data-time='crit'] .ttab .num {
+  color: var(--bad);
+}
+
+.zv-overlay[data-time='crit'] .ttab .pip,
+.zv-overlay[data-time='crit'] .ttab .bar i {
+  background: var(--bad);
+  box-shadow: 0 0 6px var(--bad);
+}
+
+.zv-overlay[data-time='crit'] .ttab::before {
+  background: linear-gradient(90deg, transparent, var(--bad), transparent);
+}
+
+@keyframes zv-crit {
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes zv-blink {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* ---------------------------------------------------------------------
+   DOCK -- brand + status on the left, keycap trays on the right
+   ------------------------------------------------------------------ */
+
+.zv-overlay .dock {
+  border-radius: calc(var(--r-xl) * var(--d-scale));
+  height: calc(76px * var(--d-scale));
+  min-height: 50px;
+  padding: 0 calc(10px * var(--d-scale)) 0 calc(16px * var(--d-scale));
+  display: flex;
+  align-items: center;
+  gap: calc(12px * var(--d-scale));
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+  width: 100%;
+}
+
+.zv-overlay .dock::before {
+  content: '';
+  position: absolute;
+  left: -60px;
+  top: -90px;
+  width: 320px;
+  height: 220px;
+  background: radial-gradient(closest-side, var(--aura, var(--p2)), transparent);
+  opacity: 0.28;
+  pointer-events: none;
+  transition: background 0.5s;
+}
+
+.zv-overlay .dock::after {
+  content: '';
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--p-line), transparent);
+}
+
+/* ---------------------------------------------------------------------
+   DRAG BAR / BRIDGE -- space between dock and deck with visual grip
+   ------------------------------------------------------------------ */
+
+.zv-overlay .dock-drag-bar {
+  height: calc(20px * var(--d-scale));
+  min-height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  z-index: 2;
+  user-select: none;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  padding: 2px 0;
+}
+
+.zv-overlay .dock-drag-bar__pill {
+  width: calc(84px * var(--d-scale));
+  min-width: 56px;
+  height: calc(7px * var(--d-scale));
+  min-height: 5px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.25);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.22s var(--ease);
+  position: relative;
+  pointer-events: auto;
+  cursor: default !important;
+  -webkit-app-region: no-drag;
+}
+
+.zv-overlay .dock-drag-bar__pill:hover {
+  width: calc(112px * var(--d-scale));
+  min-width: 72px;
+  height: calc(8px * var(--d-scale));
+  min-height: 6px;
+  background: linear-gradient(90deg, var(--p2, #8b5cf6), var(--p, #b79cff), var(--p2, #8b5cf6));
+  box-shadow: 0 0 14px rgba(139, 92, 246, 0.6), 0 2px 8px rgba(0, 0, 0, 0.8);
+}
+
+.zv-overlay .dock-drag-bar__pill:active {
+  background: #fff;
+  box-shadow: 0 0 16px var(--p, #b79cff);
+  cursor: default !important;
+}
+
+.zv-overlay .dock-drag-bar__grip {
+  display: block;
+  width: 18px;
+  height: 2px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.6);
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
+
+.zv-overlay .dock-drag-bar__pill:hover .dock-drag-bar__grip {
+  background: rgba(255, 255, 255, 0.95);
+}
+
+/* Brand stays visible and adjusts in size with the dock on resize. */
+.zv-overlay .brand {
+  display: flex;
+  align-items: center;
+  gap: calc(12px * var(--d-scale));
+  min-width: 0;
+  flex: 0 1 auto;
+  margin-right: auto;
+  overflow: hidden;
+}
+
+.zv-overlay .status {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  line-height: 1.2;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.zv-overlay .status__label {
+  font-family: var(--mono);
+  font-size: calc(9.5px * var(--d-scale));
+  letter-spacing: 0.16em;
+  color: var(--fg-3);
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.zv-overlay .status__row {
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--d-scale));
+  min-width: 0;
+}
+
+/* Status value takes advantage of the reclaimed space from the removed box logo */
+.zv-overlay .status__value {
+  font-size: calc(14px * var(--d-scale));
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  max-width: calc(280px * var(--d-scale));
+  transition: color 0.3s;
+}
+
+/* Green wobble indicator now lives at the left starting position of the brand */
+.zv-overlay .wave {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(3px * var(--d-scale));
+  height: calc(28px * var(--d-scale));
+  min-height: 20px;
+  padding: 0 calc(2px * var(--d-scale));
+  opacity: 0.55;
+  transition: opacity 0.3s ease, filter 0.3s ease;
+  flex-shrink: 0;
+}
+
+.zv-overlay .wave i {
+  width: calc(3px * var(--d-scale));
+  min-width: 2px;
+  height: calc(4px * var(--d-scale));
+  border-radius: 2px;
+  background: var(--ok);
+  transition: height 0.2s ease;
+}
+
+.zv-overlay .wave.is-speaking {
+  opacity: 1;
+  filter: drop-shadow(0 0 6px rgba(74, 222, 128, 0.7));
+}
+
+/* Screen-protection marker, glyph only. The Stealth keycap already reports the
+   state with its purple fill and lit LED, so the old "PROTECTED" wordmark was
+   redundant reinforcement that cost ~75px of dock width -- enough on its own to
+   push the End keycap off the right edge at the default 1040px. */
+.zv-overlay .tag {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: calc(18px * var(--d-scale));
+  height: calc(18px * var(--d-scale));
+  border-radius: calc(6px * var(--d-scale));
+  font-size: calc(10px * var(--d-scale));
+  line-height: 1;
+  background: var(--p-dim);
+  color: var(--p);
+  border: 1px solid var(--p-line);
+  flex-shrink: 0;
+}
+
+.zv-overlay[data-stealth='true'] .tag {
+  display: inline-flex;
+}
+
+/* ---- keycap trays ---- */
+
+.zv-overlay .tray {
+  display: flex;
+  align-items: center;
+  gap: calc(6px * var(--d-scale));
+  padding: calc(6px * var(--d-scale));
+  border-radius: calc(19px * var(--d-scale));
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid var(--line);
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.45);
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+}
+
+.zv-overlay .key {
+  position: relative;
+  height: calc(50px * var(--d-scale));
+  min-width: calc(50px * var(--d-scale));
+  padding: 0 calc(13px * var(--d-scale)) 0 calc(8px * var(--d-scale));
+  border-radius: calc(14px * var(--d-scale));
+  display: flex;
+  align-items: center;
+  gap: calc(9px * var(--d-scale));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.085), rgba(255, 255, 255, 0.03));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-top-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.5), 0 4px 10px -2px rgba(0, 0, 0, 0.4);
+  color: var(--fg-2);
+  transition: transform 0.14s var(--ease), box-shadow 0.14s var(--ease), background 0.25s,
+    border-color 0.25s, color 0.25s;
+}
+
+.zv-overlay .key:hover:not(:disabled) {
+  transform: translateY(-1px);
+  color: var(--white);
+  border-color: var(--p-line);
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.5), 0 10px 26px -10px var(--p2);
+}
+
+.zv-overlay .key:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+.zv-overlay .key .ico {
+  width: calc(32px * var(--d-scale));
+  height: calc(32px * var(--d-scale));
+  border-radius: calc(10px * var(--d-scale));
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.4);
+  color: var(--p);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  transition: all 0.25s;
+  flex-shrink: 0;
+}
+
+.zv-overlay .key .ico svg.i {
+  width: calc(17px * var(--d-scale));
+  height: calc(17px * var(--d-scale));
+}
+
+.zv-overlay .key .txt {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.05;
+  gap: calc(3px * var(--d-scale));
+  text-align: left;
+}
+
+.zv-overlay .key .lbl {
+  font-size: calc(12.5px * var(--d-scale));
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+/* These captions, not the labels, are what set each keycap's width
+   ("Ctrl + Space" is far wider than "Listen"), so they are kept tight. */
+.zv-overlay .key .sc {
+  font-family: var(--mono);
+  font-size: calc(8.5px * var(--d-scale));
+  letter-spacing: 0.04em;
+  color: var(--fg-3);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.zv-overlay .key .led {
+  position: absolute;
+  top: calc(7px * var(--d-scale));
+  right: calc(7px * var(--d-scale));
+  width: calc(5px * var(--d-scale));
+  height: calc(5px * var(--d-scale));
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  transition: all 0.25s;
+}
+
+.zv-overlay .key.icon-only {
+  padding: 0;
+  justify-content: center;
+  min-width: calc(50px * var(--d-scale));
+  width: calc(50px * var(--d-scale));
+  height: calc(50px * var(--d-scale));
+}
+
+.zv-overlay .key.icon-only .ico {
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg-2);
+}
+
+.zv-overlay .key.icon-only:hover .ico {
+  color: var(--white);
+}
+
+/* active -- purple (stealth on) */
+.zv-overlay .key.on {
+  background: linear-gradient(180deg, rgba(139, 92, 246, 0.42), rgba(139, 92, 246, 0.14));
+  border-color: var(--p-line);
+  color: #fff;
+}
+
+.zv-overlay .key.on .ico {
+  background: linear-gradient(135deg, var(--p2), var(--p3));
+  color: #fff;
+  box-shadow: 0 0 18px -2px var(--p2);
+}
+
+.zv-overlay .key.on .led {
+  background: var(--p);
+  box-shadow: 0 0 8px var(--p);
+}
+
+.zv-overlay .key.on .sc {
+  color: var(--p);
+}
+
+/* active -- green (listening & screen capture) */
+.zv-overlay .key.on-ok,
+.zv-overlay .key.on-ok:disabled {
+  opacity: 1 !important;
+  background: linear-gradient(180deg, rgba(74, 222, 128, 0.3), rgba(74, 222, 128, 0.1)) !important;
+  border-color: rgba(74, 222, 128, 0.45) !important;
+  color: #fff !important;
+}
+
+.zv-overlay .key.on-ok .ico,
+.zv-overlay .key.on-ok:disabled .ico {
+  background: linear-gradient(135deg, #22c55e, #15803d) !important;
+  color: #fff !important;
+  box-shadow: 0 0 18px -2px var(--ok) !important;
+  animation: zv-ring-ok 1.4s infinite !important;
+}
+
+.zv-overlay .key.on-ok .led,
+.zv-overlay .key.on-ok:disabled .led {
+  background: var(--ok) !important;
+  box-shadow: 0 0 10px var(--ok) !important;
+  animation: zv-blink 0.85s infinite !important;
+}
+
+.zv-overlay .key.on-ok .sc,
+.zv-overlay .key.on-ok:disabled .sc {
+  color: var(--ok) !important;
+}
+
+@keyframes zv-ring-ok {
+  0% {
+    box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.45), 0 0 18px -2px var(--ok);
+  }
+  100% {
+    box-shadow: 0 0 0 10px rgba(74, 222, 128, 0), 0 0 18px -2px var(--ok);
+  }
+}
+
+.zv-overlay .key.danger:hover {
+  border-color: rgba(251, 113, 133, 0.45);
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.5), 0 10px 26px -10px var(--bad);
+}
+
+.zv-overlay .key.danger:hover .ico {
+  color: var(--bad);
+}
+
+.zv-overlay .key.minimize-btn:hover {
+  border-color: rgba(59, 130, 246, 0.85);
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.5), 0 10px 26px -10px rgba(59, 130, 246, 0.7);
+}
+
+.zv-overlay .key.minimize-btn:hover .ico {
+  color: #60a5fa;
+}
+
+.zv-overlay .key .tip {
+  display: none !important;
+}
+
+/* ---- mode keycap: Auto / Manual segmented switch ---- */
+
+.zv-overlay .key.mode {
+  padding: calc(4px * var(--d-scale));
+  gap: 0;
+}
+
+.zv-overlay .key.mode:hover {
+  transform: none;
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.5), 0 4px 10px -2px rgba(0, 0, 0, 0.4);
+}
+
+.zv-overlay .key.mode .mlbl {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-family: var(--mono);
+  font-size: calc(8.5px * var(--d-scale));
+  letter-spacing: 0.2em;
+  color: var(--fg-3);
+  padding: 0 calc(3px * var(--d-scale)) 0 calc(5px * var(--d-scale));
+  text-transform: uppercase;
+}
+
+/* Grid, not flex: two 1fr tracks resolve to the same width as the wider button,
+   so "Auto" and "Manual" are equal and .mthumb's calc(50% - 4px) lands exactly
+   on each one. As flex children they were 73px and 89px and the thumb sat between. */
+.zv-overlay .mtrack {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  height: 100%;
+  border-radius: calc(11px * var(--d-scale));
+  background: rgba(0, 0, 0, 0.42);
+  padding: calc(3px * var(--d-scale));
+  gap: calc(2px * var(--d-scale));
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+.zv-overlay .mtrack button {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(7px * var(--d-scale));
+  padding: 0 calc(11px * var(--d-scale));
+  border-radius: calc(9px * var(--d-scale));
+  font-size: calc(12px * var(--d-scale));
+  font-weight: 600;
+  color: var(--fg-3);
+  transition: color 0.25s;
+  white-space: nowrap;
+}
+
+.zv-overlay .mtrack button svg.i {
+  width: calc(14px * var(--d-scale));
+  height: calc(14px * var(--d-scale));
+}
+
+.zv-overlay .mtrack button.on {
+  color: #fff;
+}
+
+.zv-overlay .mthumb {
+  position: absolute;
+  top: calc(3px * var(--d-scale));
+  bottom: calc(3px * var(--d-scale));
+  left: calc(3px * var(--d-scale));
+  width: calc(50% - calc(4px * var(--d-scale)));
+  border-radius: calc(9px * var(--d-scale));
+  background: linear-gradient(135deg, var(--p2), var(--p3));
+  box-shadow: 0 4px 14px -4px var(--p2), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  transition: transform 0.32s var(--ease);
+}
+
+.zv-overlay[data-mode='manual'] .mthumb {
+  transform: translateX(calc(100% + calc(2px * var(--d-scale))));
+}
+
+/* ---------------------------------------------------------------------
+   DECK -- transcript rail + conversation feed
+   ------------------------------------------------------------------ */
+
+.zv-overlay .deck {
+  border-radius: var(--r-xl);
+  display: grid;
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+  transition: opacity 0.3s var(--ease);
+  pointer-events: none !important;
+}
+
+/* Minimized: the deck's grid row collapses to zero so only the dock and the
+   timer tab remain. The root stops swallowing clicks (the window itself stays
+   full-size and transparent), while the strips that are still visible keep
+   taking them. */
+.zv-overlay[data-min='true'] {
+  grid-template-rows: auto 0;
+  pointer-events: none;
+}
+
+.zv-overlay[data-min='true'] .dock-wrap,
+.zv-overlay[data-min='true'] .dock,
+.zv-overlay[data-min='true'] .ttab {
+  pointer-events: auto;
+}
+
+.zv-overlay[data-min='true'] .dock-drag-bar {
+  display: none !important;
+}
+
+.zv-overlay[data-min='true'] .deck {
+  opacity: 0;
+  border-width: 0;
+  pointer-events: none;
+}
+
+/* When Click-Through Mode is ON: Overlay is in FOCUS.
+   All buttons in the answer panel (Copy, Prev, Next, Opacity, Composer, etc.) work on click */
+.zv-overlay[data-click-through='true'] .deck,
+.zv-overlay[data-click-through='true'] .deck *,
+.zv-overlay[data-click-through='true'] .feed,
+.zv-overlay[data-click-through='true'] .feed *,
+.zv-overlay[data-click-through='true'] .acts,
+.zv-overlay[data-click-through='true'] .acts button,
+.zv-overlay[data-click-through='true'] .a-foot .chip,
+.zv-overlay[data-click-through='true'] .q-card .q,
+.zv-overlay[data-click-through='true'] .composer,
+.zv-overlay[data-click-through='true'] .composer * {
+  pointer-events: auto !important;
+}
+
+/* When Click-Through Mode is OFF: Background focus mode.
+   Clicks pass straight through the answer panel to background windows;
+   all answer panel buttons are disabled EXCEPT the click-through toggle button itself,
+   which ALWAYS remains active and clickable so it can be turned on and off. */
+.zv-overlay:not([data-click-through='true']) .deck,
+.zv-overlay:not([data-click-through='true']) .deck > *:not(.feed),
+.zv-overlay:not([data-click-through='true']) .feed,
+.zv-overlay:not([data-click-through='true']) .feed > *:not(.panel-head),
+.zv-overlay:not([data-click-through='true']) .feed__scroll,
+.zv-overlay:not([data-click-through='true']) .feed__scroll *,
+.zv-overlay:not([data-click-through='true']) .acts,
+.zv-overlay:not([data-click-through='true']) .acts *,
+.zv-overlay:not([data-click-through='true']) .opacity-bar,
+.zv-overlay:not([data-click-through='true']) .opacity-bar *,
+.zv-overlay:not([data-click-through='true']) .composer,
+.zv-overlay:not([data-click-through='true']) .composer * {
+  pointer-events: none !important;
+}
+
+/* The click-through button ALWAYS stays active, clickable, and focused so the user can toggle it on/off at any time */
+.zv-overlay .panel-head__left .click-through-btn,
+.zv-overlay .panel-head__left .click-through-btn *,
+.zv-overlay .click-through-btn,
+.zv-overlay .click-through-btn *,
+.zv-overlay:not([data-click-through='true']) .click-through-btn,
+.zv-overlay:not([data-click-through='true']) .click-through-btn *,
+.zv-overlay:not([data-click-through='true']) .panel-head__left .click-through-btn,
+.zv-overlay:not([data-click-through='true']) .panel-head__left .click-through-btn * {
+  pointer-events: auto !important;
+  cursor: default !important;
+  position: relative;
+  z-index: 10;
+}
+
+.zv-overlay .panel-head {
+  height: calc(48px * var(--d-scale));
+  min-height: 34px;
+  padding: 0 calc(16px * var(--d-scale));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(10px * var(--d-scale));
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: calc(10px * var(--d-scale));
+  letter-spacing: 0.16em;
+  color: var(--fg-3);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.zv-overlay .panel-head__left {
+  display: flex;
+  align-items: center;
+  gap: calc(10px * var(--d-scale));
+  min-width: 0;
+  flex: 1;
+}
+
+/* nowrap matters: at the rail's 270px this label used to wrap onto two lines and
+   collide with the word count sitting opposite it. */
+.zv-overlay .panel-head .l {
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--d-scale));
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+/* Modern glass opacity bar -- smoothly scales down with the overlay */
+.zv-overlay .opacity-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(8px * var(--d-scale));
+  height: calc(26px * var(--d-scale));
+  min-height: 20px;
+  padding: 0 calc(10px * var(--d-scale)) 0 calc(8px * var(--d-scale));
+  border-radius: 999px;
+  background: rgba(18, 14, 28, 0.85);
+  border: 1px solid rgba(183, 156, 255, 0.25);
+  backdrop-filter: blur(16px);
+  pointer-events: auto !important;
+  cursor: default !important;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  transition: width 0.2s ease, height 0.2s ease;
+}
+
+.zv-overlay .opacity-bar__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--p);
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+.zv-overlay .opacity-bar__icon svg.i {
+  width: calc(13px * var(--d-scale));
+  height: calc(13px * var(--d-scale));
+  min-width: 9px;
+  min-height: 9px;
+}
+
+.zv-overlay .opacity-bar__lbl {
+  font-family: var(--mono);
+  font-size: calc(8.5px * var(--d-scale));
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.zv-overlay .opacity-bar__slider-wrap {
+  position: relative;
+  width: calc(74px * var(--d-scale));
+  min-width: 42px;
+  height: calc(5px * var(--d-scale));
+  min-height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  pointer-events: auto !important;
+  flex-shrink: 0;
+}
+
+.zv-overlay .opacity-bar__fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #8b5cf6, #b79cff);
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.5);
+  pointer-events: none;
+}
+
+.zv-overlay .opacity-bar__range {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 100%;
+  height: calc(16px * var(--d-scale));
+  min-height: 12px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: default !important;
+  pointer-events: auto !important;
+  outline: none;
+}
+
+.zv-overlay .opacity-bar__range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: calc(8px * var(--d-scale));
+  height: calc(8px * var(--d-scale));
+  min-width: 6px;
+  min-height: 6px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: calc(1.5px * var(--d-scale)) solid #8b5cf6;
+  box-shadow: 0 0 5px rgba(139, 92, 246, 0.55), 0 1px 3px rgba(0, 0, 0, 0.45);
+  cursor: default !important;
+}
+
+.zv-overlay .opacity-bar__range::-moz-range-thumb {
+  width: calc(8px * var(--d-scale));
+  height: calc(8px * var(--d-scale));
+  min-width: 6px;
+  min-height: 6px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: calc(1.5px * var(--d-scale)) solid #8b5cf6;
+  box-shadow: 0 0 5px rgba(139, 92, 246, 0.55), 0 1px 3px rgba(0, 0, 0, 0.45);
+  cursor: default !important;
+}
+
+.zv-overlay .opacity-bar__val {
+  font-family: var(--mono);
+  font-size: calc(9px * var(--d-scale));
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-2);
+  min-width: calc(28px * var(--d-scale));
+  text-align: right;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Modern glass Click-Through toggle button -- smoothly scales down with the overlay */
+.zv-overlay .click-through-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(5px * var(--d-scale));
+  height: calc(26px * var(--d-scale));
+  min-height: 20px;
+  padding: 0 calc(9px * var(--d-scale)) 0 calc(8px * var(--d-scale));
+  border-radius: 999px;
+  background: rgba(18, 14, 28, 0.85);
+  border: 1px solid rgba(183, 156, 255, 0.25);
+  backdrop-filter: blur(16px);
+  pointer-events: auto !important;
+  cursor: default !important;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  user-select: none;
+  font-family: inherit;
+  outline: none;
+}
+
+.zv-overlay .click-through-btn:hover {
+  border-color: rgba(183, 156, 255, 0.45);
+  cursor: default !important;
+}
+
+.zv-overlay .click-through-btn__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-3);
+  pointer-events: none;
+  flex-shrink: 0;
+  transition: color 0.2s ease;
+}
+
+.zv-overlay .click-through-btn__icon svg.i {
+  width: calc(12px * var(--d-scale));
+  height: calc(12px * var(--d-scale));
+  min-width: 9px;
+  min-height: 9px;
+}
+
+.zv-overlay .click-through-btn__lbl {
+  font-family: var(--mono);
+  font-size: calc(8.5px * var(--d-scale));
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+  transition: color 0.2s ease;
+}
+
+.zv-overlay .click-through-btn__dot {
+  width: calc(5px * var(--d-scale));
+  height: calc(5px * var(--d-scale));
+  min-width: 4px;
+  min-height: 4px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  pointer-events: none;
+  flex-shrink: 0;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Active State: Click-Through Mode is ON */
+.zv-overlay .click-through-btn.active {
+  background: rgba(26, 18, 52, 0.95);
+  border-color: rgba(183, 156, 255, 0.65);
+  box-shadow: 0 0 12px rgba(183, 156, 255, 0.3);
+}
+
+.zv-overlay .click-through-btn.active .click-through-btn__icon {
+  color: var(--p);
+}
+
+.zv-overlay .click-through-btn.active .click-through-btn__lbl {
+  color: var(--fg-1);
+}
+
+.zv-overlay .click-through-btn.active .click-through-btn__dot {
+  background: #00ffb2;
+  box-shadow: 0 0 6px #00ffb2;
+}
+
+@media (max-width: 820px) {
+  .zv-overlay .opacity-bar__lbl {
+    display: none;
+  }
+  .zv-overlay .click-through-btn__lbl {
+    display: none;
+  }
+}
+
+
+.zv-overlay .panel-head .ph-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.zv-overlay .panel-head .wc {
+  white-space: nowrap;
+}
+
+.zv-overlay .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-3);
+  transition: all 0.3s;
+  flex-shrink: 0;
+}
+
+.zv-overlay .dot.live {
+  background: var(--bad);
+  box-shadow: 0 0 10px var(--bad);
+  animation: zv-blink 1.1s infinite;
+}
+
+.zv-overlay .count {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--bg-3);
+  color: var(--fg-2);
+  letter-spacing: 0.05em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* small text button used in both panel heads */
+.zv-overlay .mini {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--fg-2);
+  letter-spacing: 0;
+  text-transform: none;
+  transition: all 0.18s;
+  white-space: nowrap;
+}
+
+.zv-overlay .mini svg.i {
+  width: 13px;
+  height: 13px;
+}
+
+.zv-overlay .mini:hover:not(:disabled) {
+  background: var(--bg-3);
+  color: var(--white);
+}
+
+/* Square icon-only variant, for heads too narrow to carry a text label. */
+.zv-overlay .mini.only-icon {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+
+/* ---------------------------------------------------------------------
+   TRANSCRIPT RAIL
+   ------------------------------------------------------------------ */
+
+.zv-overlay .stream {
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, calc(0.28 * var(--overlay-op)));
+  min-height: 0;
+  min-width: 0;
+}
+
+.zv-overlay .stream__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+}
+
+.zv-overlay .stream__body::-webkit-scrollbar {
+  width: 5px;
+}
+
+.zv-overlay .stream__body::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 3px;
+}
+
+/* One flowing stream of words. This replaced a stack of time-stamped .seg-block
+   cards, one per separately-transcribed audio segment -- a shape that only existed
+   because the old pipeline transcribed clips. A streaming recogniser revises its
+   tail instead, so the only state a word carries is settled vs provisional. */
+.zv-overlay .wordstream {
+  width: 100%;
+  min-height: 1.75em;
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: var(--white);
+  word-break: break-word;
+  animation: zv-card-in 0.25s var(--ease) both;
+}
+
+.zv-overlay .wordstream .w {
+  animation: zv-word-in 0.22s var(--ease) both;
+}
+
+/* Provisional tail: the recogniser may still rewrite these, so they read as
+   in-progress rather than as something already said. */
+.zv-overlay .wordstream .w.live {
+  color: var(--p);
+}
+
+@keyframes zv-word-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+.zv-overlay .caret {
+  display: inline-block;
+  width: 2px;
+  height: 14px;
+  background: var(--p);
+  vertical-align: -2px;
+  margin-left: 2px;
+  animation: zv-blink 0.8s steps(2) infinite;
+  box-shadow: 0 0 6px var(--p);
+}
+
+.zv-overlay .stream__empty {
+  margin: auto;
+  text-align: center;
+  color: var(--fg-3);
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 20px;
+}
+
+.zv-overlay .stream__empty .ear {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  margin: 0 auto 12px;
+  display: grid;
+  place-items: center;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--p);
+}
+
+.zv-overlay .stream__empty b {
+  display: block;
+  color: var(--fg-2);
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+
+.zv-overlay .stream__foot {
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.zv-overlay .meter {
+  flex: 1;
+  display: flex;
+  gap: 3px;
+  align-items: flex-end;
+  height: 18px;
+  min-width: 0;
+}
+
+.zv-overlay .meter i {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg-3);
+  transition: height 0.12s, background 0.12s;
+}
+
+.zv-overlay .meter i.hot {
+  background: var(--p);
+}
+
+.zv-overlay .stream__foot .db {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--fg-3);
+  min-width: 46px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------------
+   CONVERSATION FEED
+   ------------------------------------------------------------------ */
+
+@keyframes zv-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.zv-overlay .feed {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.zv-overlay .feed .acts {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.zv-overlay .feed .acts button {
+  pointer-events: auto !important;
+  cursor: default !important;
+}
+
+.zv-overlay .feed__scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: calc(18px * var(--d-scale)) calc(20px * var(--d-scale));
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+  min-height: 0;
+}
+
+.zv-overlay .feed__scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.zv-overlay .feed__scroll::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 3px;
+}
+
+.zv-overlay .newpill {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%) translateY(16px);
+  opacity: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--p2), var(--p3));
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 10px 24px -8px var(--p2);
+  transition: all 0.3s var(--ease);
+  z-index: 6;
+}
+
+.zv-overlay .newpill.show {
+  opacity: 1;
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+
+.zv-overlay[data-mode='manual'] .newpill {
+  bottom: 82px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   CARDS: BASE, QUESTION, ANSWER, THINKING (Matches User Tokens & Design)
+   ────────────────────────────────────────────────────────────────── */
+
+.zv-overlay .card {
+  border-radius: var(--r-md);
+  padding: 14px 16px 14px 18px;
+  position: relative;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  animation: zv-card-in 0.45s var(--ease) both;
+  flex-shrink: 0;
+}
+
+/* Left vertical accent edge indicator */
+.zv-overlay .card::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 14px;
+  bottom: 14px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--edge, var(--fg-3));
+}
+
+/* Card metadata row */
+.zv-overlay .card__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  position: relative;
+}
+
+.zv-overlay .card__meta .glyph {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 10.5px;
+  letter-spacing: 0;
+  color: #0b0d11;
+  background: var(--edge, var(--fg-3));
+  flex-shrink: 0;
+}
+
+.zv-overlay .card__meta .card__title {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--fg);
+}
+
+.zv-overlay .card__meta .card__sub {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  color: var(--fg-3);
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zv-overlay .card__meta .ts {
+  margin-left: auto;
+  letter-spacing: 0.04em;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--fg-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* ---- Question Card (.card--q) ---- */
+.zv-overlay .card--q,
+.zv-overlay .q-card {
+  --edge: var(--fg);
+  border-radius: var(--r-md);
+  padding: 14px 16px 14px 18px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  position: relative;
+  animation: zv-card-in 0.45s var(--ease) both;
+  flex-shrink: 0;
+}
+
+.zv-overlay .card--q::before,
+.zv-overlay .q-card::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 14px;
+  bottom: 14px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--fg);
+}
+
+.zv-overlay .card--q .q,
+.zv-overlay .q-card .q {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.6;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+  word-break: break-word;
+  max-height: 112px; /* 14px * 1.6 = 22.4px per line. 5 lines = 112px */
+  overflow-y: auto;
+  padding-right: 6px;
+  pointer-events: auto !important;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+}
+
+.zv-overlay .card--q .q::-webkit-scrollbar,
+.zv-overlay .q-card .q::-webkit-scrollbar {
+  width: 4px;
+}
+.zv-overlay .card--q .q::-webkit-scrollbar-track,
+.zv-overlay .q-card .q::-webkit-scrollbar-track {
+  background: transparent;
+}
+.zv-overlay .card--q .q::-webkit-scrollbar-thumb,
+.zv-overlay .q-card .q::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 4px;
+}
+
+/* ---- Answer Card (.card--a) ---- */
+.zv-overlay .card--a,
+.zv-overlay .a-card {
+  --edge: var(--acc);
+  position: relative;
+  border-radius: var(--r-md);
+  padding: 14px 16px 14px 18px;
+  background: linear-gradient(180deg, rgba(141, 240, 196, 0.05), var(--bg-2) 60%);
+  border: 1px solid var(--line);
+  animation: zv-card-in 0.45s var(--ease) both;
+  flex-shrink: 0;
+}
+
+.zv-overlay .card--a::before,
+.zv-overlay .a-card::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 14px;
+  bottom: 14px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--acc);
+}
+
+.zv-overlay .card--a .glyph,
+.zv-overlay .a-card .glyph {
+  background: var(--acc);
+  color: #0b0d11;
+  box-shadow: 0 0 14px -2px rgba(141, 240, 196, 0.4);
+}
+
+.zv-overlay .card--a .ts::before,
+.zv-overlay .a-card .ts::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--acc);
+  box-shadow: 0 0 8px var(--acc);
+}
+
+.zv-overlay .a-card.streaming .ts::before,
+.zv-overlay .card--a.streaming .ts::before {
+  background: var(--acc);
+  animation: zv-blink 0.8s infinite;
+}
+
+/* ---- Answer typography & Highlight words design ---- */
+.zv-overlay .ans {
+  font-size: 14px;
+  line-height: 1.7;
+  color: #DDE3EA;
+  word-break: break-word;
+}
+
+.zv-overlay .ans p + p,
+.zv-overlay .ans ul,
+.zv-overlay .ans ol,
+.zv-overlay .ans pre,
+.zv-overlay .ans h1,
+.zv-overlay .ans h2,
+.zv-overlay .ans h3,
+.zv-overlay .ans h4 {
+  margin-top: 10px;
+}
+
+.zv-overlay .ans h1,
+.zv-overlay .ans h2,
+.zv-overlay .ans h3,
+.zv-overlay .ans h4,
+.zv-overlay .ans h5,
+.zv-overlay .ans h6 {
+  font-size: 11.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--acc);
+  font-family: var(--mono);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.zv-overlay .ans ul,
+.zv-overlay .ans ol {
+  padding-left: 18px;
+  list-style: disc;
+}
+
+.zv-overlay .ans ol {
+  list-style: decimal;
+}
+
+.zv-overlay .ans li {
+  margin: 3px 0;
+}
+
+.zv-overlay .ans ul > li::before {
+  display: none;
+}
+
+.zv-overlay .ans li::marker {
+  color: var(--acc);
+}
+
+.zv-overlay .ans li > p {
+  margin: 0;
+}
+
+/* Highlighted words: bold / mark */
+.zv-overlay .ans strong,
+.zv-overlay .ans b,
+.zv-overlay .ans mark {
+  background: rgba(141, 240, 196, 0.15);
+  color: var(--acc);
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.zv-overlay .ans em {
+  color: var(--fg);
+  font-style: italic;
+}
+
+/* Highlighted words: inline code in Signal Mint */
+.zv-overlay .ans code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 1px 6px;
+  border-radius: 5px;
+  color: var(--acc);
+}
+
+/* Code block pre & code */
+.zv-overlay .ans pre,
+.zv-overlay .code-block-wrapper pre {
+  background: rgba(0, 0, 0, 0.4) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 10px !important;
+  padding: 12px 14px !important;
+  overflow-x: auto;
+  position: relative;
+  margin: 10px 0;
+}
+
+.zv-overlay .ans pre code,
+.zv-overlay .code-block-wrapper pre code {
+  background: none !important;
+  padding: 0 !important;
+  color: #cfe8dc !important;
+  font-family: var(--mono) !important;
+  font-size: 12.5px !important;
+  line-height: 1.6 !important;
+}
+
+/* Card footer & chips */
+.zv-overlay .card__foot,
+.zv-overlay .a-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+  flex-wrap: wrap;
+  position: relative;
+}
+
+.zv-overlay .chip {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 9px;
+  border-radius: 7px;
+  background: var(--bg-3);
+  color: var(--fg-2);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.18s;
+  border: 1px solid transparent;
+}
+
+.zv-overlay .chip svg {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.zv-overlay .chip:hover {
+  background: var(--acc-dim);
+  color: var(--acc);
+  border-color: rgba(141, 240, 196, 0.3);
+}
+
+.zv-overlay .chip.done {
+  background: var(--acc-dim);
+  color: var(--acc);
+  border-color: rgba(141, 240, 196, 0.3);
+}
+
+.zv-overlay .a-foot .stats {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--fg-3);
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
+  padding-left: 6px;
+}
+
+/* The footer only appears once the answer has finished streaming. */
+.zv-overlay .a-card.streaming .a-foot,
+.zv-overlay .card--a.streaming .card__foot {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---- Thinking Card (.card--think) ---- */
+.zv-overlay .card--think,
+.zv-overlay .t-card {
+  --edge: var(--think);
+  border-radius: var(--r-md);
+  padding: 14px 16px 14px 18px;
+  position: relative;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  animation: zv-card-in 0.4s var(--ease) both;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.zv-overlay .card--think::before,
+.zv-overlay .t-card::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 14px;
+  bottom: 14px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--think);
+}
+
+.zv-overlay .card--think .glyph,
+.zv-overlay .t-card .glyph {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 10.5px;
+  letter-spacing: 0;
+  color: #0b0d11;
+  background: var(--think);
+  flex-shrink: 0;
+}
+
+.zv-overlay .card--think .step,
+.zv-overlay .t-card .step {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--fg-3);
+  letter-spacing: 0.06em;
+  font-weight: 400;
+  text-transform: uppercase;
+}
+
+.zv-overlay .think-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--think);
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+
+.zv-overlay .think-row .dots i {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  margin: 0 1.5px;
+  animation: zv-dotp 1.2s infinite;
+}
+
+.zv-overlay .think-row .dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.zv-overlay .think-row .dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes zv-dotp {
+  0%, 80%, 100% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.zv-overlay .sk {
+  height: 11px;
+  border-radius: 6px;
+  margin: 8px 0;
+  background: linear-gradient(90deg, var(--bg-3) 25%, rgba(255, 255, 255, 0.11) 50%, var(--bg-3) 75%);
+  background-size: 200% 100%;
+  animation: zv-sh 1.4s infinite;
+}
+
+@keyframes zv-sh {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes zv-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- empty state ---- */
+
+.zv-overlay .empty {
+  margin: auto;
+  text-align: center;
+  max-width: 360px;
+  animation: zv-card-in 0.5s var(--ease);
+}
+
+.zv-overlay .orbits {
+  width: 120px;
+  height: 120px;
+  margin: 0 auto 22px;
+  position: relative;
+}
+
+.zv-overlay .orbits i {
+  position: absolute;
+  border-radius: 50%;
+  border: 1px solid var(--line-2);
+  inset: 0;
+}
+
+.zv-overlay .orbits i:nth-child(2) {
+  inset: 18px;
+  border-color: var(--p-line);
+}
+
+.zv-overlay .orbits i:nth-child(3) {
+  inset: 36px;
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.35), transparent 70%);
+}
+
+.zv-overlay .orbits b {
+  position: absolute;
+  inset: 0;
+  animation: zv-spin 6s linear infinite;
+}
+
+.zv-overlay .orbits b::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  width: 9px;
+  height: 9px;
+  margin-left: -4.5px;
+  border-radius: 50%;
+  background: var(--p);
+  box-shadow: 0 0 14px var(--p);
+}
+
+.zv-overlay .orbits u {
+  position: absolute;
+  inset: 18px;
+  animation: zv-spin 3.6s linear infinite reverse;
+}
+
+.zv-overlay .orbits u::after {
+  content: '';
+  position: absolute;
+  bottom: -3px;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  margin-left: -3px;
+  border-radius: 50%;
+  background: var(--white);
+  box-shadow: 0 0 10px #fff;
+}
+
+.zv-overlay .orbits em {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  border-radius: 5px;
+  transform: translate(-50%, -50%) rotate(45deg);
+  background: linear-gradient(135deg, var(--p2), var(--p3));
+  box-shadow: 0 0 22px var(--p2);
+}
+
+.zv-overlay .empty h3 {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  margin-bottom: 6px;
+}
+
+.zv-overlay .empty p {
+  font-size: 12.5px;
+  color: var(--fg-2);
+  line-height: 1.65;
+}
+
+.zv-overlay .hints {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+
+.zv-overlay .hints span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-3);
+  padding: 5px 9px;
+  border-radius: 9px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+}
+
+/* ---- composer (manual mode only) ---- */
+
+.zv-overlay .composer {
+  display: none;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+  gap: 8px;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.2);
+  flex-shrink: 0;
+}
+
+.zv-overlay[data-mode='manual'] .composer {
+  display: flex;
+}
+
+.zv-overlay .field {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 6px 0 14px;
+  border-radius: 13px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  transition: border-color 0.2s, box-shadow 0.2s;
+  min-width: 0;
+}
+
+.zv-overlay .field:focus-within {
+  border-color: var(--p-line);
+  box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.1);
+}
+
+.zv-overlay .cprefix {
+  display: grid;
+  place-items: center;
+  color: var(--p);
+  flex-shrink: 0;
+}
+
+.zv-overlay .cinput {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  outline: 0;
+  color: var(--white);
+  font: inherit;
+  font-size: 13.5px;
+}
+
+.zv-overlay .cinput::placeholder {
+  color: var(--fg-3);
+}
+
+.zv-overlay .send {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--p2), var(--p3));
+  color: #fff;
+  display: grid;
+  place-items: center;
+  transition: transform 0.15s, filter 0.2s;
+  box-shadow: 0 6px 16px -6px var(--p2);
+  flex-shrink: 0;
+}
+
+.zv-overlay .send:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+
+.zv-overlay .send:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+/* ---- banners ---- */
+
+.zv-overlay .banner {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%) translateY(20px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px 9px 10px;
+  border-radius: 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  opacity: 0;
+  pointer-events: none;
+  transition: all 0.35s var(--ease);
+  border: 1px solid;
+  backdrop-filter: blur(12px);
+  max-width: calc(100% - 32px);
+  z-index: 7;
+}
+
+.zv-overlay .banner.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  pointer-events: auto;
+}
+
+.zv-overlay[data-mode='manual'] .banner {
+  bottom: 80px;
+}
+
+.zv-overlay .banner > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.zv-overlay .banner .x {
+  margin-left: 6px;
+  opacity: 0.6;
+  font-size: 16px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.zv-overlay .banner .x:hover {
+  opacity: 1;
+}
+
+.zv-overlay .banner--warn {
+  background: rgba(40, 30, 8, 0.9);
+  border-color: rgba(251, 191, 36, 0.35);
+  color: var(--warn);
+}
+
+.zv-overlay .banner--bad {
+  background: rgba(45, 14, 22, 0.92);
+  border-color: rgba(251, 113, 133, 0.35);
+  color: var(--bad);
+}
+
+/* ---------------------------------------------------------------------
+   STATE MAP -- data-state on the root drives the orb, aura and wave
+   ------------------------------------------------------------------ */
+
+.zv-overlay[data-state='idle'] {
+  --orb: var(--p);
+  --aura: var(--p2);
+}
+
+.zv-overlay[data-state='listening'] {
+  --orb: var(--ok);
+  --aura: var(--ok);
+}
+
+.zv-overlay[data-state='listening'] .status__value {
+  color: var(--ok);
+}
+
+.zv-overlay[data-state='transcribing'],
+.zv-overlay .dock.is-transcribing {
+  --orb: #facc15;
+  --aura: #facc15;
+}
+
+.zv-overlay[data-state='transcribing'] .dock::before,
+.zv-overlay .dock.is-transcribing::before {
+  background: radial-gradient(closest-side, #facc15, transparent);
+  opacity: 0.38;
+}
+
+.zv-overlay[data-state='transcribing'] .status__value,
+.zv-overlay .dock.is-transcribing .status__value {
+  color: #facc15;
+  text-shadow: 0 0 10px rgba(250, 204, 21, 0.45);
+}
+
+.zv-overlay[data-state='transcribing'] .wave,
+.zv-overlay .dock.is-transcribing .wave {
+  opacity: 1;
+  filter: drop-shadow(0 0 8px rgba(250, 204, 21, 0.7));
+}
+
+.zv-overlay[data-state='transcribing'] .wave i,
+.zv-overlay .dock.is-transcribing .wave i {
+  background: #facc15;
+  animation: zv-wave 1.1s ease-in-out infinite;
+}
+
+.zv-overlay[data-state='thinking'] {
+  --orb: var(--p);
+  --aura: var(--p);
+}
+
+.zv-overlay[data-state='thinking'] .status__value {
+  color: var(--p);
+}
+
+.zv-overlay[data-state='thinking'] .logo {
+  animation: zv-pulse-p 1.4s ease-in-out infinite;
+}
+
+.zv-overlay[data-state='error'] {
+  --orb: var(--bad);
+  --aura: var(--bad);
+}
+
+.zv-overlay[data-state='error'] .status__value {
+  color: var(--bad);
+}
+
+@keyframes zv-pulse-p {
+  50% {
+    box-shadow: 0 8px 30px -4px var(--p2), 0 0 0 6px rgba(139, 92, 246, 0.12);
+  }
+}
+
+/* The wave only animates while audio is actually coming in. */
+.zv-overlay .wave.is-speaking {
+  opacity: 1;
+}
+
+.zv-overlay .wave.is-speaking i {
+  animation: zv-wave 0.9s ease-in-out infinite;
+}
+
+@keyframes zv-wave {
+  0%,
+  100% {
+    height: 3px;
+  }
+  50% {
+    height: var(--h, 12px);
+  }
+}
+
+.zv-overlay .wave i:nth-child(1) {
+  --h: 7px;
+}
+
+.zv-overlay .wave i:nth-child(2) {
+  --h: 13px;
+  animation-delay: 0.1s;
+}
+
+.zv-overlay .wave i:nth-child(3) {
+  --h: 16px;
+  animation-delay: 0.2s;
+}
+
+.zv-overlay .wave i:nth-child(4) {
+  --h: 10px;
+  animation-delay: 0.3s;
+}
+
+.zv-overlay .wave i:nth-child(5) {
+  --h: 14px;
+  animation-delay: 0.15s;
+}
+
+.zv-overlay .wave i:nth-child(6) {
+  --h: 6px;
+  animation-delay: 0.25s;
+}
+
+/* ---------------------------------------------------------------------
+   RESPONSIVE -- smooth continuous scaling matching --d-scale without jumps
+   ------------------------------------------------------------------ */
+
+@media (max-width: 760px) {
+  /* Subtle fade on hotkey sublabels rather than jarring snap */
+  .zv-overlay .key .sc {
+    opacity: 0.75;
+  }
+}
+
+/* ---------------------------------------------------------------------
+   SCHEDULED-SESSION TOAST -- one-shot confirmation under the dock
+   ------------------------------------------------------------------ */
+
+.zv-overlay .zv-scheduled-toast {
+  position: absolute;
+  top: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 12px;
+  background: rgba(16, 60, 42, 0.92);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  backdrop-filter: blur(12px);
+  color: #34d399;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 14px 34px -16px rgba(0, 0, 0, 0.9);
+  animation: zv-card-in 0.35s var(--ease) both;
+}
+
+.zv-overlay .zv-scheduled-toast svg.i {
+  width: 15px;
+  height: 15px;
+  stroke-width: 3;
+}

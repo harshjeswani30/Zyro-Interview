@@ -114,6 +114,23 @@ self.onmessage = (e: MessageEvent) => {
                 }
             } else {
                 onsetRunSamples = 0
+                // Audible, but under the onset threshold: RMS sitting in the dead band
+                // between SPEECH_END_RMS and SPEECH_START_RMS. While an utterance is
+                // already open this is still the person talking -- a soft consonant, a
+                // trailing word, the quiet half of a clause -- so it must keep the
+                // utterance alive.
+                //
+                // It did not, and that was the bug: the same in-band level counted as
+                // SPEECH while speechActive was true (the else branch below adds it to
+                // voicedSamples) but as SILENCE once speechActive had flipped false, so
+                // a quietly-spoken stretch let `silence` run to LONG_PAUSE_SEC and the
+                // answer fired mid-question. Treating it as speech in both places is
+                // what makes the detector consistent with itself.
+                if (rms >= SPEECH_END_RMS && utteranceStartSample !== null) {
+                    pauseStartSample = null
+                    boundaryEmittedAt = null
+                    voicedSamples += chunk.length
+                }
             }
         } else if (rms < SPEECH_END_RMS) {
             // ── Offset: recorded at the first quiet chunk so the boundary lands on

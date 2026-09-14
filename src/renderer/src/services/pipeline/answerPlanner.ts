@@ -1,11 +1,9 @@
 // answerPlanner.ts - Natively-style Answer Planning & Execution Policy Engine
 
-export interface IntentResult {
-  intent: 'definitional' | 'technical_concept' | 'dsa_coding' | 'system_design' | 'behavioral' | 'identity' | 'project_deepdive' | 'followup' | 'general_factual'
-  isCoding: boolean
-  isHindi: boolean
-  requiresExample: boolean
-}
+// Single source of truth for the intent union lives in intentClassifier. Re-exported
+// here so existing importers of `IntentResult` from this module keep working.
+import type { IntentResult } from './intentClassifier'
+export type { IntentResult }
 
 export type VoicePerspective = 'first_person_candidate' | 'neutral_explanation'
 export type ProfileContextPolicy = 'required' | 'allowed' | 'forbidden'
@@ -20,6 +18,15 @@ export interface AnswerPlan {
   /** Bullet budget for the answer. Every answer is rendered as a point list. */
   bulletsMin: number
   bulletsMax: number
+  /**
+   * Completion-token ceiling for this intent. Gateway fallback default is 1024
+   * when maxTokens is not provided by the caller.
+   *
+   * Budgets were raised in Sept 2026 to accommodate the PRECISION & DEPTH and
+   * EXPERT COMPLETENESS rules, which require reasoning chains and adjacent expert
+   * concepts — both of which consume more tokens than a plain factual sentence.
+   */
+  maxTokens: number
 }
 
 export function planAnswer(intentResult: IntentResult): AnswerPlan {
@@ -33,7 +40,8 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         requiresExample: false,
         scaffoldScored: true,
         bulletsMin: 3,
-        bulletsMax: 4
+        bulletsMax: 4,
+        maxTokens: 1600  // code block needs the full room
       }
 
     case 'system_design':
@@ -45,7 +53,8 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         requiresExample: true,
         scaffoldScored: false,
         bulletsMin: 5,
-        bulletsMax: 7
+        bulletsMax: 7,
+        maxTokens: 1000  // mermaid diagram + 7 depth bullets
       }
 
     case 'definitional':
@@ -57,7 +66,8 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         requiresExample: true,
         scaffoldScored: false,
         bulletsMin: 4,
-        bulletsMax: 5
+        bulletsMax: 6,
+        maxTokens: 650  // raised from 450: precision rules + expert completeness need room
       }
 
     case 'technical_concept':
@@ -69,7 +79,8 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         requiresExample: true,
         scaffoldScored: false,
         bulletsMin: 5,
-        bulletsMax: 7
+        bulletsMax: 7,
+        maxTokens: 850  // raised from 650: when/why comparisons + adjacent expert concepts
       }
 
     case 'identity':
@@ -81,7 +92,8 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         requiresExample: false,
         scaffoldScored: false,
         bulletsMin: 5,
-        bulletsMax: 7
+        bulletsMax: 7,
+        maxTokens: 800  // raised from 700: resume grounding requires more tokens
       }
 
     case 'behavioral':
@@ -93,7 +105,8 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         requiresExample: false,
         scaffoldScored: false,
         bulletsMin: 5,
-        bulletsMax: 6
+        bulletsMax: 6,
+        maxTokens: 800  // raised from 700: reasoning chain (WHY) + measurable outcome bullets
       }
 
     case 'project_deepdive':
@@ -105,7 +118,8 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         requiresExample: true,
         scaffoldScored: false,
         bulletsMin: 5,
-        bulletsMax: 6
+        bulletsMax: 6,
+        maxTokens: 800  // raised from 700: reasoning chain + specific tech choice justification
       }
 
     case 'followup':
@@ -117,7 +131,8 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         requiresExample: true,
         scaffoldScored: false,
         bulletsMin: 3,
-        bulletsMax: 4
+        bulletsMax: 5,
+        maxTokens: 550  // raised from 450: followup can trigger expert completeness
       }
 
     default:
@@ -129,7 +144,8 @@ export function planAnswer(intentResult: IntentResult): AnswerPlan {
         requiresExample: false,
         scaffoldScored: false,
         bulletsMin: 4,
-        bulletsMax: 6
+        bulletsMax: 6,
+        maxTokens: 700  // raised from 600: default covers annotation/review/general questions
       }
   }
 }

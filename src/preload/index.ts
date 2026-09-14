@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import { UserProfile } from './index.d'
+import { UserProfile, AnswerChunk } from './index.d'
 
 const api = {
   // ── Supabase Auth ────────────────────────────────────────
@@ -33,8 +33,41 @@ const api = {
     sessionType: string
   ): Promise<void> =>
     ipcRenderer.invoke('supabase-log-session', { durationSeconds, startedAt, sessionType }),
+  /** Persists the full live-session Q&A record to session_transcripts (DB). */
+  supabaseSaveTranscript: (payload: {
+    startedAt: string
+    endedAt: string
+    durationSeconds: number
+    sessionType: string
+    sessionId?: string
+    qa: { id: string; question: string; answer: string; timestamp: string }[]
+  }): Promise<{ ok: boolean; transcriptId?: string }> =>
+    ipcRenderer.invoke('supabase-save-transcript', payload),
+  /**
+   * One-shot end-of-interview handoff: the renderer sends the serialized Q&A
+   * record plus session metadata, the main process performs ALL cloud writes
+   * (credit/trial accounting, session log, transcript) within a time budget
+   * and only then exits. Replaces renderer-orchestrated writes + quitApp(),
+   * which could kill in-flight network calls with app.exit(0).
+   */
+  endInterviewAndExit: (payload: {
+    elapsed: number
+    startedAt: string
+    sessionType: string
+    premium: boolean
+    releaseHold?: boolean
+    qa: { id: string; question: string; answer: string; timestamp: string }[]
+  }): void => ipcRenderer.send('end-interview-and-exit', payload),
   supabaseManualSync: (accessToken: string, refreshToken?: string, userId?: string): Promise<{ ok: boolean; userId: string | null }> =>
     ipcRenderer.invoke('supabase-manual-sync', { accessToken, refreshToken, userId }),
+  // ── Credit-Hour Billing ──────────────────────────────────
+  supabaseHoldCredit: (): Promise<{ ok: boolean; reason?: string; effective_balance?: number; held_credits?: number }> =>
+    ipcRenderer.invoke('supabase-hold-credit'),
+  supabaseReleaseHold: (): Promise<void> =>
+    ipcRenderer.invoke('supabase-release-hold'),
+  supabaseDeductCreditHours: (data: { durationSeconds: number; releaseHold?: boolean }): Promise<{ newBalance: number; creditsDeducted: number; creditsUsedTotal?: number }> =>
+    ipcRenderer.invoke('supabase-deduct-credit-hours', data),
+
   // ── Setup window ─────────────────────────────────────────
   pickResume: (): Promise<{ path: string; data: string; name: string } | null> =>
     ipcRenderer.invoke('pick-resume'),
@@ -54,7 +87,7 @@ const api = {
     mimeType: string
     language: string
     isPartial?: boolean
-  }): Promise<string> => ipcRenderer.invoke('transcribe-only', data),
+  }): Promise<{ text: string; language?: string }> => ipcRenderer.invoke('transcribe-only', data),
   generateAnswer: (data: {
     transcript: string
     model: string
@@ -64,16 +97,45 @@ const api = {
     presencePenalty?: number
     frequencyPenalty?: number
   }): Promise<string> => ipcRenderer.invoke('generate-answer', data),
+  generateAnswerStream: (data: {
+    requestId: string
+    transcript: string
+    model?: string
+    systemPrompt: string
+    temperature?: number
+    maxTokens?: number
+    presencePenalty?: number
+    frequencyPenalty?: number
+  }): Promise<string> => ipcRenderer.invoke('generate-answer-stream', data),
+
+  onAnswerChunk: (cb: (payload: AnswerChunk) => void): (() => void) => {
+    const listener = (_e: unknown, payload: AnswerChunk): void => cb(payload)
+    ipcRenderer.on('answer-chunk', listener)
+    return () => ipcRenderer.removeListener('answer-chunk', listener)
+  },
   analyzeScreen: (data: { systemPrompt: string }): Promise<string> =>
     ipcRenderer.invoke('analyze-screen', data),
+  writeClipboard: (text: string): Promise<void> =>
+    ipcRenderer.invoke('write-clipboard', text),
   captureScreenshot: (): Promise<string> => ipcRenderer.invoke('capture-screenshot'),
   queryVision: (data: { systemPrompt: string; base64Image: string }): Promise<string> =>
     ipcRenderer.invoke('query-vision', data),
+  analyzeScreenStream: (data: {
+    requestId: string
+    systemPrompt: string
+    base64Image: string
+    userPrompt?: string
+    maxTokens?: number
+  }): Promise<string> => ipcRenderer.invoke('analyze-screen-stream', data),
   extractQuestionFromImage: (data: { base64Image: string }): Promise<string> =>
     ipcRenderer.invoke('extract-question-from-image', data),
   toggleCompact: (minimized: boolean): void => ipcRenderer.send('toggle-compact', minimized),
   startInterview: (sessionData: unknown): Promise<{ allowed: boolean; reason?: string }> =>
     ipcRenderer.invoke('start-interview', sessionData),
+  prewarmGatewayToken: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('prewarm-gateway-token'),
+  getGatewayToken: (): Promise<string | null> =>
+    ipcRenderer.invoke('get-gateway-token'),
   quitApp: (): void => ipcRenderer.send('quit-app'),
   reloadWindow: (): void => ipcRenderer.send('reload-window'),
   minimizeWindow: (): void => ipcRenderer.send('minimize-window'),
@@ -82,6 +144,7 @@ const api = {
   downloadUpdate: (): Promise<void> => ipcRenderer.invoke('download-update'),
   // ── Overlay window ────────────────────────────────────────
   getSession: (): Promise<unknown> => ipcRenderer.invoke('get-session'),
+  getAiGatewayUrl: (): Promise<string> => ipcRenderer.invoke('get-ai-gateway-url'),
   getDeepgramKey: (): Promise<string> => ipcRenderer.invoke('get-deepgram-key'),
   getSupabaseToken: (): Promise<string | null> => ipcRenderer.invoke('get-supabase-token'),
   getSupabaseSessionData: (): Promise<{ accessToken: string | null; refreshToken: string | null }> => ipcRenderer.invoke('get-supabase-session-data'),
@@ -137,6 +200,13 @@ const api = {
     ipcRenderer.on('scroll-overlay', listener)
     return (): void => {
       ipcRenderer.removeListener('scroll-overlay', listener)
+    }
+  },
+  onHistoryNav: (cb: (direction: 'prev' | 'next') => void): (() => void) => {
+    const listener = (_e: unknown, dir: 'prev' | 'next'): void => cb(dir)
+    ipcRenderer.on('history-nav', listener)
+    return (): void => {
+      ipcRenderer.removeListener('history-nav', listener)
     }
   },
   onToggleListening: (cb: () => void): (() => void) => {

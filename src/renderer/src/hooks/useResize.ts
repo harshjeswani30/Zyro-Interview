@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import { MIN_OVERLAY_WIDTH, DEFAULT_OVERLAY_WIDTH } from './useHeaderScale'
+import { MIN_OVERLAY_WIDTH, MAX_OVERLAY_WIDTH } from './useHeaderScale'
 
 // direction: 'e'|'w'|'ne'|'nw'|'se'|'sw' (height is locked — width only)
 export function useResize(direction: string): { onPointerDown: (e: React.PointerEvent) => Promise<void> } {
@@ -25,8 +25,10 @@ export function useResize(direction: string): { onPointerDown: (e: React.Pointer
       // Width minimum matches the header scale floor, so the header keeps shrinking
       // proportionally right down to the smallest allowed width.
       const minW = MIN_OVERLAY_WIDTH
-      const maxW = DEFAULT_OVERLAY_WIDTH
-      const minH = 400
+      const maxW = MAX_OVERLAY_WIDTH
+      // Must track minHeight in createOverlayWindow() -- a smaller value here just
+      // gets clamped by Electron, so the drag would visibly stick.
+      const minH = 420
 
       if (direction.includes('e')) {
         // Right-side drag: grow right

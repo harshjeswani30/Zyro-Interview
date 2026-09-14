@@ -4,15 +4,31 @@ import {
     generateInterviewAnswer,
     transcribeAudioOnly,
     analyzeScreen,
-    SessionData
+    SessionData,
+    getCurrentModelName,
+    getSttLanguage
 } from '../services/aiService'
 import 'highlight.js/styles/github-dark.css'
+import '../assets/overlay.css'
 import { TopResizeHandles, BottomResizeHandles } from './ResizeHandles'
-import { motion, AnimatePresence } from 'framer-motion'
-import { AnimatedAnswer } from './AnimatedAnswer'
+import { TimerTab } from './overlay/TimerTab'
+import { OverlayDock } from './overlay/OverlayDock'
+import { TranscriptRail } from './overlay/TranscriptRail'
+import { ConversationFeed } from './overlay/ConversationFeed'
+import { QuestionCard } from './overlay/QuestionCard'
+import { AnswerCard } from './overlay/AnswerCard'
+import { ThinkingCard } from './overlay/ThinkingCard'
+import { FeedEmptyState } from './overlay/FeedEmptyState'
+import { Composer } from './overlay/Composer'
+import type { OverlayVisualState, QAPair, RailWord, TimeBand } from './overlay/types'
 import { toDisplayTranscript } from '../services/pipeline/devanagariToRoman'
+import { detectUtteranceLanguage, type LanguageCode } from '../services/pipeline/languagePolicy'
 import { useHeaderScale } from '../hooks/useHeaderScale'
+import { useDrag } from '../hooks/useDrag'
 import { AudioRing } from '../services/audioRing'
+import { resolveSessionClock, TRIAL_LIMIT_SEC } from '../services/sessionClock'
+import { LiveTranscriber } from '../services/deepgramLiveClient'
+import { shouldAnswerFinalizedTurn } from '../services/pipeline/turnGating'
 import {
     diagDisplayed,
     diagDropped,
@@ -23,54 +39,20 @@ import {
     type SttKind
 } from '../services/sttDiagnostics'
 
-interface CurrentQA {
-    question: string
-    answer: string
-    timestamp: Date
-}
-
 interface WordToken {
     id: number
     text: string
     timestamp: number
 }
 
-interface TranscriptPacket {
-    id: string
-    text: string
+/** 14:22:07 -- question cards. */
+function formatClock(d: Date): string {
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-function computePacketsFromWords(words: WordToken[]): TranscriptPacket[] {
-    if (!words || words.length === 0) return []
-
-    const packets: TranscriptPacket[] = []
-    let currentWords: WordToken[] = []
-
-    for (let i = 0; i < words.length; i++) {
-        const w = words[i]
-
-        if (currentWords.length > 0) {
-            const timeDiff = w.timestamp - currentWords[currentWords.length - 1].timestamp
-            if (timeDiff >= 500) {
-                packets.push({
-                    id: `pkt-chunk-${currentWords[0].id}`,
-                    text: currentWords.map(item => item.text).join(' ')
-                })
-                currentWords = []
-            }
-        }
-
-        currentWords.push(w)
-    }
-
-    if (currentWords.length > 0) {
-        packets.push({
-            id: `pkt-chunk-${currentWords[0].id}`,
-            text: currentWords.map(item => item.text).join(' ')
-        })
-    }
-
-    return packets
+/** 14:22 -- answer cards, where seconds are just noise. */
+function formatClockShort(d: Date): string {
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
 // ── WAV encoder: Float32Array PCM chunks → WAV Blob ──────────────────────────
@@ -214,6 +196,10 @@ const STANDALONE_TECH_WORDS = new Set([
 ])
 
 const PUNCT_RE = /[.,!?;:'"()[\]।]/g
+
+/** Conversation history cap. Older pairs fall off the front; the visible pair is
+    tracked by id so trimming can never silently change which one is on screen. */
+const MAX_PAIRS = 30
 
 const DEVANAGARI_RE = /[ऀ-ॿ]/
 
@@ -367,38 +353,215 @@ export default function OverlayPage(): React.ReactElement {
     // Keeps --hdr-scale in sync with the window width so every header button,
     // the status chip and all spacing shrink together below the default 820px.
     useHeaderScale()
+    const dockDrag = useDrag()
 
     const [session, setSession] = useState<SessionData | null>(null)
-    const [currentQA, setCurrentQA] = useState<CurrentQA | null>(null)
+
+    // Conversation history. The feed shows exactly one pair at a time and
+    // Prev/Next page through the rest; answers stream into the pair they belong to.
+    const [pairs, setPairs] = useState<QAPair[]>([])
+    const [activeId, setActiveId] = useState<string | null>(null)
+    const [hasNewerAnswer, setHasNewerAnswer] = useState(false)
+    const [audioLevel, setAudioLevel] = useState(0)
+    const [liveWordCount, setLiveWordCount] = useState(0)
+    const [warnMsg, setWarnMsg] = useState('')
     const [isGenerating, setIsGenerating] = useState(false)
     const [minimized, setMinimized] = useState(false)
+    const minimizedRef = useRef(minimized)
+    useEffect(() => {
+        minimizedRef.current = minimized
+    }, [minimized])
     const [chatInput, setChatInput] = useState('')
     const [errorMsg, setErrorMsg] = useState('')
     const [statusText, setStatusText] = useState('Initializing...')
-    const [overlayOpacity] = useState(0.65)
+    const [overlayOpacity, setOverlayOpacity] = useState<number>(() => {
+        try {
+            const saved = localStorage.getItem('zv_overlay_opacity')
+            if (saved) {
+                const val = parseFloat(saved)
+                if (!isNaN(val) && val >= 0 && val <= 1) return val
+            }
+        } catch {
+            // fallback
+        }
+        return 0
+    })
+
+    const handleOpacityChange = useCallback((val: number) => {
+        const clamped = Math.max(0, Math.min(1.0, Math.round(val * 100) / 100))
+        setOverlayOpacity(clamped)
+        try {
+            localStorage.setItem('zv_overlay_opacity', clamped.toString())
+        } catch {
+            // fallback
+        }
+    }, [])
+
+    const [clickThrough, setClickThrough] = useState<boolean>(() => {
+        try {
+            return localStorage.getItem('zv_overlay_click_through') === 'true'
+        } catch {
+            return false
+        }
+    })
+    const clickThroughRef = useRef(clickThrough)
+    useEffect(() => {
+        clickThroughRef.current = clickThrough
+    }, [clickThrough])
+
+    const handleToggleClickThrough = useCallback((): void => {
+        setClickThrough((prev) => {
+            const next = !prev
+            try {
+                localStorage.setItem('zv_overlay_click_through', next ? 'true' : 'false')
+            } catch {
+                // fallback
+            }
+            return next
+        })
+    }, [])
+    const handleToggleClickThroughRef = useRef(handleToggleClickThrough)
+    useEffect(() => {
+        handleToggleClickThroughRef.current = handleToggleClickThrough
+    }, [handleToggleClickThrough])
+
     // isResizing moved to hooks logic, but we might want a local one for UI effects
 
 
     const [isThinking, setIsThinking] = useState(false)
+    const [isScreenCapturing, setIsScreenCapturing] = useState(false)
     const [answerCopied, setAnswerCopied] = useState(false)
     const answerCopyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+    // Mirrors of the two pieces of history state that async callbacks touch. The
+    // STT/answer paths run outside React's render cycle, so they read and advance
+    // these rather than closing over a snapshot that may already be stale.
+    //
+    // These refs are the ONLY write path: beginPair, updatePair, settleOpenPair,
+    // navigateHistory and jumpToNewest each write the ref and then hand the very same
+    // value to setState, and nothing else calls setPairs/setActiveId. There is
+    // deliberately no effect syncing them back from state -- one used to exist, and
+    // because a commit can land after the ref has already moved on, it rolled the ref
+    // backwards: holding the Left arrow lost most of the steps (a measured run of 40
+    // presses from the newest of 30 pairs stopped at the 3rd instead of the 1st).
+    const pairsRef = useRef<QAPair[]>([])
+    const activeIdRef = useRef<string | null>(null)
+    const pairSeqRef = useRef(0)
+    const openPairRef = useRef<string | null>(null)
+
+    // Resolved from the id so a trim of the oldest pairs cannot shift the selection.
+    // An id that no longer exists falls back to the newest pair.
+    const activeIndex = useMemo(() => {
+        if (pairs.length === 0) return -1
+        const found = pairs.findIndex((p) => p.id === activeId)
+        return found === -1 ? pairs.length - 1 : found
+    }, [pairs, activeId])
+
+    const activePair = activeIndex >= 0 ? pairs[activeIndex] : null
+
+    /**
+     * Opens a pair for a freshly captured question and returns its id; every later
+     * delta for that question is applied through updatePair(id, ...).
+     *
+     * The view auto-advances only when the user was already sitting on the newest
+     * pair. If they had paged back to re-read something, the new answer lands
+     * silently and the "New answer" pill offers the jump instead.
+     */
+    const beginPair = useCallback((question: string): string => {
+        const previous = pairsRef.current
+        const atNewest =
+            previous.length === 0 ||
+            activeIdRef.current === null ||
+            previous[previous.length - 1].id === activeIdRef.current
+
+        const id = `pair-${Date.now().toString(36)}-${(++pairSeqRef.current).toString(36)}`
+        openPairRef.current = id
+        const appended = [
+            ...previous,
+            { id, question, answer: '', timestamp: new Date(), streaming: true }
+        ]
+        // Written straight to the ref as well: two questions can open inside one
+        // React batch, and the second has to see the first.
+        pairsRef.current =
+            appended.length > MAX_PAIRS ? appended.slice(appended.length - MAX_PAIRS) : appended
+        setPairs(pairsRef.current)
+
+        if (atNewest) {
+            activeIdRef.current = id
+            setActiveId(id)
+            setHasNewerAnswer(false)
+        } else {
+            setHasNewerAnswer(true)
+        }
+        return id
+    }, [])
+
+    /**
+     * Closes whichever pair is still streaming. Called from every generation
+     * path's finally block so a failed or superseded request cannot leave a card
+     * stuck in the streaming state with its footer hidden. Safe to call twice.
+     */
+    const settleOpenPair = useCallback((): void => {
+        const id = openPairRef.current
+        if (!id) return
+        openPairRef.current = null
+        pairsRef.current = pairsRef.current.map((p) =>
+            p.id === id ? { ...p, streaming: false } : p
+        )
+        setPairs(pairsRef.current)
+    }, [])
+
+    /** Applies a streamed delta (or the final answer) to one pair. */
+    const updatePair = useCallback((id: string, patch: Partial<QAPair>): void => {
+        pairsRef.current = pairsRef.current.map((p) => (p.id === id ? { ...p, ...patch } : p))
+        setPairs(pairsRef.current)
+    }, [])
+
+    /** Left/Prev walks toward older answers, Right/Next back toward the newest. */
+    const navigateHistory = useCallback((direction: 'prev' | 'next'): void => {
+        const list = pairsRef.current
+        if (list.length === 0) return
+        const current = list.findIndex((p) => p.id === activeIdRef.current)
+        const from = current === -1 ? list.length - 1 : current
+        const to = Math.max(0, Math.min(list.length - 1, from + (direction === 'prev' ? -1 : 1)))
+        if (to === from) return
+        activeIdRef.current = list[to].id
+        setActiveId(list[to].id)
+        if (to === list.length - 1) setHasNewerAnswer(false)
+    }, [])
+
+    const jumpToNewest = useCallback((): void => {
+        const list = pairsRef.current
+        if (list.length === 0) return
+        const newestId = list[list.length - 1].id
+        activeIdRef.current = newestId
+        setActiveId(newestId)
+        setHasNewerAnswer(false)
+    }, [])
 
     // Copy the full answer markdown to the clipboard. The button reverts to its
     // idle icon on its own so it never gets stuck reading "Copied".
     const handleCopyAnswer = useCallback((): void => {
-        const text = currentQA?.answer?.trim()
+        const text = activePair?.answer?.trim()
         if (!text) return
-        navigator.clipboard.writeText(text).catch(() => {})
+        // navigator.clipboard.writeText silently fails in overlay windows (alwaysOnTop +
+        // skipTaskbar causes Chromium to deny clipboard-write permission). Route through
+        // main process Electron clipboard module which always has access.
+        if (window.api?.writeClipboard) {
+            window.api.writeClipboard(text).catch(() => {})
+        } else {
+            navigator.clipboard.writeText(text).catch(() => {})
+        }
         setAnswerCopied(true)
         if (answerCopyResetRef.current) clearTimeout(answerCopyResetRef.current)
         answerCopyResetRef.current = setTimeout(() => setAnswerCopied(false), 1600)
-    }, [currentQA?.answer])
+    }, [activePair?.answer])
 
     // A fresh answer clears the copied state, and the pending timer is dropped
     // on unmount so it cannot fire against a torn-down component.
     useEffect(() => {
         setAnswerCopied(false)
-    }, [currentQA?.answer])
+    }, [activePair?.id])
 
     useEffect(() => {
         return () => {
@@ -413,9 +576,8 @@ export default function OverlayPage(): React.ReactElement {
     const rawSessionHistoryRef = useRef('') // NEW: Continuous raw transcription history
 
     // ── Session balance + trial timer ────────────────────────
-    const TRIAL_LIMIT = 600 // 10 minutes in seconds
+    const TRIAL_LIMIT = TRIAL_LIMIT_SEC // 10 minutes, shared with sessionClock
     const [sessionBalance, setSessionBalance] = useState<number>(-1) // -1 = unknown/loading
-    const [trialSecondsUsed, setTrialSecondsUsed] = useState(0)
     const [sessionDeducted, setSessionDeducted] = useState(false)
     const deductionFiredRef = useRef(false)
     const sessionStartTimeRef = useRef<number | null>(null)
@@ -430,34 +592,41 @@ export default function OverlayPage(): React.ReactElement {
         // 1. Hide the overlay window immediately so the user/interviewer doesn't see it
         window.api.endInterview()
 
-        // 2. Perform background session logging and trial update
+        // Serialize the full Q&A record BEFORE anything else — this is the only
+        // copy of the interview that exists (MAX_PAIRS-capped, in-memory only).
+        // Partial pairs (answer still streaming) are still real record; they ship.
+        const qaRecord = pairsRef.current.map((p) => ({
+            id: p.id,
+            question: p.question,
+            answer: p.answer,
+            timestamp: p.timestamp instanceof Date ? p.timestamp.toISOString() : String(p.timestamp)
+        }))
+
+        // 2. Hand everything to the main process: it performs the credit/trial
+        // accounting, session log, transcript save (+ Drive copy) within a time
+        // budget and exits itself. The old renderer-orchestrated sequence ended
+        // in app.exit(0), which could kill these in-flight network writes.
         if (sessionStartTimeRef.current) {
             const elapsed = Math.floor((Date.now() - sessionStartTimeRef.current) / 1000)
             const startedAt = new Date(sessionStartTimeRef.current).toISOString()
             const sessionType = session?.name || 'Interview'
+            const premium =
+                sessionBalance > 0 || (session?.sessions_balance && session.sessions_balance > 0)
 
-            // Final incremental trial update if not premium
-            if (!deductionFiredRef.current) {
-                const delta = elapsed - lastReportedElapsedRef.current
-                if (delta > 0) {
-                    lastReportedElapsedRef.current = elapsed
-                    await window.api.supabaseUpdateTrial(delta).catch(console.error)
-                }
-            }
-
-            // Log session duration with metadata
-            await window.api.supabaseLogSession(elapsed, startedAt, sessionType).catch(console.error)
+            window.api.endInterviewAndExit({
+                elapsed,
+                startedAt,
+                sessionType,
+                premium: !!premium,
+                releaseHold: session?.hasHold,
+                qa: qaRecord
+            })
+            return
         }
 
-        // Clear timers immediately to prevent leak while hidden
-        if (trialIntervalRef.current) clearInterval(trialIntervalRef.current)
-        if (trialUpdateIntervalRef.current) clearInterval(trialUpdateIntervalRef.current)
-        if (trialTimeoutRef.current) clearTimeout(trialTimeoutRef.current)
-        fetchIdRef.current += 1 // Invalidate any pending timer initializations
-
-        // 3. Exit the application completely
+        // No session start time (nothing to bill or log) — just exit.
         window.api.quitApp()
-    }, [session])
+    }, [session, sessionBalance])
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
     const refreshProfileAndStartTimers = useCallback(() => {
@@ -473,7 +642,6 @@ export default function OverlayPage(): React.ReactElement {
             const balance = session.sessions_balance
             const usedSeconds = session.trial_seconds_used
             setSessionBalance(balance)
-            setTrialSecondsUsed(usedSeconds)
             initialTrialUsedRef.current = usedSeconds
             lastReportedElapsedRef.current = 0
             sessionStartTimeRef.current = Date.now()
@@ -490,7 +658,6 @@ export default function OverlayPage(): React.ReactElement {
                 const balance = profile?.sessions_balance ?? 0
                 const usedSeconds = profile?.trial_seconds_used ?? 0
                 setSessionBalance(balance)
-                setTrialSecondsUsed(usedSeconds)
                 initialTrialUsedRef.current = usedSeconds
                 lastReportedElapsedRef.current = 0
                 sessionStartTimeRef.current = Date.now()
@@ -498,24 +665,41 @@ export default function OverlayPage(): React.ReactElement {
                 startTimers(balance, usedSeconds)
             })
             .catch(() => {
-                setSessionBalance(0)
+                // Guarded the same way .then is. Without the abort check a stale rejected
+                // fetch overwrote an already-resolved balance with 0, dropping a paid
+                // session onto the free-trial clock; and a balance we already learned is
+                // never downgraded -- only the still-unknown -1 gets filled in.
+                if (currentFetchId !== fetchIdRef.current) return
+                setSessionBalance((prev) => (prev >= 0 ? prev : 0))
                 sessionStartTimeRef.current = Date.now()
             })
     }, [session, handleEndInterview])
 
     const startTimers = (balance: number, usedSeconds: number) => {
         if (balance > 0) {
-            // Paid user: deduct one session when interview starts
+            // Paid user: mark as paid run (actual deduction happens at the end of the session)
             if (!deductionFiredRef.current) {
                 deductionFiredRef.current = true
                 setSessionDeducted(true)
-                window.api
-                    .supabaseDeductSession()
-                    .then((r: { newBalance?: number }) => {
-                        setSessionBalance(r?.newBalance ?? balance - 1)
-                    })
-                    .catch(console.error)
             }
+            
+            // Auto-end based on available credit balance (1 credit = 1 hour = 3600s)
+            const maxSecondsAllowed = balance * 3600
+            
+            if (trialTimeoutRef.current) clearTimeout(trialTimeoutRef.current)
+            trialTimeoutRef.current = setTimeout(() => {
+                handleEndInterview()
+            }, maxSecondsAllowed * 1000)
+
+            if (trialIntervalRef.current) clearInterval(trialIntervalRef.current)
+            trialIntervalRef.current = setInterval(() => {
+                if (!sessionStartTimeRef.current) return
+                const elapsed = Math.floor((Date.now() - sessionStartTimeRef.current) / 1000)
+                if (elapsed >= maxSecondsAllowed) {
+                    if (trialIntervalRef.current) clearInterval(trialIntervalRef.current)
+                    handleEndInterview()
+                }
+            }, 10000)
         } else {
             // Free trial user: check if trial is already exhausted
             if (usedSeconds >= TRIAL_LIMIT) {
@@ -529,7 +713,6 @@ export default function OverlayPage(): React.ReactElement {
                 trialIntervalRef.current = setInterval(() => {
                     const elapsed = Math.floor((Date.now() - sessionStartTimeRef.current!) / 1000)
                     const nowUsed = usedSeconds + elapsed
-                    setTrialSecondsUsed(nowUsed)
                     if (nowUsed >= TRIAL_LIMIT) {
                         if (trialIntervalRef.current) clearInterval(trialIntervalRef.current)
                         handleEndInterview() // End with logging
@@ -557,9 +740,7 @@ export default function OverlayPage(): React.ReactElement {
         }
     }
 
-    const isPremium = sessionBalance > 0 || sessionDeducted || (session?.sessions_balance !== undefined && session.sessions_balance > 0)
     const [sessionElapsedSec, setSessionElapsedSec] = useState(0)
-
     useEffect(() => {
         const timer = setInterval(() => {
             if (sessionStartTimeRef.current) {
@@ -569,16 +750,27 @@ export default function OverlayPage(): React.ReactElement {
         return () => clearInterval(timer)
     }, [])
 
-    const formatDuration = (totalSec: number) => {
-        const mins = Math.floor(totalSec / 60)
-        const secs = (totalSec % 60).toString().padStart(2, '0')
-        return `${mins}:${secs}`
+    // All of the premium-vs-trial and "is the balance even known yet" reasoning lives in
+    // services/sessionClock.ts, where it is unit tested.
+    const sessionClock = resolveSessionClock({
+        sessionBalance,
+        sessionDeducted,
+        sessionPayloadBalance: session?.sessions_balance,
+        trialSecondsUsed: initialTrialUsedRef.current,
+        elapsedSeconds: sessionElapsedSec
+    })
+    const { balanceKnown, remainingSeconds } = sessionClock
+
+    const formatHHMMSS = (totalSec: number) => {
+        const h = Math.floor(totalSec / 3600).toString().padStart(2, '0')
+        const m = Math.floor((totalSec % 3600) / 60).toString().padStart(2, '0')
+        const s = Math.floor(totalSec % 60).toString().padStart(2, '0')
+        return `${h}:${m}:${s}`
     }
 
-    const trialSecondsRemaining = Math.max(0, TRIAL_LIMIT - trialSecondsUsed)
-    const trialLabel = `${Math.floor(trialSecondsRemaining / 60)}:${(trialSecondsRemaining % 60)
-        .toString()
-        .padStart(2, '0')}`
+    // Placeholder rather than a wrong number: until the balance lands, any figure here
+    // would be the trial allowance, which is not this user's clock.
+    const timerLabel = balanceKnown ? formatHHMMSS(remainingSeconds) : '--:--:--'
 
     // Initial load
     useEffect(() => {
@@ -595,11 +787,18 @@ export default function OverlayPage(): React.ReactElement {
         }
     }, [refreshProfileAndStartTimers])
 
+    const [showScheduledSuccess, setShowScheduledSuccess] = useState(false)
+
     // Handle resume (init-session event)
     useEffect(() => {
         if (!window.api.onInitSession) return
         const unlisten = window.api.onInitSession((data: any) => {
-            setSession(data as SessionData)
+            const sess = data as SessionData
+            setSession(sess)
+            if (sess.sessionStartedFromSchedule) {
+                setShowScheduledSuccess(true)
+                setTimeout(() => setShowScheduledSuccess(false), 6000)
+            }
             refreshProfileAndStartTimers()
         })
         return () => unlisten()
@@ -673,20 +872,12 @@ export default function OverlayPage(): React.ReactElement {
         })
     }, [pendingTranscript])
 
-    // Scroll transcript container to the rightmost edge so latest text is visible
+    // The rail streams top-to-bottom now, so stick to the newest block. (This used
+    // to chase the rightmost edge of the old horizontal pill bar, and the
+    // is-overflowing fade mask that went with it no longer has anything to mask.)
     useEffect(() => {
         const el = transcriptContainerRef.current
-        if (el) {
-            el.scrollLeft = el.scrollWidth
-            
-            // Toggle mask visibility based on whether we're actually overflowing
-            const isOverflow = el.scrollWidth > el.clientWidth
-            if (isOverflow) {
-                el.classList.add('is-overflowing')
-            } else {
-                el.classList.remove('is-overflowing')
-            }
-        }
+        if (el) el.scrollTop = el.scrollHeight
     }, [displayedWords])
 
     // Closes the diagnostics loop: `displayedWords` is what the transcript bar actually
@@ -699,18 +890,32 @@ export default function OverlayPage(): React.ReactElement {
         pendingDisplayHandleRef.current = 0
     }, [displayedWords])
     
-    // Auto-scroll to TOP when a new answer starts (as requested)
+    // Scroll to the top when a different pair becomes visible -- keyed on the pair id,
+    // not the object, since streaming rewrites the pair on every coalesced flush.
     useEffect(() => {
-        if (currentQA && contentRef.current) {
+        if (activePair && contentRef.current) {
             contentRef.current.scrollTop = 0
         }
-    }, [currentQA])
+    }, [activePair?.id])
 
-    const displayedPackets = useMemo(() => computePacketsFromWords(displayedWords), [displayedWords])
+    /**
+     * The words the rail renders. liveWordCount is how many of the trailing words are
+     * still a hypothesis the recogniser may revise -- 0 on the batch fallback, where
+     * every word that reaches the screen has already been decoded.
+     */
+    const railWords = useMemo<RailWord[]>(() => {
+        const firstLive = Math.max(0, displayedWords.length - liveWordCount)
+        return displayedWords.map((word, i) => ({
+            id: word.id,
+            text: word.text,
+            live: i >= firstLive
+        }))
+    }, [displayedWords, liveWordCount])
 
     const handleClearTranscript = useCallback(() => {
         setPendingTranscript('')
         setDisplayedWords([])
+        setLiveWordCount(0)
         rawSessionHistoryRef.current = ''
         masterQuestionRef.current = ''
         continuationCountRef.current = 0
@@ -730,6 +935,18 @@ export default function OverlayPage(): React.ReactElement {
     // zoomLevel is used via setZoomLevel(prev => ...) and its current value is tracked locally
 
     // ── VAD / audio pipeline refs ─────────────────────────────
+    /**
+     * Streaming recogniser for the on-screen ticker. Null when no key is configured, in
+     * which case the batch partial/commit path below keeps painting the transcript.
+     */
+    const liveStreamRef = useRef<LiveTranscriber | null>(null)
+    /** True while the socket owns the display, so batch STT does not fight it. */
+    const streamingDisplayRef = useRef(false)
+    /** Latest streamed text, used as the fallback if the final full-clip pass fails. */
+    const streamedTextRef = useRef('')
+
+    // Last wall-clock push of the meter level, for throttling.
+    const lastLevelPushRef = useRef(0)
     const audioContextRef = useRef<AudioContext | null>(null)
     const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null)
     const audioStreamRef = useRef<MediaStream | null>(null)
@@ -861,15 +1078,30 @@ export default function OverlayPage(): React.ReactElement {
                 } else if (e.key.toLowerCase() === 'a') {
                     e.preventDefault()
                     handleToggleAutoRef.current?.()
+                } else if (e.key.toLowerCase() === 'm') {
+                    // The minimize keycap's tooltip advertises this. It had no handler
+                    // anywhere -- not here and not as a global shortcut in the main
+                    // process -- so pressing it did nothing at all.
+                    e.preventDefault()
+                    setMinimized((prev) => !prev)
                 } else if (e.key === 'Backspace') {
                     e.preventDefault()
                     handleClearTranscript()
                 } else if (e.code === 'Space') {
                     e.preventDefault()
                     handleToggleManualRef.current?.()
+                } else if ((e.shiftKey && e.key.toLowerCase() === 'c') || e.key.toLowerCase() === 't') {
+                    e.preventDefault()
+                    handleToggleClickThroughRef.current?.()
                 }
             } else {
-                if (e.key === 'ArrowUp') {
+                if (e.key === 'ArrowLeft') {
+                    e.preventDefault()
+                    navigateHistory('prev')
+                } else if (e.key === 'ArrowRight') {
+                    e.preventDefault()
+                    navigateHistory('next')
+                } else if (e.key === 'ArrowUp') {
                     const el = contentRef.current
                     if (el) {
                         e.preventDefault()
@@ -899,25 +1131,139 @@ export default function OverlayPage(): React.ReactElement {
     useEffect(() => {
         let currentIgnore = false
 
-        const INTERACTIVE_SELECTOR =
-            '.overlay-header-static, .no-drag, button, input, a, select, textarea, .resize-handle-adv'
-
         const handleMouseMove = (e: MouseEvent) => {
-            // Use elementFromPoint on the overlay's own DOM — this is reliable even
-            // when the window is in pass-through (forward:true) mode, because e.target
-            // can reference the underlying window's element in that state.
+            // Never ignore mouse events while user is actively dragging the overlay or interacting with controls
+            if ((window as any).__isDraggingOverlay || (window as any).__isInteractingWithOverlay) {
+                if (currentIgnore) {
+                    currentIgnore = false
+                    window.api.setIgnoreMouseEvents(false)
+                }
+                return
+            }
+
             const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
 
-            // Also check header bounding rect — needed when mouse enters from outside
-            // (pass-through mode), as elementFromPoint may return null over transparent areas
-            const headerEl = document.querySelector('.overlay-header-static') as HTMLElement | null
-            const headerRect = headerEl?.getBoundingClientRect()
-            const isOverHeaderRect = headerRect
-                ? (e.clientX >= headerRect.left && e.clientX <= headerRect.right &&
-                   e.clientY >= headerRect.top && e.clientY <= headerRect.bottom + 24)
-                : false
+            const dockEl = document.querySelector('.dock') as HTMLElement | null
+            const pillEl = document.querySelector('.dock-drag-bar__pill') as HTMLElement | null
+            const ttabEl = document.querySelector('.ttab') as HTMLElement | null
 
-            const isOverInteractive = isOverHeaderRect || !!el?.closest('.overlay-header-static') || !!el?.closest(INTERACTIVE_SELECTOR)
+            const dockRect = dockEl?.getBoundingClientRect()
+            const pillRect = pillEl?.getBoundingClientRect()
+            const ttabRect = ttabEl?.getBoundingClientRect()
+
+            let overPanel = false
+
+            // 1. Check timer tab (above the dock)
+            if (ttabRect && ttabRect.width > 0 && ttabRect.height > 0) {
+                if (
+                    e.clientX >= ttabRect.left &&
+                    e.clientX <= ttabRect.right &&
+                    e.clientY >= ttabRect.top &&
+                    e.clientY <= ttabRect.bottom
+                ) {
+                    overPanel = true
+                }
+            }
+
+            // 2. Check upper header dock:
+            // Activate with a slight lead buffer (8px below dock bottom) so transitioning from below into the header is seamless.
+            if (!overPanel && dockRect && dockRect.width > 0 && dockRect.height > 0) {
+                const headerLeadBuffer = 8
+                if (
+                    e.clientY >= 0 &&
+                    e.clientY <= dockRect.bottom + headerLeadBuffer &&
+                    e.clientX >= dockRect.left &&
+                    e.clientX <= dockRect.right
+                ) {
+                    overPanel = true
+                }
+            }
+
+            // 3. Check the dash symbol (pill) in the middle space:
+            if (
+                !overPanel &&
+                !minimizedRef.current &&
+                pillRect &&
+                pillRect.width > 0 &&
+                pillRect.height > 0
+            ) {
+                const pillBufferX = 14
+                const pillBufferY = 8
+                if (
+                    e.clientX >= pillRect.left - pillBufferX &&
+                    e.clientX <= pillRect.right + pillBufferX &&
+                    e.clientY >= pillRect.top - pillBufferY &&
+                    e.clientY <= pillRect.bottom + pillBufferY
+                ) {
+                    overPanel = true
+                }
+            }
+
+            // 4. Check the opacity bar in the answer panel header (only active when clickThrough is ON):
+            const opacityBarEl = document.querySelector('.opacity-bar') as HTMLElement | null
+            const opacityRect = opacityBarEl?.getBoundingClientRect()
+            if (
+                !overPanel &&
+                !minimizedRef.current &&
+                clickThroughRef.current &&
+                opacityRect &&
+                opacityRect.width > 0 &&
+                opacityRect.height > 0
+            ) {
+                const pad = 6
+                if (
+                    e.clientX >= opacityRect.left - pad &&
+                    e.clientX <= opacityRect.right + pad &&
+                    e.clientY >= opacityRect.top - pad &&
+                    e.clientY <= opacityRect.bottom + pad
+                ) {
+                    overPanel = true
+                }
+            }
+
+            // 5. Check the click-through button in the answer panel header:
+            // ALWAYS interactive (whether clickThrough is true or false) so user can toggle it on and off at any time!
+            const clickThroughEl = document.querySelector('.click-through-btn') as HTMLElement | null
+            const clickThroughRect = clickThroughEl?.getBoundingClientRect()
+            let overClickThrough = false
+            if (
+                !minimizedRef.current &&
+                clickThroughRect &&
+                clickThroughRect.width > 0 &&
+                clickThroughRect.height > 0
+            ) {
+                const pad = 10
+                if (
+                    e.clientX >= clickThroughRect.left - pad &&
+                    e.clientX <= clickThroughRect.right + pad &&
+                    e.clientY >= clickThroughRect.top - pad &&
+                    e.clientY <= clickThroughRect.bottom + pad
+                ) {
+                    overClickThrough = true
+                }
+            }
+
+            let isOverInteractive = false
+            if (clickThroughRef.current) {
+                // Click-Through / Overlay Focus is ON:
+                // All buttons in the answer panel work on click (over deck, cards, acts Prev/Next, copy chip, composer, dock, etc.)
+                isOverInteractive =
+                    overPanel ||
+                    overClickThrough ||
+                    !!el?.closest(
+                        '.dock, .ttab, .dock-drag-bar__pill, .resize-handle-adv, .deck, .deck *'
+                    )
+            } else {
+                // Click-Through / Overlay Focus is OFF: Background focus mode.
+                // Clicks pass straight through the answer panel to background windows.
+                // Only upper dock, timer tab, drag pill, and the click-through toggle button itself remain interactive.
+                isOverInteractive =
+                    overPanel ||
+                    overClickThrough ||
+                    !!el?.closest(
+                        '.dock, .ttab, .dock-drag-bar__pill, .click-through-btn, .click-through-btn *'
+                    )
+            }
 
             if (isOverInteractive && currentIgnore) {
                 currentIgnore = false
@@ -961,7 +1307,12 @@ export default function OverlayPage(): React.ReactElement {
         const LONG_PAUSE_SEC = 2.4
         // A pause this long is a safe place to freeze text: long enough that the cut
         // cannot land inside a word, short enough to happen several times a sentence.
-        const COMMIT_PAUSE_SEC = 0.35
+        //
+        // Raised from 0.35s. Every commit invalidates whichever partial is still in
+        // flight (its range just changed), and a partial round trip is 500-900ms -- so at
+        // 0.35s a natural micro-pause threw away nearly every partial before it could
+        // paint, which is why batch-path text only appeared once the speaker stopped.
+        const COMMIT_PAUSE_SEC = 0.9
         const MIN_VOICED_SEC = 0.4
         const SPEECH_START_RMS = 0.018
         const SPEECH_END_RMS = 0.01
@@ -976,15 +1327,17 @@ export default function OverlayPage(): React.ReactElement {
         // Audio kept after the detected offset, for the same reason at the other end:
         // word-final consonants in Hindi ("hai", "hain", "nahin") sit on the threshold.
         const POST_ROLL_SEC = 0.2
-        // Shortest clip worth a request. Below this there is nothing for Whisper to work
-        // with and, on the default `auto` language, its detection is a coin toss.
-        const MIN_STT_SEC = 0.5
+        // Shortest clip worth a request. The old 0.5s floor was set when Whisper was the
+        // primary recogniser; the gateway now sends to Deepgram Nova-3 first, which is far
+        // more tolerant of short audio, so this can come down and let the first words show
+        // sooner. Whisper only sees it as a fallback.
+        const MIN_STT_SEC = 0.3
         // Partial cadence, adaptive between these: a short tail is cheap to re-transcribe
         // often, a long one is not.
-        const PARTIAL_MIN_MS = 300
+        const PARTIAL_MIN_MS = 140
         const PARTIAL_MAX_MS = 1200
         // The tail must have grown by this much before re-sending it is worth anything.
-        const PARTIAL_GROWTH_SEC = 0.35
+        const PARTIAL_GROWTH_SEC = 0.18
         // Ring capacity. Only has to cover the longest single utterance plus whatever is
         // still in flight; 90s of mono float32 at 48kHz is ~17MB.
         const RING_SEC = 90
@@ -1047,10 +1400,23 @@ export default function OverlayPage(): React.ReactElement {
              * from that point on the remaining calls of the utterance pin `hi`.
              */
             const utteranceLangRef = { current: '' as '' | 'hi' }
-            const sessionLanguage = sData.language || 'auto'
-            const isAutoLanguage = sessionLanguage.split('-')[0].toLowerCase() === 'auto'
+            // First confident language surfaced by Whisper for THIS utterance (Part B).
+            // Empty until an auto-detected chunk comes back; the Devanagari pin above
+            // still wins for Hindi. Fed into the response-language decision at finalize.
+            const utteranceWhisperLangRef = { current: '' as string }
+            // Resolved by initAI, which owns the rule (more than one configured answer
+            // language means the recogniser must detect per utterance rather than being
+            // pinned). Read rather than recomputed so there is one rule, not two that
+            // can drift apart -- an earlier version computed it here as well and only
+            // the copy in aiService reached the actual request.
+            const sessionLanguage = getSttLanguage()
             const noteScript = (text: string): void => {
-                if (isAutoLanguage && !utteranceLangRef.current && hasDevanagari(text)) {
+                // Not gated on isAutoLanguage any more. Devanagari coming back is
+                // unambiguous proof the interviewer is speaking Hindi -- it is the
+                // strongest signal in the whole pipeline -- and refusing to record it
+                // just because the session pinned an STT locale threw that proof away,
+                // which is how a Hindi question ended up answered in English.
+                if (!utteranceLangRef.current && hasDevanagari(text)) {
                     utteranceLangRef.current = 'hi'
                 }
             }
@@ -1074,6 +1440,11 @@ export default function OverlayPage(): React.ReactElement {
              * so the next partial repainted the transcript the user had just cleared.
              */
             const resetTranscriptState = (): void => {
+                // The socket keeps its own accumulated text, so a reset has to clear that
+                // too or the next turn starts with the previous question still on screen.
+                liveStreamRef.current?.reset()
+                streamedTextRef.current = ''
+                setLiveWordCount(0)
                 committedSegments.length = 0
                 partialTailTextRef.current = ''
                 voicedSinceCommitRef.current = 0
@@ -1081,6 +1452,7 @@ export default function OverlayPage(): React.ReactElement {
                 committedCountRef.current = 0
                 utteranceStartRef.current = null
                 utteranceLangRef.current = ''
+                utteranceWhisperLangRef.current = ''
                 lastPartialTailSamples = 0
                 manualStopPendingRef.current = false
                 segmentFromRef.current = ringRef.current?.head ?? 0
@@ -1116,14 +1488,19 @@ export default function OverlayPage(): React.ReactElement {
                     durationSec: total / sr,
                     language
                 })
-                const text = (
-                    await transcribeAudioOnly(
-                        base64,
-                        'audio/wav',
-                        kind === 'partial',
-                        utteranceLangRef.current || undefined
-                    )
-                )?.trim() ?? ''
+                const result = await transcribeAudioOnly(
+                    base64,
+                    'audio/wav',
+                    kind === 'partial',
+                    utteranceLangRef.current || undefined
+                )
+                const text = result?.text?.trim() ?? ''
+                // Keep the first confident language Whisper surfaced for this utterance.
+                // `auto` sessions get a real per-clip detection; once set we leave it, and
+                // the Devanagari pin (utteranceLangRef) still overrides at finalize.
+                if (!utteranceWhisperLangRef.current && result?.language) {
+                    utteranceWhisperLangRef.current = result.language
+                }
                 diagEndStt(handle, text)
                 noteScript(text)
                 return { text, handle }
@@ -1140,6 +1517,11 @@ export default function OverlayPage(): React.ReactElement {
              * interleave their text or overwrite each other.
              */
             const commitSegment = (from: number, to: number): void => {
+                // Segment commits only exist to freeze batch partial text at a pause. With
+                // the socket driving the display there is nothing to freeze, and decoding
+                // the segment again would just spend a request to reproduce text already
+                // on screen.
+                if (streamingDisplayRef.current) return
                 const utteranceId = utteranceIdRef.current
                 const index = committedSegments.length
                 committedSegments.push(partialTailTextRef.current)
@@ -1209,10 +1591,12 @@ export default function OverlayPage(): React.ReactElement {
                 // 30s and beyond it the request gets slower *and* less accurate.
                 const clipFrom = Math.max(startSample, endSample - Math.floor(sr * MAX_FINAL_SEC))
                 const voicedSec = utteranceVoicedRef.current / sr
-                const fallbackText = joinSegments(
-                    committedSegments.join(' '),
-                    partialTailTextRef.current
-                )
+                // If the final full-clip pass fails, fall back to whatever is already on
+                // screen. With the socket driving that is the streamed text; otherwise it
+                // is the committed segments plus the partial tail.
+                const fallbackText = streamingDisplayRef.current
+                    ? streamedTextRef.current
+                    : joinSegments(committedSegments.join(' '), partialTailTextRef.current)
 
                 // Close the utterance: every in-flight partial and commit belongs to it,
                 // and none of them may repaint the ticker from here on.
@@ -1326,14 +1710,21 @@ export default function OverlayPage(): React.ReactElement {
 
                     const question = masterQuestionRef.current
 
+                    // Decide the interviewer's language for THIS utterance now, before
+                    // resetTranscriptState() below clears the per-utterance pins. Combines
+                    // the Devanagari pin, Whisper's detected language, and the text itself.
+                    const detectedLang: LanguageCode = detectUtteranceLanguage({
+                        text: question,
+                        devanagariPinned: utteranceLangRef.current === 'hi',
+                        whisperLang: utteranceWhisperLangRef.current || undefined
+                    })
+
                     // Show the question, then the transcript bar is cleared — the final
                     // transcript has been committed to the question, so leaving it in the
                     // ticker would double it up against the next utterance.
-                    setCurrentQA((prev) => ({
-                        question,
-                        answer: prev?.answer || '',
-                        timestamp: new Date()
-                    }))
+                    // Open the pair now so the question card and the thinking state are
+                    // on screen before the model has produced a single token.
+                    const pairId = beginPair(question)
 
                     setIsThinking(true)
                     setIsGenerating(true)
@@ -1344,12 +1735,22 @@ export default function OverlayPage(): React.ReactElement {
                     setPendingTranscript('')
                     setDisplayedWords([])
 
-                    setStatusText('Writing...')
                     // Stamped before the await: whichever generation was started last is
                     // the one whose answer is allowed on screen, regardless of which
                     // request the gateway returns first.
                     const genSeq = ++generationSeqRef.current
-                    const answer = await generateInterviewAnswer(question)
+                    const answer = await generateInterviewAnswer(question, detectedLang, {
+                        requestId: `qa-${genSeq}`,
+                        onDelta: (partial) => {
+                            // A newer question superseded this one — drop its deltas.
+                            if (genSeq !== generationSeqRef.current) return
+                            // The first visible token ends the thinking state, so the
+                            // skeleton is replaced by real text instead of by a finished answer.
+                            setIsThinking(false)
+                            setStatusText('Writing...')
+                            updatePair(pairId, { answer: partial })
+                        }
+                    })
 
                     if (genSeq !== generationSeqRef.current) return
                     if (!answer) {
@@ -1358,11 +1759,12 @@ export default function OverlayPage(): React.ReactElement {
                     }
 
                     displayHistoryRef.current += (displayHistoryRef.current ? ' ' : '') + question
-                    setCurrentQA({ question, answer, timestamp: new Date() })
+                    updatePair(pairId, { answer, streaming: false })
                     lastAnswerTimeRef.current = Date.now() / 1000
                 } catch (err: any) {
                     setErrorMsg(`Error: ${err.message?.substring(0, 100)}`)
                 } finally {
+                    settleOpenPair()
                     isGeneratingRef.current = false
                     isFinalizingRef.current = false
                     setIsGenerating(false)
@@ -1414,6 +1816,9 @@ export default function OverlayPage(): React.ReactElement {
                     if (live) schedulePartial()
 
                     if (isFinalizingRef.current || isGeneratingRef.current) return
+                    // The socket is painting the ticker word by word; a batch partial
+                    // would only overwrite it with staler text and cost a request.
+                    if (streamingDisplayRef.current) return
                     if (partialInFlightRef.current) return
 
                     const r = ringRef.current
@@ -1511,14 +1916,21 @@ export default function OverlayPage(): React.ReactElement {
                         commitSegment(from, to)
                     }
                 } else if (type === 'finalize') {
+                    // The worker sends this same message both when it notices a pause by
+                    // itself and when it is answering our own manual_stop, so the pending
+                    // flag has to be read BEFORE it is cleared -- clearing first is what
+                    // made manual mode swallow the user's own Stop and show a transcript
+                    // with no answer under it.
+                    const userRequestedStop = manualStopPendingRef.current
                     manualStopPendingRef.current = false
-                    // 🔴 MANUAL MODE GUARD: The VAD worker's own mode flag prevents it from
-                    // emitting finalize in manual mode, but a race can occur when the user
-                    // switches modes while a utterance is already open. Double-check here.
-                    if (!autoAnswerRef.current) {
-                        // In manual mode, a VAD-driven finalize is not wanted — the user
-                        // controls when to stop via the Listen button (manual_stop).
-                        // Just clean up the utterance state without generating an answer.
+                    if (
+                        !shouldAnswerFinalizedTurn({
+                            autoMode: autoAnswerRef.current,
+                            userRequestedStop
+                        })
+                    ) {
+                        // Manual mode, and the detector ended the turn on its own. The user
+                        // owns the boundary here, so drop it without generating.
                         resetTranscriptState()
                         return
                     }
@@ -1585,17 +1997,100 @@ export default function OverlayPage(): React.ReactElement {
                 // threshold. Between them, utterances that began during a generation were
                 // silently lost and every utterance lost its onset.
                 ringRef.current?.push(chunk)
+                liveStreamRef.current?.push(chunk)
                 worker.postMessage({ type: 'audio', data: chunk })
 
-                if (computeRMS(chunk) >= VOICED_RMS) {
+                const chunkRms = computeRMS(chunk)
+                if (chunkRms >= VOICED_RMS) {
                     voicedSinceCommitRef.current += chunk.length
                     utteranceVoicedRef.current += chunk.length
+                }
+
+                // Drives the transcript rail's level meter. This callback runs every
+                // few milliseconds -- far too often to push into React -- so it is
+                // throttled to ~10fps, and floored so near-silence reads as no signal
+                // instead of a permanently twitching bottom bar.
+                const levelNow = Date.now()
+                if (levelNow - lastLevelPushRef.current >= 100) {
+                    lastLevelPushRef.current = levelNow
+                    setAudioLevel(chunkRms < 0.006 ? 0 : Math.min(1, chunkRms / 0.12))
                 }
 
                 if (manualListenRef.current || utteranceStartRef.current !== null) {
                     schedulePartial()
                 }
             }
+
+            // ── Live streaming recogniser (on-screen ticker only) ─────────────
+            // Deepgram returns a revised hypothesis every ~100-300ms, which is what
+            // word-by-word display needs; the batch path can only ever deliver a phrase
+            // at a time because each update re-uploads a growing clip. The question the
+            // LLM answers still comes from the batch final pass.
+            //
+            // Two things here are deliberate, both learned the hard way:
+            //   1. Nothing is awaited on the way in. This used to sit above the capture
+            //      loop with an `await` on an IPC round trip, so a slow reply delayed
+            //      wiring processor.onaudioprocess -- and until that is wired, no audio
+            //      reaches the ring buffer, the detector, or the transcript at all.
+            //   2. The batch ticker is only switched off once the socket has actually
+            //      produced text. Flipping the flag at start() meant a socket that
+            //      failed to deliver (bad key, blocked by CSP, route not deployed) left
+            //      the display with no source whatsoever -- an empty rail, which is
+            //      strictly worse than a slow one.
+            void (async () => {
+                try {
+                    // Preferred route: the gateway proxies the socket to Deepgram, so the
+                    // key stays a Worker secret. A key read straight from the desktop env
+                    // is only a fallback for a machine that has one locally -- shipping a
+                    // Deepgram key inside the app would make it extractable.
+                    const gatewayBase = window.api.getAiGatewayUrl
+                        ? await window.api.getAiGatewayUrl()
+                        : ''
+                    const gatewayToken = gatewayBase && window.api.getGatewayToken
+                        ? await window.api.getGatewayToken()
+                        : ''
+                    const endpoint = gatewayBase
+                        ? `${gatewayBase.replace(/^http/, 'ws').replace(/\/+$/, '')}/gateway/stt-stream`
+                        : ''
+                    const dgKey =
+                        !endpoint && window.api.getDeepgramKey
+                            ? await window.api.getDeepgramKey()
+                            : ''
+                    if (!endpoint && !dgKey) {
+                        console.info('[STT] no streaming route — batch transcript ticker in use')
+                        return
+                    }
+                    console.info('[STT] live stream via', endpoint || 'deepgram direct')
+                    streamedTextRef.current = ''
+                    const transcriber = new LiveTranscriber({
+                        sampleRate: sr,
+                        apiKey: dgKey,
+                        endpoint: endpoint || undefined,
+                        wsToken: gatewayToken || undefined,
+                        onText: (text, liveWords) => {
+                            // First real text is what earns the handover from batch.
+                            if (!streamingDisplayRef.current) {
+                                streamingDisplayRef.current = true
+                                console.info('[STT] live stream is driving the transcript')
+                            }
+                            streamedTextRef.current = text
+                            setPendingTranscript(text)
+                            setLiveWordCount(liveWords)
+                        },
+                        onUnavailable: (reason) => {
+                            // Hand the display back rather than leaving the rail frozen.
+                            console.warn('[STT] live stream unavailable:', reason)
+                            streamingDisplayRef.current = false
+                            setLiveWordCount(0)
+                        }
+                    })
+                    liveStreamRef.current = transcriber
+                    transcriber.start()
+                } catch (err) {
+                    console.warn('[STT] live stream init failed:', (err as Error).message)
+                    streamingDisplayRef.current = false
+                }
+            })()
 
             setStatusText(autoAnswerRef.current ? 'Ready (Auto)' : 'Manual Mode')
         } catch (err: any) {
@@ -1605,6 +2100,11 @@ export default function OverlayPage(): React.ReactElement {
             rawStream?.getTracks().forEach((t) => t.stop())
             audioStreamRef.current?.getTracks().forEach((t) => t.stop())
             audioStreamRef.current = null
+            // Close the recogniser socket with the graph that feeds it, otherwise a
+            // start/stop/start cycle leaves an orphan connection billing time.
+            liveStreamRef.current?.stop()
+            liveStreamRef.current = null
+            streamingDisplayRef.current = false
             if (scriptProcessorRef.current) {
                 scriptProcessorRef.current.onaudioprocess = null
                 scriptProcessorRef.current.disconnect()
@@ -1646,6 +2146,11 @@ export default function OverlayPage(): React.ReactElement {
             // firing (and keeps its closure, the ring and the worker reachable) until
             // its handler is cleared, so disconnect alone leaked the whole graph across
             // a start/stop/start cycle.
+            // Close the recogniser socket with the graph that feeds it, otherwise a
+            // start/stop/start cycle leaves an orphan connection billing time.
+            liveStreamRef.current?.stop()
+            liveStreamRef.current = null
+            streamingDisplayRef.current = false
             if (scriptProcessorRef.current) {
                 scriptProcessorRef.current.onaudioprocess = null
                 scriptProcessorRef.current.disconnect()
@@ -1707,11 +2212,17 @@ export default function OverlayPage(): React.ReactElement {
             if (!autoAnswerRef.current) handleToggleManual()
         })
         const c3 = window.api.onTriggerScreenScan(() => {
-            handleAnalyzeScreen()
+            handleAnalyzeScreenRef.current?.()
         })
         const c4 = window.api.onScreenProtectionToggle((enabled) => {
             setScreenProtection(enabled)
         })
+        // There were two more subscriptions here, onToggleAutoAnswer and
+        // onClearTranscript. Both were declared in preload/index.d.ts but never
+        // implemented in preload/index.ts, so the optional calls resolved to undefined
+        // and the listeners never existed. Ctrl+A and Ctrl+Backspace are handled by the
+        // local keydown listener above, so nothing was lost -- the declarations are gone
+        // rather than half-wired.
         return () => {
             c1()
             c2()
@@ -1805,17 +2316,33 @@ export default function OverlayPage(): React.ReactElement {
     }, [toggleAuto])
 
     const handleAnalyzeScreen = async (): Promise<void> => {
+        if (isGeneratingRef.current || isScreenCapturing) return
         setMinimized(false) // Auto-expand when starting scan
         setIsGenerating(true)
+        setIsScreenCapturing(true)
         setStatusText('Analyzing Screen...')
         setErrorMsg('')
         try {
-            const result = await analyzeScreen()
-            setCurrentQA({
-                question: 'Screen Analysis Request',
-                answer: result,
-                timestamp: new Date()
+            // Stamped BEFORE the await so this scan immediately supersedes any in-flight
+            // spoken/typed answer — its late deltas check genSeq against this ref — and
+            // so this scan's own deltas have a sequence to validate against.
+            const genSeq = ++generationSeqRef.current
+            const pairId = beginPair('Screen Analysis Request')
+            const result = await analyzeScreen({
+                requestId: `scan-${genSeq}`,
+                onDelta: (partial) => {
+                    // A newer generation superseded this scan — drop its deltas.
+                    if (genSeq !== generationSeqRef.current) return
+                    if (partial && partial.trim()) {
+                        setIsScreenCapturing(false)
+                    }
+                    setIsThinking(false)
+                    setStatusText('Writing...')
+                    updatePair(pairId, { answer: partial })
+                }
             })
+            setIsScreenCapturing(false)
+            updatePair(pairId, { answer: result, streaming: false })
             setMinimized(false) // Ensure it's expanded once result is back
 
             // Reset continuation state for screen analysis
@@ -1825,7 +2352,9 @@ export default function OverlayPage(): React.ReactElement {
         } catch (err: any) {
             setErrorMsg(err.message || 'Failed to analyze screen')
         } finally {
+            settleOpenPair()
             setIsGenerating(false)
+            setIsScreenCapturing(false)
             setStatusText(autoAnswer ? 'Ready (Auto)' : 'Manual Mode')
         }
     }
@@ -1874,31 +2403,130 @@ export default function OverlayPage(): React.ReactElement {
         setErrorMsg('')
         setChatInput('')
         
+        const genSeq = ++generationSeqRef.current
+        const pairId = beginPair(query)
         try {
-            const answer = await generateInterviewAnswer(query)
-            if (answer) {
+            // Typed query: no audio, so detect language from the text alone.
+            const answer = await generateInterviewAnswer(
+                query,
+                detectUtteranceLanguage({ text: query }),
+                {
+                    requestId: `chat-${genSeq}`,
+                    onDelta: (partial) => {
+                        if (genSeq !== generationSeqRef.current) return
+                        setIsThinking(false)
+                        updatePair(pairId, { answer: partial })
+                    }
+                }
+            )
+            if (answer && genSeq === generationSeqRef.current) {
                 displayHistoryRef.current += (displayHistoryRef.current ? ' ' : '') + query
+                // Kept in the raw history because later answers use it as context, but
+                // deliberately NOT pushed into pendingTranscript: that feeds the live
+                // transcript rail, so a typed question used to appear there dressed up as
+                // captured speech, complete with a timestamp and the in-progress caret.
                 rawSessionHistoryRef.current += (rawSessionHistoryRef.current ? ' ' : '') + query
-                setPendingTranscript(rawSessionHistoryRef.current)
-                setCurrentQA({ question: query, answer, timestamp: new Date() })
+                updatePair(pairId, { answer, streaming: false })
 
                 // Reset continuation state for manual chat query
                 masterQuestionRef.current = ''
                 lastSpeechEndRef.current = null
                 continuationCountRef.current = 0
             }
+            settleOpenPair()
             isGeneratingRef.current = false
             setIsGenerating(false)
             setIsThinking(false)
             setStatusText(autoAnswer ? 'Ready (Auto)' : 'Manual Mode')
         } catch (err: any) {
             setErrorMsg(err.message || 'Failed to generate answer')
+            settleOpenPair()
             isGeneratingRef.current = false
             setIsGenerating(false)
             setIsThinking(false)
             setStatusText(autoAnswer ? 'Ready (Auto)' : 'Manual Mode')
         }
     }
+
+    // ---- Derived view state -------------------------------------------------
+    // data-state on the root drives the dock aura, the status colour and the orb,
+    // so this is the single place the overlay's visual state is decided.
+    const isTranscribing =
+        statusText.toLowerCase().includes('transcrib') ||
+        statusText.toLowerCase().includes('processing manual')
+
+    const visualState: OverlayVisualState = errorMsg
+        ? 'error'
+        : isTranscribing
+          ? 'transcribing'
+          : isThinking || isGenerating
+            ? 'thinking'
+            : isManualListening || isAudioSpeaking
+              ? 'listening'
+              : 'idle'
+
+    const timeBand: TimeBand = sessionClock.band
+    const timeProgress = sessionClock.progress
+    const transcriptLive = isAudioSpeaking || isManualListening
+    const modelName = getCurrentModelName()
+
+    // One banner per threshold crossing, auto-dismissed after six seconds. The ref
+    // is what stops a re-render inside the same band from re-firing it.
+    const lastTimeBandRef = useRef<TimeBand>('ok')
+    useEffect(() => {
+        // Nothing to warn about until the real balance is in. Without this the banner
+        // fired on the loading render, off a trial clock the user was not even on.
+        if (!balanceKnown) return undefined
+        if (timeBand === lastTimeBandRef.current) return undefined
+        lastTimeBandRef.current = timeBand
+        if (timeBand === 'ok') return undefined
+        setWarnMsg(
+            timeBand === 'crit'
+                ? 'Under 5 minutes left — wrap up soon'
+                : 'Under 15 minutes left in this session'
+        )
+        const timer = setTimeout(() => setWarnMsg(''), 6000)
+        return () => clearTimeout(timer)
+    }, [timeBand, balanceKnown])
+
+    // In manual mode capture is off until Listen is pressed, so park the meter at
+    // zero instead of leaving it frozen on the last frame it saw.
+    useEffect(() => {
+        if (!autoAnswer && !isManualListening) setAudioLevel(0)
+    }, [autoAnswer, isManualListening])
+
+    // Global Left / Right (and numpad 4 / 6) page through answered questions.
+    useEffect(() => {
+        if (!window.api.onHistoryNav) return undefined
+        return window.api.onHistoryNav((direction) => navigateHistory(direction))
+    }, [navigateHistory])
+
+    // The dock's Auto/Manual control is positional, not a toggle: clicking the side
+    // that is already selected has to be a no-op.
+    const handleModeChange = useCallback(
+        (auto: boolean): void => {
+            if (auto === autoAnswer) return
+            handleToggleAutoRef.current?.()
+        },
+        [autoAnswer]
+    )
+
+    // Stable identities so the memoised dock and feed are not invalidated by a new
+    // arrow function on every render -- which the ~10x/second audio level guarantees.
+    const handleToggleMinimize = useCallback((): void => {
+        setMinimized((prev) => !prev)
+    }, [])
+
+    const handleHistoryPrev = useCallback((): void => navigateHistory('prev'), [navigateHistory])
+    const handleHistoryNext = useCallback((): void => navigateHistory('next'), [navigateHistory])
+    const handleDismissWarn = useCallback((): void => setWarnMsg(''), [])
+    const handleDismissError = useCallback((): void => setErrorMsg(''), [])
+
+    const handleToggleStealth = useCallback((): void => {
+        const next = !screenProtection
+        setScreenProtection(next)
+        window.api.toggleScreenProtection(next)
+    }, [screenProtection])
 
     if (!session)
         return (
@@ -1910,364 +2538,145 @@ export default function OverlayPage(): React.ReactElement {
 
     return (
         <div
-            className={`overlay-root ${minimized ? 'is-minimized' : ''}`}
-            style={{ '--overlay-opacity': overlayOpacity } as React.CSSProperties}
+            className="zv-overlay"
+            data-state={visualState}
+            data-mode={autoAnswer ? 'auto' : 'manual'}
+            data-min={minimized ? 'true' : 'false'}
+            data-stealth={screenProtection ? 'true' : 'false'}
+            data-time={timeBand}
+            data-click-through={clickThrough ? 'true' : 'false'}
+            style={
+                {
+                    '--overlay-opacity': 0.5 + overlayOpacity * 0.5
+                } as React.CSSProperties
+            }
         >
-
-            {/* Header / Grabbable bar */}
-            <div className="overlay-header-static">
-                {/* Top Resize Handles - Nested to punch holes in drag region */}
-                <TopResizeHandles />
-                {/* Floating Top-Right Trial Timer (Above Header Overlay) */}
-                {!isPremium && !minimized && (
-                    <div
-                        className={`overlay-floating-trial-badge no-drag ${
-                            trialSecondsRemaining < 60
-                                ? 'danger'
-                                : trialSecondsRemaining < 180
-                                ? 'warning'
-                                : 'normal'
-                        }`}
-                    >
-                        <span className="trial-dot"></span>
-                        <span className="trial-text">Trial {trialLabel}</span>
-                    </div>
-                )}
-
-                <div className="header-row-top">
-                    <div className="overlay-drag-handle">
-                        <div className="header-left-group">
-                            <div className={`status-chip ${
-                                statusText.includes('Auto') ? 'chip-auto' :
-                                statusText.includes('Manual') ? 'chip-manual' :
-                                statusText.includes('Listen') ? 'chip-listening' :
-                                statusText.includes('Thinking') || statusText.includes('Generating') || statusText.includes('Transcrib') || statusText.includes('Analyzing') || statusText.includes('Processing') ? 'chip-active' :
-                                statusText.includes('Error') || statusText.includes('Failed') ? 'chip-error' :
-                                'chip-idle'
-                            }`}>
-                                <span className="status-chip-inner">
-                                    <span className="status-chip-glow"></span>
-                                    <span className="chip-dot"></span>
-                                    <span className="chip-label">{statusText}</span>
-                                </span>
-                            </div>
-                            <div className="header-main-actions no-drag">
-                                <button
-                                    className={`header-pill-btn btn-listen no-drag ${isManualListening ? 'listening pulse-red-ring' : ''}`}
-                                    onClick={handleToggleManual}
-                                    disabled={autoAnswer || isGenerating}
-                                >
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                                        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
-                                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                                        <line x1="12" x2="12" y1="19" y2="22" />
-                                    </svg>
-                                    <span className="btn-label">{isManualListening ? 'Stop' : 'Listen'}</span>
-                                    <span className="btn-shortcut-badge">Ctrl Space</span>
-                                </button>
-
-                                <button
-                                    className="header-pill-btn btn-screenshot no-drag"
-                                    onClick={handleAnalyzeScreen}
-                                    disabled={isGenerating}
-                                >
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-                                        <circle cx="12" cy="13" r="4" />
-                                    </svg>
-                                    <span className="btn-label">Screenshot</span>
-                                    <span className="btn-shortcut-badge">Ctrl S</span>
-                                </button>
-
-                                <button
-                                    className={`header-pill-btn btn-auto-mode no-drag ${autoAnswer ? 'auto-on' : 'auto-off'}`}
-                                    onClick={toggleAuto}
-                                >
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                                        <path d="M12 2v4" />
-                                        <path d="m4.93 10.93 2.83 2.83" />
-                                        <path d="M2 18h4" />
-                                        <path d="M20 18h2" />
-                                        <path d="m19.07 10.93-2.83 2.83" />
-                                        <path d="M22 22H2" />
-                                        <path d="m16 6-4 4-4-4" />
-                                    </svg>
-                                    <span className="btn-label">Auto</span>
-                                    <span className="btn-shortcut-badge">Ctrl A</span>
-                                </button>
-
-                                <button
-                                    className={`header-pill-btn btn-stealth-mode no-drag ${screenProtection ? 'stealth-on' : 'stealth-off'}`}
-                                    onClick={() => {
-                                        const nextState = !screenProtection
-                                        setScreenProtection(nextState)
-                                        window.api.toggleScreenProtection(nextState)
-                                    }}
-                                >
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                                        {screenProtection ? (
-                                            <>
-                                                <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
-                                                <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
-                                                <path d="M6.61 6.61A13.52 13.52 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
-                                                <line x1="2" x2="22" y1="2" y2="22" />
-                                            </>
-                                        ) : (
-                                            <>
-                                                <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
-                                                <circle cx="12" cy="12" r="3" />
-                                            </>
-                                        )}
-                                    </svg>
-                                    <span className="btn-label">Stealth</span>
-                                    <span className="btn-shortcut-badge">Ctrl B</span>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="overlay-actions no-drag">
-                        <button
-                            className={`ov-action-btn minimize no-drag ${minimized ? 'active' : ''}`}
-                            onClick={() => setMinimized(!minimized)}
-                        >
-                            {minimized ? (
-                                /* Minimized state: 4 Outward Arrows (Expand) */
-                                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
-                                    <path d="M9 9L4 4m0 5V4h5" />
-                                    <path d="M15 9l5-5m-5 0h5v5" />
-                                    <path d="M9 15l-5 5m0-5v5h5" />
-                                    <path d="M15 15l5 5m-5 0h5v-5" />
-                                </svg>
-                            ) : (
-                                /* Normal / Expanded state: 4 Inward Arrows (Contract / Minimize) */
-                                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
-                                    <path d="M4 4l6 6m-5 0h5V5" />
-                                    <path d="M20 4l-6 6m5 0h-5V5" />
-                                    <path d="M4 20l6-6m-5 0h5v5" />
-                                    <path d="M20 20l-6-6m5 0h-5v5" />
-                                </svg>
-                            )}
-                        </button>
-                        <button
-                            className="header-end-btn no-drag"
-                            onClick={handleEndInterview}
-                        >
-                            <span>End</span>
-                        </button>
-                    </div>
-                </div>
-
-                <div className="header-row-bottom">
-                    {/* Separate Square Audio Visualizer Box */}
-                    <div className={`transcript-audio-square-box ${autoAnswer ? (isAudioSpeaking ? 'is-active' : '') : (isManualListening ? 'is-active' : '')}`}>
-                        <span className="audio-bar bar-1"></span>
-                        <span className="audio-bar bar-2"></span>
-                        <span className="audio-bar bar-3"></span>
-                    </div>
-
-                    {/* Live Speech Packet Capsule Bar */}
-                    <div className="transcript-capsule-bar">
-                        <div className="header-transcript-area" ref={transcriptContainerRef}>
-                            {displayedPackets.length > 0 && (
-                                <AnimatePresence mode="popLayout">
-                                    {displayedPackets.map((packet) => (
-                                        <motion.span
-                                            layout
-                                            key={packet.id}
-                                            initial={{ opacity: 0, scale: 0.95, x: 10 }}
-                                            animate={{ opacity: 1, scale: 1, x: 0 }}
-                                            exit={{ opacity: 0, scale: 0.9, x: -10 }}
-                                            transition={{ duration: 0.05, ease: 'easeOut' }}
-                                            className="transcript-packet-pill"
-                                        >
-                                            {packet.text}
-                                        </motion.span>
-                                    ))}
-                                </AnimatePresence>
-                            )}
-                        </div>
-                    </div>
-
-                    {/* Vertical Divider & Clear Button on Right */}
-                    <div className="transcript-divider"></div>
-                    <button
-                        className="transcript-clear-btn no-drag"
-                        onClick={handleClearTranscript}
-                    >
-                        <span className="clear-label">Clear</span>
-                        <span className="clear-shortcut">Ctrl ⌫</span>
-                    </button>
-                </div>
-            </div>
-
-            {/* Main Content Area — always mounted so AnimatedAnswer state is preserved.
-                Hidden via display:none when minimized to prevent animation restart. */}
-            <div
-                className="overlay-content"
-                ref={contentRef}
-                style={minimized ? { display: 'none' } : undefined}
-            >
-                        {errorMsg && <div className="error-banner">⚠️ {errorMsg}</div>}
-
-                        <div className="qa-list flex-1 flex flex-col gap-4">
-                            <AnimatePresence mode="wait">
-                                {(isThinking || currentQA) ? (
-                                    <motion.div
-                                        className="qa-card"
-                                        key="current"
-                                        initial={{ opacity: 0, y: 15, scale: 0.98 }}
-                                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                                        exit={{ opacity: 0, scale: 0.95 }}
-                                        transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-                                    >
-                                        <div className="qa-question">
-                                            <span className="qa-section-label">Question</span>
-                                            <p className="qa-question-text">
-                                                {toDisplayTranscript(currentQA?.question || '') || (isThinking ? "Capturing question..." : "No question detected")}
-                                            </p>
-                                        </div>
-
-                                        <div className="qa-answer-container mt-2">
-                                            <div className="qa-answer-header">
-                                                <span className="qa-section-label">Answer</span>
-                                                {!isThinking && currentQA?.answer && (
-                                                    <button
-                                                        type="button"
-                                                        className={`qa-copy-btn no-drag ${answerCopied ? 'copied' : ''}`}
-                                                        onClick={handleCopyAnswer}
-                                                        title={answerCopied ? 'Copied' : 'Copy answer'}
-                                                        aria-label={answerCopied ? 'Answer copied' : 'Copy answer'}
-                                                    >
-                                                        {answerCopied ? (
-                                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                                                                <polyline points="20 6 9 17 4 12" />
-                                                            </svg>
-                                                        ) : (
-                                                            <svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor">
-                                                                <path d="M216,40H88A16,16,0,0,0,72,56V72H56A16,16,0,0,0,40,88V216a16,16,0,0,0,16,16H184a16,16,0,0,0,16-16V200h16a16,16,0,0,0,16-16V56A16,16,0,0,0,216,40ZM184,216H56V88H184V216Zm32-32H200V88a16,16,0,0,0-16-16H88V56H216V184Z" />
-                                                            </svg>
-                                                        )}
-                                                        <span>{answerCopied ? 'Copied' : 'Copy'}</span>
-                                                    </button>
-                                                )}
-                                            </div>
-                                            <div className="qa-answer-wrapper">
-                                                <div className="qa-answer markdown-content">
-                                                    <AnimatedAnswer
-                                                        answer={currentQA?.answer || ''}
-                                                        isThinking={isThinking}
-                                                    />
-                                                </div>
-
-                                                {!isThinking && currentQA && (
-                                                    <div className="qa-footer">
-                                                        <span className="qa-time">
-                                                            {currentQA.timestamp.toLocaleTimeString([], {
-                                                                hour: '2-digit',
-                                                                minute: '2-digit'
-                                                            })}
-                                                        </span>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        </div>
-                                    </motion.div>
-                                ) : (
-                                    <motion.div 
-                                        className="empty-state"
-                                        key="empty"
-                                        initial={{ opacity: 0 }}
-                                        animate={{ opacity: 1 }}
-                                        exit={{ opacity: 0 }}
-                                    >
-                                        <div className="search-loader-wrapper">
-                                            <div className="search-loader">
-                                                <div className="search-loader-mini-container">
-                                                    <div className="search-bar-container">
-                                                        <span className="search-bar"></span>
-                                                        <span className="search-bar search-bar-2"></span>
-                                                    </div>
-                                                    <svg
-                                                        xmlns="http://www.w3.org/2000/svg"
-                                                        fill="none"
-                                                        viewBox="0 0 101 114"
-                                                        className="search-svg-icon"
-                                                    >
-                                                        <circle
-                                                            strokeWidth="7"
-                                                            transform="rotate(36.0692 46.1726 46.1727)"
-                                                            r="29.5497"
-                                                            cy="46.1727"
-                                                            cx="46.1726"
-                                                        ></circle>
-                                                        <line
-                                                            strokeWidth="7"
-                                                            y2="111.784"
-                                                            x2="97.7088"
-                                                            y1="67.7837"
-                                                            x1="61.7089"
-                                                        ></line>
-                                                    </svg>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </motion.div>
-                                )}
-                            </AnimatePresence>
-                        </div>
-
-                        {/* Floating Chat Input Box over Answer Panel at the Bottom */}
-                        <AnimatePresence>
-                            {!minimized && !autoAnswer && (
-                                <motion.div
-                                    className="overlay-chat-footer no-drag"
-                                    initial={{ opacity: 0, y: 15, scale: 0.96 }}
-                                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                                    exit={{ opacity: 0, y: 15, scale: 0.96 }}
-                                    transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-                                >
-                                    <div className="chat-input-wrapper">
-                                        <div className="chat-input-prefix">
-                                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>
-                                            </svg>
-                                        </div>
-                                        <input
-                                            ref={bottomChatInputRef}
-                                            type="text"
-                                            className="chat-input-field"
-                                            placeholder="Ask custom question or type..."
-                                            value={chatInput}
-                                            onChange={(e) => setChatInput(e.target.value)}
-                                            onKeyDown={(e) => {
-                                                if (e.key === 'Enter' && !e.shiftKey) {
-                                                    e.preventDefault()
-                                                    handleChatSubmit()
-                                                }
-                                            }}
-                                            disabled={isGenerating}
-                                        />
-                                        <div className="chat-input-suffix">
-                                            <button
-                                                className="chat-send-btn"
-                                                onClick={handleChatSubmit}
-                                                disabled={!chatInput.trim() || isGenerating}
-                                            >
-                                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                                    <line x1="22" y1="2" x2="11" y2="13" />
-                                                    <polygon points="22 2 15 22 11 13 2 9 22 2" />
-                                                </svg>
-                                            </button>
-                                        </div>
-                                    </div>
-                                </motion.div>
-                            )}
-                        </AnimatePresence>
-            </div>
-
-            {/* Bottom Resize Handles */}
+            {/* Corner resize grips. They anchor to .zv-overlay, which spans the whole
+                window, so each one sits on the window edge it resizes. */}
+            <TopResizeHandles />
             {!minimized && <BottomResizeHandles />}
+
+            {showScheduledSuccess && (
+                <div className="zv-scheduled-toast">
+                    <svg
+                        className="i"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="3"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden
+                    >
+                        <path d="M20 6L9 17l-5-5" />
+                    </svg>
+                    Session successfully started!
+                </div>
+            )}
+
+            {/* Stays put while minimized -- collapsing the deck should not cost you
+                sight of the session clock. Dock and timer tab are bound together. */}
+            <div className="dock-wrap">
+                <TimerTab label={timerLabel} band={timeBand} progress={timeProgress} />
+                <OverlayDock
+                    statusText={statusText}
+                    speaking={autoAnswer ? isAudioSpeaking : isManualListening}
+                    autoMode={autoAnswer}
+                    listening={isManualListening}
+                    listenDisabled={autoAnswer || isGenerating}
+                    captureDisabled={isGenerating && !isScreenCapturing}
+                    capturing={isScreenCapturing}
+                    stealthOn={screenProtection}
+                    minimized={minimized}
+                    onModeChange={handleModeChange}
+                    onToggleListen={handleToggleManual}
+                    onCapture={handleAnalyzeScreen}
+                    onToggleStealth={handleToggleStealth}
+                    onToggleMinimize={handleToggleMinimize}
+                    onEnd={handleEndInterview}
+                    onPointerDown={dockDrag.onPointerDown}
+                />
+            </div>
+
+            {!minimized && (
+                <div
+                    className="dock-drag-bar"
+                    title="Drag to move overlay"
+                >
+                    <div
+                        className="dock-drag-bar__pill"
+                        onPointerDown={dockDrag.onPointerDown}
+                    >
+                        <span className="dock-drag-bar__grip" />
+                    </div>
+                </div>
+            )}
+
+            <section className="deck glass">
+                <TranscriptRail
+                    words={railWords}
+                    wordCount={displayedWords.length}
+                    live={transcriptLive}
+                    level={audioLevel}
+                    onClear={handleClearTranscript}
+                    bodyRef={transcriptContainerRef}
+                />
+
+                <ConversationFeed
+                    total={pairs.length}
+                    position={activeIndex + 1}
+                    canPrev={activeIndex > 0}
+                    canNext={activeIndex >= 0 && activeIndex < pairs.length - 1}
+                    onPrev={handleHistoryPrev}
+                    onNext={handleHistoryNext}
+                    showNewPill={hasNewerAnswer}
+                    onJumpNewest={jumpToNewest}
+                    warnMsg={warnMsg}
+                    onDismissWarn={handleDismissWarn}
+                    errorMsg={errorMsg}
+                    onDismissError={handleDismissError}
+                    scrollRef={contentRef}
+                    opacity={overlayOpacity}
+                    onOpacityChange={handleOpacityChange}
+                    clickThrough={clickThrough}
+                    onToggleClickThrough={handleToggleClickThrough}
+                    composer={
+                        <Composer
+                            value={chatInput}
+                            disabled={isGenerating || autoAnswer}
+                            onChange={setChatInput}
+                            onSubmit={handleChatSubmit}
+                            inputRef={bottomChatInputRef}
+                        />
+                    }
+                >
+                    {activePair ? (
+                        <React.Fragment key={activePair.id}>
+                            <QuestionCard
+                                question={
+                                    toDisplayTranscript(activePair.question) || 'Capturing question…'
+                                }
+                                time={formatClock(activePair.timestamp)}
+                                capturing={activePair.streaming && !activePair.answer}
+                            />
+                            {activePair.streaming && !activePair.answer ? (
+                                <ThinkingCard step={statusText} />
+                            ) : (
+                                <AnswerCard
+                                    answer={activePair.answer}
+                                    time={formatClockShort(activePair.timestamp)}
+                                    streaming={activePair.streaming}
+                                    model={modelName}
+                                    copied={answerCopied}
+                                    onCopy={handleCopyAnswer}
+                                />
+                            )}
+                        </React.Fragment>
+                    ) : (
+                        <FeedEmptyState autoMode={autoAnswer} />
+                    )}
+                </ConversationFeed>
+            </section>
         </div>
     )
 }

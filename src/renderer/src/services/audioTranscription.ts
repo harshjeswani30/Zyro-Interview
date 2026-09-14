@@ -143,11 +143,12 @@ export class AudioTranscriptionService {
 
     try {
       this.onTranscript('…', false)
-      const text: string = await (window as any).api.transcribeOnly({
+      const result = await (window as any).api.transcribeOnly({
         base64Audio: base64,
         mimeType: blob.type || 'audio/webm',
         language: this.language
       })
+      const text: string = result?.text ?? ''
       if (text && text.trim().length > 2 && text.trim() !== '…') {
         this.onTranscript(text.trim(), true)
       }

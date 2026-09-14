@@ -1,6 +1,11 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { motion, AnimatePresence, MotionConfig } from 'framer-motion'
 import { parseResumePDF, refineResumeWithAI, initAI, SessionData } from '../services/aiService'
+import {
+  coerceResponseLanguages,
+  languageLabel,
+  type LanguageCode
+} from '../services/pipeline/languagePolicy'
 import ZyroMascot from './ZyroMascot'
 import Tooltip from './Tooltip'
 import CloudSyncButton from './CloudSyncButton'
@@ -130,8 +135,7 @@ function AnimatedHamburgerButton({
     </MotionConfig>
   )
 }
-// supabase.ts still used by ragService, not needed directly here
-// ragService functions (chunkText, EmbeddingProvider) now run in main process — no renderer import needed
+// Knowledge-base indexing and retrieval live in the main process (src/main/localVectorDb.ts)
 // Lucide imports removed as we use raw SVGs for exact reference matching
 
 const STORAGE_KEY = 'interview_assistant_session'
@@ -147,10 +151,39 @@ const LANGUAGES = [
   { code: 'es-ES', label: '🇪🇸 Spanish' },
   { code: 'fr-FR', label: '🇫🇷 French' },
   { code: 'de-DE', label: '🇩🇪 German' },
+  { code: 'it-IT', label: '🇮🇹 Italian' },
   { code: 'ja-JP', label: '🇯🇵 Japanese' },
-  { code: 'zh-CN', label: '🇨🇳 Chinese' },
-  { code: 'ar-SA', label: '🇸🇦 Arabic' },
-  { code: 'pt-BR', label: '🇧🇷 Portuguese' }
+  { code: 'nl-NL', label: '🇳🇱 Dutch' },
+  { code: 'pt-BR', label: '🇧🇷 Portuguese' },
+  { code: 'ru-RU', label: '🇷🇺 Russian' }
+]
+
+// Answer languages the copilot can be configured to REPLY in. This is separate from
+// the STT `LANGUAGES` above (which only picks the transcription language). The user
+// selects 1 or 2 of these; the interviewer speaking any other language falls back to
+// English. Codes are LanguageCode values (see languagePolicy).
+interface ResponseLanguageOption {
+  id: LanguageCode
+  name: string
+  icon: string
+  tag: string
+}
+
+// Exactly the ten languages Deepgram Nova-3 multilingual can hear on one streaming
+// connection. Anything outside this set cannot be transcribed live at all -- the
+// recogniser would return confident text in the nearest language it does know -- so
+// offering it would be worse than leaving it out. See LanguageCode in languagePolicy.
+const RESPONSE_LANGUAGES: ResponseLanguageOption[] = [
+  { id: 'en', name: 'English', icon: '🇺🇸', tag: 'Default · Universal fallback' },
+  { id: 'hi', name: 'Hindi', icon: '🇮🇳', tag: 'Hinglish (Roman script)' },
+  { id: 'es', name: 'Spanish', icon: '🇪🇸', tag: 'Español' },
+  { id: 'fr', name: 'French', icon: '🇫🇷', tag: 'Français' },
+  { id: 'de', name: 'German', icon: '🇩🇪', tag: 'Deutsch' },
+  { id: 'it', name: 'Italian', icon: '🇮🇹', tag: 'Italiano' },
+  { id: 'ja', name: 'Japanese', icon: '🇯🇵', tag: 'Romanized' },
+  { id: 'nl', name: 'Dutch', icon: '🇳🇱', tag: 'Nederlands' },
+  { id: 'pt', name: 'Portuguese', icon: '🇧🇷', tag: 'Português' },
+  { id: 'ru', name: 'Russian', icon: '🇷🇺', tag: 'Romanized' }
 ]
 
 interface CodingLanguageOption {
@@ -196,6 +229,8 @@ interface SavedData {
   codingLanguage?: string
   interviewContent?: string
   activeKbId?: string
+  /** 1–2 answer languages the copilot replies in (English fallback otherwise). */
+  responseLanguages?: string[]
 }
 
 interface UserProfile {
@@ -300,10 +335,13 @@ function ShortcutTeleprompterCard({
 
 export default function SetupPage({
   userProfile,
-  onLogout
+  onLogout,
+  onGoToMicTest
 }: {
   userProfile?: UserProfile | null
   onLogout?: () => void
+  /** Called instead of directly launching the overlay, so App can show the mic/speaker test screen */
+  onGoToMicTest?: (sessionData: unknown) => void
 }): React.ReactElement {
   const [name, setName] = useState('')
   const [role, setRole] = useState('')
@@ -313,7 +351,7 @@ export default function SetupPage({
   const [resumes, setResumes] = useState<Resume[]>([])
   const [selectedResumeId, setSelectedResumeId] = useState('')
   const [isParsing, setIsParsing] = useState(false)
-  const [step, setStep] = useState<1 | 2 | 3 | 'knowledge_base'>(1)
+  const [step, setStep] = useState<1 | 2 | 3 | 'knowledge_base' | 'scheduled'>(1)
   const [activeKbId, setActiveKbId] = useState('')
   const [kbs, setKbs] = useState<{ id: string; title: string; created_at: string }[]>([])
   const [newKbTitle, setNewKbTitle] = useState('')
@@ -325,6 +363,11 @@ export default function SetupPage({
   const [experienceDuration, setExperienceDuration] = useState('')
   const [workHistory, setWorkHistory] = useState('')
   const [codingLanguage, setCodingLanguage] = useState('Python')
+  // Answer language selection (1–2 entries; defaults to Hindi single-mode so existing
+  // behavior is preserved). Mode (single vs dual) is DERIVED from the length.
+  const [responseLanguages, setResponseLanguages] = useState<LanguageCode[]>(['en'])
+  const [isResponseLangOpen, setIsResponseLangOpen] = useState(false)
+  const responseLangDropdownRef = React.useRef<HTMLDivElement>(null)
   const [isLangDropdownOpen, setIsLangDropdownOpen] = useState(false)
   const langDropdownRef = React.useRef<HTMLDivElement>(null)
   const [isSidebarMenuOpen, setIsSidebarMenuOpen] = useState(false)
@@ -335,6 +378,60 @@ export default function SetupPage({
   const [manualResumeText, setManualResumeText] = useState('')
   const [showPaywall, setShowPaywall] = useState(false)
   const [showEmail, setShowEmail] = useState(false)
+
+  // ── Scheduled Sessions State ────────────────────────────────────
+  interface ScheduledSession {
+    id: string
+    label: string
+    role: string
+    company: string
+    resumeId: string
+    scheduledAt: number // Unix ms
+    hasHold: boolean   // true = credit was pre-held
+    triggered: boolean
+  }
+  const SCHEDULED_SESSIONS_KEY = 'zyro_scheduled_sessions'
+  const [scheduledSessions, setScheduledSessions] = useState<ScheduledSession[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(SCHEDULED_SESSIONS_KEY) || '[]')
+    } catch { return [] }
+  })
+  const [schedLabel, setSchedLabel] = useState('')
+  const [schedRole, setSchedRole] = useState('')
+  const [schedCompany, setSchedCompany] = useState('')
+  const [schedResumeId, setSchedResumeId] = useState('')
+  const [isSchedResumeDropdownOpen, setIsSchedResumeDropdownOpen] = useState(false)
+  const schedResumeDropdownRef = React.useRef<HTMLDivElement>(null)
+  
+  const [isSchedDateDropdownOpen, setIsSchedDateDropdownOpen] = useState(false)
+  const schedDateDropdownRef = React.useRef<HTMLDivElement>(null)
+  const [calendarViewDate, setCalendarViewDate] = useState(() => new Date())
+
+  const [isSchedTimeDropdownOpen, setIsSchedTimeDropdownOpen] = useState(false)
+  const schedTimeDropdownRef = React.useRef<HTMLDivElement>(null)
+
+  const getLocalDateString = (offsetDays = 0) => {
+    const d = new Date()
+    d.setDate(d.getDate() + offsetDays)
+    const year = d.getFullYear()
+    const month = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
+  }
+
+  const getLocalTimeString = (offsetMinutes = 30) => {
+    const d = new Date(Date.now() + offsetMinutes * 60 * 1000)
+    const hours = String(d.getHours()).padStart(2, '0')
+    const minutes = String(d.getMinutes()).padStart(2, '0')
+    return `${hours}:${minutes}`
+  }
+
+  const [schedDate, setSchedDate] = useState(() => getLocalDateString(0))
+  const [schedTime, setSchedTime] = useState(() => getLocalTimeString(30))
+  const [schedError, setSchedError] = useState('')
+  const [schedSuccess, setSchedSuccess] = useState('')
+  const [schedCreating, setSchedCreating] = useState(false)
+  const [, setSchedTick] = useState(0) // Force re-render for countdown
 
   // ── Auto-Update state ───────────────────────────────────────
   const [updateInfo, setUpdateInfo] = useState<{ version: string } | null>(null)
@@ -382,17 +479,29 @@ export default function SetupPage({
       if (langDropdownRef.current && !langDropdownRef.current.contains(event.target as Node)) {
         setIsLangDropdownOpen(false)
       }
+      if (responseLangDropdownRef.current && !responseLangDropdownRef.current.contains(event.target as Node)) {
+        setIsResponseLangOpen(false)
+      }
+      if (schedResumeDropdownRef.current && !schedResumeDropdownRef.current.contains(event.target as Node)) {
+        setIsSchedResumeDropdownOpen(false)
+      }
+      if (schedDateDropdownRef.current && !schedDateDropdownRef.current.contains(event.target as Node)) {
+        setIsSchedDateDropdownOpen(false)
+      }
+      if (schedTimeDropdownRef.current && !schedTimeDropdownRef.current.contains(event.target as Node)) {
+        setIsSchedTimeDropdownOpen(false)
+      }
       if (menuContainerRef.current && !menuContainerRef.current.contains(event.target as Node)) {
         setIsSidebarMenuOpen(false)
       }
     }
-    if (isLangDropdownOpen || isSidebarMenuOpen) {
+    if (isLangDropdownOpen || isResponseLangOpen || isSchedResumeDropdownOpen || isSchedDateDropdownOpen || isSchedTimeDropdownOpen || isSidebarMenuOpen) {
       document.addEventListener('mousedown', handleClickOutside)
     }
     return () => {
       document.removeEventListener('mousedown', handleClickOutside)
     }
-  }, [isLangDropdownOpen, isSidebarMenuOpen])
+  }, [isLangDropdownOpen, isResponseLangOpen, isSchedResumeDropdownOpen, isSchedDateDropdownOpen, isSchedTimeDropdownOpen, isSidebarMenuOpen])
 
   // ── Wire up auto-update events ──────────────────────────────
   useEffect(() => {
@@ -442,6 +551,7 @@ export default function SetupPage({
         setExperienceDuration(saved.experienceDuration || '')
         setWorkHistory(saved.workHistory || '')
         setCodingLanguage(saved.codingLanguage || 'Python')
+        setResponseLanguages(coerceResponseLanguages(saved.responseLanguages, saved.language))
         setInterviewContent(saved.interviewContent || '')
         setActiveKbId(saved.activeKbId || '')
         setResumes(saved.resumes || [])
@@ -471,13 +581,14 @@ export default function SetupPage({
         experienceDuration,
         workHistory,
         codingLanguage,
+        responseLanguages,
         interviewContent,
         activeKbId,
         ...overrides
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
     },
-    [name, role, company, language, resumes, selectedResumeId, autoAnswer, experienceLevel, experienceDuration, workHistory, codingLanguage, interviewContent, activeKbId]
+    [name, role, company, language, resumes, selectedResumeId, autoAnswer, experienceLevel, experienceDuration, workHistory, codingLanguage, responseLanguages, interviewContent, activeKbId]
   )
 
   const handlePickResume = useCallback(async () => {
@@ -506,6 +617,7 @@ export default function SetupPage({
         experienceDuration: experienceLevel === 'experienced' ? experienceDuration : undefined,
         workHistory: experienceLevel === 'experienced' ? workHistory : undefined,
         codingLanguage,
+        responseLanguages,
         interviewContent: interviewContent.trim() ? interviewContent.trim() : undefined,
         activeKbId: activeKbId || undefined
       })
@@ -528,7 +640,7 @@ export default function SetupPage({
     } finally {
       setIsParsing(false)
     }
-  }, [resumeFile, name, role, company, language, autoAnswer, resumes, saveData, experienceLevel, experienceDuration, workHistory, codingLanguage, interviewContent, activeKbId])
+  }, [resumeFile, name, role, company, language, autoAnswer, resumes, saveData, experienceLevel, experienceDuration, workHistory, codingLanguage, responseLanguages, interviewContent, activeKbId])
 
   const handleSaveManualResume = useCallback(async () => {
     if (!manualResumeText.trim()) {
@@ -550,6 +662,7 @@ export default function SetupPage({
         experienceDuration: experienceLevel === 'experienced' ? experienceDuration : undefined,
         workHistory: experienceLevel === 'experienced' ? workHistory : undefined,
         codingLanguage,
+        responseLanguages,
         interviewContent: interviewContent.trim() ? interviewContent.trim() : undefined,
         activeKbId: activeKbId || undefined
       })
@@ -577,7 +690,7 @@ export default function SetupPage({
     } finally {
       setIsParsing(false)
     }
-  }, [manualResumeTitle, manualResumeText, name, role, company, language, autoAnswer, resumes, saveData, experienceLevel, experienceDuration, workHistory, codingLanguage, interviewContent, activeKbId])
+  }, [manualResumeTitle, manualResumeText, name, role, company, language, autoAnswer, resumes, saveData, experienceLevel, experienceDuration, workHistory, codingLanguage, responseLanguages, interviewContent, activeKbId])
 
   const handleStartInterview = useCallback(() => {
     if (!name || !role) {
@@ -609,6 +722,7 @@ export default function SetupPage({
       experienceDuration: experienceLevel === 'experienced' ? experienceDuration : undefined,
       workHistory: experienceLevel === 'experienced' && workHistory.trim() ? workHistory.trim() : undefined,
       codingLanguage,
+      responseLanguages,
       interviewContent: interviewContent.trim() ? interviewContent.trim() : undefined,
       activeKbId: activeKbId || undefined
     }
@@ -626,11 +740,22 @@ export default function SetupPage({
     }
 
     saveData(sessionData)
-    window.api.startInterview(sessionData).then((res: { allowed: boolean } | null) => {
-      if (res && !res.allowed) {
-        setShowPaywall(true)
-      }
-    })
+
+    if (onGoToMicTest) {
+      // Mic-test flow: pre-warm the gateway token quietly in the background while
+      // the user is on the mic/speaker test screen. Do NOT call startInterview here
+      // because that would immediately open the overlay window.
+      // startInterview will be called by App.tsx once the user clicks "Proceed".
+      window.api.prewarmGatewayToken?.().catch(() => {/* silent */})
+      onGoToMicTest(sessionData)
+    } else {
+      // Original flow (scheduled sessions, etc.): call startInterview directly.
+      window.api.startInterview(sessionData).then((res: { allowed: boolean } | null) => {
+        if (res && !res.allowed) {
+          setShowPaywall(true)
+        }
+      })
+    }
   }, [
     name,
     role,
@@ -646,9 +771,181 @@ export default function SetupPage({
     experienceDuration,
     workHistory,
     codingLanguage,
+    responseLanguages,
     interviewContent,
-    activeKbId
+    activeKbId,
+    onGoToMicTest
   ])
+
+  // ── Scheduled Sessions Logic ────────────────────────────────────
+  const handleCreateScheduledSession = async () => {
+    setSchedError('')
+    setSchedSuccess('')
+    if (!schedLabel || !schedRole || !schedDate || !schedTime || !schedResumeId) {
+      setSchedError('Please fill all required fields (Label, Role, Date, Time, Resume).')
+      return
+    }
+
+    const scheduledTime = new Date(`${schedDate}T${schedTime}`).getTime()
+    if (isNaN(scheduledTime) || scheduledTime <= Date.now()) {
+      setSchedError('Scheduled time must be in the future.')
+      return
+    }
+
+    setSchedCreating(true)
+    try {
+      // 1. Try to hold a credit (if not on trial)
+      let hasHold = false
+      if (sessionsBalance >= 1.0) {
+        const holdRes = await window.api.supabaseHoldCredit()
+        if (!holdRes.ok) {
+          setSchedError(`Cannot schedule: ${holdRes.reason === 'insufficient_balance' ? 'Insufficient sessions (need 1.0)' : 'Error reserving session'}`)
+          setSchedCreating(false)
+          return
+        }
+        hasHold = true
+      } else if (trialRemainingSeconds <= 0) {
+        setSchedError('Insufficient sessions and free trial exhausted.')
+        setSchedCreating(false)
+        return
+      }
+
+      // 2. Add to localStorage
+      const newSession: ScheduledSession = {
+        id: Date.now().toString(),
+        label: schedLabel,
+        role: schedRole,
+        company: schedCompany,
+        resumeId: schedResumeId,
+        scheduledAt: scheduledTime,
+        hasHold,
+        triggered: false
+      }
+      
+      const updated = [...scheduledSessions, newSession]
+      setScheduledSessions(updated)
+      localStorage.setItem(SCHEDULED_SESSIONS_KEY, JSON.stringify(updated))
+      
+      // Reset form
+      setSchedLabel('')
+      setSchedCompany('')
+      setSchedDate(getLocalDateString(0))
+      setSchedTime(getLocalTimeString(30))
+      setSchedSuccess('Session scheduled successfully!')
+      setTimeout(() => setSchedSuccess(''), 4000)
+    } catch (e) {
+      setSchedError('Failed to schedule session.')
+    } finally {
+      setSchedCreating(false)
+    }
+  }
+
+  const handleCancelScheduledSession = async (id: string, hasHold: boolean) => {
+    if (hasHold) {
+      await window.api.supabaseReleaseHold().catch(console.error)
+    }
+    const updated = scheduledSessions.filter(s => s.id !== id)
+    setScheduledSessions(updated)
+    localStorage.setItem(SCHEDULED_SESSIONS_KEY, JSON.stringify(updated))
+  }
+
+  const handleLaunchNowScheduledSession = async (session: ScheduledSession) => {
+    const targetResume = resumes.find(r => r.id === session.resumeId) || resumes[0]
+    if (!targetResume || !targetResume.text || targetResume.text.trim().length < 10) {
+      setSchedError('Valid resume not found. Please attach a valid resume.')
+      return
+    }
+
+    const sessionData: SessionData = {
+      name: name || 'Candidate',
+      role: session.role,
+      company: session.company,
+      language: language,
+      resumeText: targetResume.text || '',
+      autoAnswer,
+      experienceLevel,
+      experienceDuration: experienceLevel === 'experienced' ? experienceDuration : undefined,
+      workHistory: experienceLevel === 'experienced' && workHistory.trim() ? workHistory.trim() : undefined,
+      codingLanguage,
+      responseLanguages,
+      interviewContent: interviewContent.trim() ? interviewContent.trim() : undefined,
+      activeKbId: activeKbId || undefined,
+      sessionStartedFromSchedule: true,
+      hasHold: session.hasHold
+    }
+
+    // Remove from scheduled queue
+    const updated = scheduledSessions.filter(s => s.id !== session.id)
+    setScheduledSessions(updated)
+    localStorage.setItem(SCHEDULED_SESSIONS_KEY, JSON.stringify(updated))
+
+    console.log('[Setup] Instant-launching scheduled session:', session.label)
+    saveData(sessionData)
+    window.api.startInterview(sessionData).then((res: { allowed: boolean } | null) => {
+      if (res && !res.allowed) {
+        setShowPaywall(true)
+      }
+    })
+  }
+
+  // Polling loop for scheduled sessions
+  useEffect(() => {
+    const iv = setInterval(() => {
+      setSchedTick(t => t + 1) // For countdown re-renders
+      
+      const now = Date.now()
+      let updated = false
+      const currentList = [...scheduledSessions]
+
+      for (const session of currentList) {
+        if (!session.triggered && session.scheduledAt <= now) {
+          // Trigger time!
+          session.triggered = true
+          updated = true
+          
+          const targetResume = resumes.find(r => r.id === session.resumeId)
+          if (!targetResume) continue
+
+          const sessionData = {
+            name: name || 'Candidate',
+            role: session.role,
+            company: session.company,
+            language: language,
+            resumeText: targetResume.text || '',
+            autoAnswer,
+            experienceLevel,
+            experienceDuration: experienceLevel === 'experienced' ? experienceDuration : undefined,
+            workHistory: experienceLevel === 'experienced' && workHistory.trim() ? workHistory.trim() : undefined,
+            codingLanguage,
+            responseLanguages,
+            interviewContent: interviewContent.trim() ? interviewContent.trim() : undefined,
+            activeKbId: activeKbId || undefined,
+            // Custom flags for Overlay
+            sessionStartedFromSchedule: true,
+            hasHold: session.hasHold
+          }
+
+          console.log('[Setup] Auto-triggering scheduled session:', session.label)
+          window.api.startInterview(sessionData).then((res: { allowed: boolean } | null) => {
+            if (res && !res.allowed) {
+              setShowPaywall(true)
+            }
+          })
+        }
+      }
+
+      if (updated) {
+        setScheduledSessions(currentList)
+        // Clean out old triggered sessions
+        const remaining = currentList.filter(s => !s.triggered)
+        localStorage.setItem(SCHEDULED_SESSIONS_KEY, JSON.stringify(remaining))
+        setScheduledSessions(remaining)
+      }
+    }, 5000) // Poll every 5s
+
+    return () => clearInterval(iv)
+  }, [scheduledSessions, name, language, resumes, autoAnswer, experienceLevel, experienceDuration, workHistory, codingLanguage, responseLanguages, interviewContent, activeKbId])
+
 
   const handleDeleteResume = useCallback(
     (id: string, e: React.MouseEvent) => {
@@ -848,7 +1145,7 @@ export default function SetupPage({
                     className="sqm-item"
                     onClick={() => {
                       setIsSidebarMenuOpen(false)
-                      window.api.openExternal('https://zyro-ai.in/#/terms')
+                      window.api.openExternal('https://www.zyro-ai.in/terms')
                     }}
                   >
                     <svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor">
@@ -863,7 +1160,7 @@ export default function SetupPage({
                     className="sqm-item"
                     onClick={() => {
                       setIsSidebarMenuOpen(false)
-                      window.api.openExternal('https://zyro-ai.in/#/privacy')
+                      window.api.openExternal('https://www.zyro-ai.in/privacy')
                     }}
                   >
                     <svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor">
@@ -878,7 +1175,8 @@ export default function SetupPage({
                     className="sqm-item"
                     onClick={() => {
                       setIsSidebarMenuOpen(false)
-                      window.api.openExternal('https://zyro-ai.in/#/help')
+                      // /help 301s to /contact on the site, so point straight at the target
+                      window.api.openExternal('https://www.zyro-ai.in/contact')
                     }}
                   >
                     <svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor">
@@ -951,6 +1249,45 @@ export default function SetupPage({
                 </button>
               )
             })}
+
+            {/* ── Create Session — always accessible, separate from wizard flow ── */}
+            {(() => {
+              const isSchedCurrent = step === 'scheduled'
+              const pendingCount = scheduledSessions.filter(s => !s.triggered).length
+              return (
+                <button
+                  key="scheduled"
+                  className={`nav-item ${isSchedCurrent ? 'active' : ''}`}
+                  onClick={() => {
+                    setStep('scheduled')
+                    if (!schedRole && role) setSchedRole(role)
+                    if (!schedCompany && company) setSchedCompany(company)
+                    if (!schedResumeId && selectedResumeId) setSchedResumeId(selectedResumeId)
+                  }}
+                  style={{ marginTop: '4px', position: 'relative' }}
+                >
+                  <span className="nav-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256">
+                      <path d="M208,32H184V24a8,8,0,0,0-16,0v8H88V24a8,8,0,0,0-16,0v8H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32Zm0,176H48V48H72v8a8,8,0,0,0,16,0V48h80v8a8,8,0,0,0,16,0V48h24V208ZM136,120a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h32A8,8,0,0,1,136,120Zm48,0a8,8,0,0,1-8,8H160a8,8,0,0,1,0-16h16A8,8,0,0,1,184,120Zm-48,40a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h32A8,8,0,0,1,136,160Zm48,0a8,8,0,0,1-8,8H160a8,8,0,0,1,0-16h16A8,8,0,0,1,184,160Z"/>
+                    </svg>
+                  </span>
+                  <span className="nav-text">Create Session</span>
+                  {pendingCount > 0 && (
+                    <span style={{
+                      position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)',
+                      background: 'rgba(139,92,246,0.9)', color: '#fff', fontSize: '9px',
+                      fontWeight: 800, borderRadius: '6px', padding: '1px 5px', lineHeight: '14px',
+                      minWidth: '14px', textAlign: 'center'
+                    }}>{pendingCount}</span>
+                  )}
+                  {isSchedCurrent && <div className="nav-active-glow" />}
+                </button>
+              )
+            })()
+            }
+            {/* This closing bracket is the end of the Create Session special nav render */}
+            {/* The original nav items map is split above — the extra closing below is removed */}
+            {false && null /* sentinel */}
           </nav>
 
           {/* ── Minimal Uiverse Update Button ── */}
@@ -1029,6 +1366,7 @@ export default function SetupPage({
                 {step === 2 && 'Resume Library'}
                 {step === 'knowledge_base' && 'Interview Content'}
                 {step === 3 && 'Final Check'}
+                {step === 'scheduled' && 'Scheduled Sessions'}
               </h1>
               <TeleprompterText
                 text={
@@ -1038,7 +1376,9 @@ export default function SetupPage({
                       ? 'Upload, manage, and select your target resume for this session.'
                       : step === 'knowledge_base'
                         ? 'Upload company documents, preparation notes, and cheat sheets.'
-                        : 'Verify your interview configuration before launching the assistant.'
+                        : step === 'scheduled'
+                          ? 'Schedule your upcoming interviews. Overlay auto-launches at the set time — credits pre-verified.'
+                          : 'Verify your interview configuration before launching the assistant.'
                 }
               />
             </div>
@@ -1152,6 +1492,98 @@ export default function SetupPage({
                         />
                       </div>
                     </div>
+                  </div>
+
+                  <div className="field-group-modern" ref={responseLangDropdownRef} style={{ position: 'relative' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span>Answer Language(s) *</span>
+                      <span style={{ fontSize: '11px', color: '#a78bfa', fontWeight: 600, background: 'rgba(167,139,250,0.12)', padding: '2px 8px', borderRadius: '6px', border: '1px solid rgba(167,139,250,0.2)' }}>
+                        {responseLanguages.length === 2 ? 'Dual mode' : 'Single mode'}
+                      </span>
+                    </label>
+                    <p style={{ fontSize: '11px', color: '#64748b', margin: '2px 0 6px', lineHeight: 1.4 }}>
+                      Reply in {responseLanguages.map((c) => languageLabel(c)).join(' or ')}. Any other spoken language falls back to English. (Pick up to 2.)
+                    </p>
+
+                    <div
+                      className={`custom-select-trigger ${isResponseLangOpen ? 'active' : ''}`}
+                      onClick={() => setIsResponseLangOpen(!isResponseLangOpen)}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        {responseLanguages.map((code) => {
+                          const opt = RESPONSE_LANGUAGES.find((l) => l.id === code)
+                          return (
+                            <div key={code} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span style={{ fontSize: '15px' }}>{opt?.icon || '🌐'}</span>
+                              <span style={{ color: '#f8fafc', fontWeight: 600, fontSize: '14px', letterSpacing: '0.2px' }}>
+                                {opt?.name || languageLabel(code)}
+                              </span>
+                            </div>
+                          )
+                        })}
+                      </div>
+
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        color: isResponseLangOpen ? '#c4b5fd' : '#64748b',
+                        transform: isResponseLangOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                        transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s ease'
+                      }}>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
+                          <path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80a8,8,0,0,1,11.32-11.32L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z" />
+                        </svg>
+                      </div>
+                    </div>
+                    {isResponseLangOpen && (
+                      <div className="custom-select-menu">
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '6px' }}>
+                          {RESPONSE_LANGUAGES.map((lang) => {
+                            const isSelected = responseLanguages.includes(lang.id)
+                            const atCap = responseLanguages.length >= 2
+                            const isDisabled = !isSelected && atCap
+                            return (
+                              <div
+                                key={lang.id}
+                                className={`custom-select-option ${isSelected ? 'selected' : ''}`}
+                                style={isDisabled ? { opacity: 0.4, cursor: 'not-allowed' } : undefined}
+                                onClick={() => {
+                                  let next: LanguageCode[]
+                                  if (isSelected) {
+                                    next = responseLanguages.filter((c) => c !== lang.id)
+                                    if (next.length === 0) return // keep at least one
+                                  } else {
+                                    if (atCap) return // capped at 2
+                                    next = [...responseLanguages, lang.id]
+                                  }
+                                  setResponseLanguages(next)
+                                  saveData({ responseLanguages: next })
+                                }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <span style={{ fontSize: '15px' }}>{lang.icon}</span>
+                                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                    <span style={{ fontSize: '13px', fontWeight: isSelected ? 700 : 500, color: isSelected ? '#fff' : '#cbd5e1' }}>
+                                      {lang.name}
+                                    </span>
+                                    <span style={{ fontSize: '9.5px', color: isSelected ? '#c4b5fd' : '#64748b' }}>
+                                      {lang.tag}
+                                    </span>
+                                  </div>
+                                </div>
+                                {isSelected && (
+                                  <div style={{ color: '#a78bfa', display: 'flex', alignItems: 'center' }}>
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256">
+                                      <path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z" />
+                                    </svg>
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="field-group-modern" ref={langDropdownRef} style={{ position: 'relative' }}>
@@ -1935,6 +2367,674 @@ export default function SetupPage({
                 {error && <div className="error-modern">{error}</div>}
               </div>
             )}
+            {step === 'scheduled' && (
+              <div className="setup-step fade-in">
+                <div className="sched-page-container">
+                  {/* Schedule Creator Card */}
+                  <div className="sched-creator-card">
+                    <div className="sched-card-header">
+                      <div className="sched-card-title-group">
+                        <div className="sched-card-icon-wrap">
+                          <svg width="18" height="18" fill="currentColor" viewBox="0 0 256 256">
+                            <path d="M208,32H184V24a8,8,0,0,0-16,0v8H88V24a8,8,0,0,0-16,0v8H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32Zm0,176H48V48H72v8a8,8,0,0,0,16,0V48h80v8a8,8,0,0,0,16,0V48h24V208ZM136,120a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h32A8,8,0,0,1,136,120Zm48,0a8,8,0,0,1-8,8H160a8,8,0,0,1,0-16h16A8,8,0,0,1,184,120Zm-48,40a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h32A8,8,0,0,1,136,160Zm48,0a8,8,0,0,1-8,8H160a8,8,0,0,1,0-16h16A8,8,0,0,1,184,160Z"/>
+                          </svg>
+                        </div>
+                        <div>
+                          <div className="sched-card-title">Schedule an Interview</div>
+                          <div className="sched-card-subtitle">Set up your target role, date & time, and attached resume</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="field-group-modern">
+                      <label>Session Label / Title *</label>
+                      <div className="input-with-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256" className="icon">
+                          <path d="M239.06,120.69,135.31,16.94a16,16,0,0,0-11.31-4.69H40A16,16,0,0,0,24,28.25V112a16,16,0,0,0,4.69,11.31L132.44,227.06a16,16,0,0,0,22.63,0l84-84A16,16,0,0,0,239.06,120.69ZM143.75,215.75,40,112V28.25H123.75l103.75,103.75ZM84,68A16,16,0,1,1,68,52,16,16,0,0,1,84,68Z"/>
+                        </svg>
+                        <input
+                          placeholder="e.g. Google L5 Frontend Round 1"
+                          value={schedLabel}
+                          onChange={(e) => setSchedLabel(e.target.value)}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Separate Custom Modern Date & Time Grid */}
+                    <div className="grid-2">
+                      {/* Modern Custom Date Dropdown Picker */}
+                      <div className="field-group-modern" ref={schedDateDropdownRef} style={{ position: 'relative' }}>
+                        <label>Target Date *</label>
+                        <div
+                          className={`custom-select-trigger ${isSchedDateDropdownOpen ? 'active' : ''}`}
+                          onClick={() => {
+                            setIsSchedDateDropdownOpen(!isSchedDateDropdownOpen)
+                            setIsSchedTimeDropdownOpen(false)
+                            setIsSchedResumeDropdownOpen(false)
+                            if (schedDate) {
+                              const [y, m] = schedDate.split('-').map(Number)
+                              if (y && m) setCalendarViewDate(new Date(y, m - 1, 1))
+                            }
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                            <div style={{
+                              width: '28px',
+                              height: '28px',
+                              borderRadius: '8px',
+                              background: 'rgba(139, 92, 246, 0.15)',
+                              border: '1px solid rgba(139, 92, 246, 0.3)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontSize: '14px',
+                              flexShrink: 0
+                            }}>
+                              📅
+                            </div>
+                            <span style={{
+                              color: schedDate ? '#f8fafc' : '#64748b',
+                              fontWeight: 600,
+                              fontSize: '13.5px',
+                              letterSpacing: '0.2px',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap'
+                            }}>
+                              {schedDate
+                                ? new Date(`${schedDate}T00:00:00`).toLocaleDateString(undefined, {
+                                    weekday: 'short',
+                                    month: 'short',
+                                    day: 'numeric',
+                                    year: 'numeric'
+                                  })
+                                : 'Select target date...'}
+                            </span>
+                          </div>
+
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            color: isSchedDateDropdownOpen ? '#c4b5fd' : '#64748b',
+                            transform: isSchedDateDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                            transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s ease',
+                            flexShrink: 0
+                          }}>
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
+                              <path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80a8,8,0,0,1,11.32-11.32L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z" />
+                            </svg>
+                          </div>
+                        </div>
+
+                        {/* Calendar Popup */}
+                        {isSchedDateDropdownOpen && (() => {
+                          const calYear = calendarViewDate.getFullYear()
+                          const calMonth = calendarViewDate.getMonth()
+                          const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+                          const totalDays = new Date(calYear, calMonth + 1, 0).getDate()
+                          const firstDayIdx = new Date(calYear, calMonth, 1).getDay()
+                          const todayStr = getLocalDateString(0)
+
+                          return (
+                            <div className="custom-calendar-popup">
+                              <div className="cal-header">
+                                <button
+                                  type="button"
+                                  className="cal-nav-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setCalendarViewDate(new Date(calYear, calMonth - 1, 1))
+                                  }}
+                                >
+                                  ‹
+                                </button>
+                                <span className="cal-title">
+                                  {monthNames[calMonth]} {calYear}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="cal-nav-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setCalendarViewDate(new Date(calYear, calMonth + 1, 1))
+                                  }}
+                                >
+                                  ›
+                                </button>
+                              </div>
+
+                              <div className="cal-weekdays">
+                                {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((dayName) => (
+                                  <span key={dayName}>{dayName}</span>
+                                ))}
+                              </div>
+
+                              <div className="cal-days-grid">
+                                {Array.from({ length: firstDayIdx }).map((_, idx) => (
+                                  <div key={`empty-${idx}`} className="cal-day-cell empty" />
+                                ))}
+                                {Array.from({ length: totalDays }).map((_, idx) => {
+                                  const dayNum = idx + 1
+                                  const dateStr = `${calYear}-${String(calMonth + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`
+                                  const isSelected = schedDate === dateStr
+                                  const isToday = todayStr === dateStr
+                                  const cellMidnight = new Date(calYear, calMonth, dayNum, 23, 59, 59).getTime()
+                                  const isPast = cellMidnight < new Date().setHours(0, 0, 0, 0)
+
+                                  return (
+                                    <div
+                                      key={dateStr}
+                                      className={`cal-day-cell ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''} ${isPast ? 'disabled' : ''}`}
+                                      onClick={() => {
+                                        if (isPast) return
+                                        setSchedDate(dateStr)
+                                        setIsSchedDateDropdownOpen(false)
+                                      }}
+                                    >
+                                      {dayNum}
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          )
+                        })()}
+                      </div>
+
+                      {/* Modern Custom Time Dropdown Picker */}
+                      <div className="field-group-modern" ref={schedTimeDropdownRef} style={{ position: 'relative' }}>
+                        <label>Target Time *</label>
+                        {(() => {
+                          const [hStr = '12', mStr = '00'] = (schedTime || '12:00').split(':')
+                          const hNum = parseInt(hStr, 10) || 0
+                          const mNum = parseInt(mStr, 10) || 0
+                          const isPM = hNum >= 12
+                          const h12 = hNum % 12 || 12
+                          const displayTime = `${String(h12).padStart(2, '0')}:${String(mNum).padStart(2, '0')} ${isPM ? 'PM' : 'AM'}`
+
+                          const updateTime = (newH12: number, newM: number, newIsPM: boolean) => {
+                            let h24 = newH12 % 12
+                            if (newIsPM) h24 += 12
+                            setSchedTime(`${String(h24).padStart(2, '0')}:${String(newM).padStart(2, '0')}`)
+                          }
+
+                          return (
+                            <>
+                              <div
+                                className={`custom-select-trigger ${isSchedTimeDropdownOpen ? 'active' : ''}`}
+                                onClick={() => {
+                                  setIsSchedTimeDropdownOpen(!isSchedTimeDropdownOpen)
+                                  setIsSchedDateDropdownOpen(false)
+                                  setIsSchedResumeDropdownOpen(false)
+                                }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                                  <div style={{
+                                    width: '28px',
+                                    height: '28px',
+                                    borderRadius: '8px',
+                                    background: 'rgba(139, 92, 246, 0.15)',
+                                    border: '1px solid rgba(139, 92, 246, 0.3)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontSize: '14px',
+                                    flexShrink: 0
+                                  }}>
+                                    🕒
+                                  </div>
+                                  <span style={{
+                                    color: schedTime ? '#f8fafc' : '#64748b',
+                                    fontWeight: 600,
+                                    fontSize: '13.5px',
+                                    letterSpacing: '0.2px',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap'
+                                  }}>
+                                    {schedTime ? displayTime : 'Select target time...'}
+                                  </span>
+                                </div>
+
+                                <div style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  color: isSchedTimeDropdownOpen ? '#c4b5fd' : '#64748b',
+                                  transform: isSchedTimeDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s ease',
+                                  flexShrink: 0
+                                }}>
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
+                                    <path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80a8,8,0,0,1,11.32-11.32L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z" />
+                                  </svg>
+                                </div>
+                              </div>
+
+                              {/* Time Picker Popup Menu */}
+                              {isSchedTimeDropdownOpen && (
+                                <div className="custom-time-popup">
+                                  <div className="time-picker-cols">
+                                    {/* Hours Column */}
+                                    <div className="time-col-wrap">
+                                      <div className="time-col-label">Hour</div>
+                                      <div className="time-col-scroll">
+                                        {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((hour) => {
+                                          const isSelected = h12 === hour
+                                          return (
+                                            <button
+                                              key={`h-${hour}`}
+                                              type="button"
+                                              className={`time-item-btn ${isSelected ? 'selected' : ''}`}
+                                              onClick={() => updateTime(hour, mNum, isPM)}
+                                            >
+                                              {String(hour).padStart(2, '0')}
+                                            </button>
+                                          )
+                                        })}
+                                      </div>
+                                    </div>
+
+                                    {/* Minutes Column */}
+                                    <div className="time-col-wrap">
+                                      <div className="time-col-label">Minute</div>
+                                      <div className="time-col-scroll">
+                                        {[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55].map((min) => {
+                                          const isSelected = mNum === min
+                                          return (
+                                            <button
+                                              key={`m-${min}`}
+                                              type="button"
+                                              className={`time-item-btn ${isSelected ? 'selected' : ''}`}
+                                              onClick={() => updateTime(h12, min, isPM)}
+                                            >
+                                              :{String(min).padStart(2, '0')}
+                                            </button>
+                                          )
+                                        })}
+                                      </div>
+                                    </div>
+
+                                    {/* AM/PM Column */}
+                                    <div className="time-ampm-wrap">
+                                      <button
+                                        type="button"
+                                        className={`time-ampm-btn ${!isPM ? 'selected' : ''}`}
+                                        onClick={() => updateTime(h12, mNum, false)}
+                                      >
+                                        AM
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className={`time-ampm-btn ${isPM ? 'selected' : ''}`}
+                                        onClick={() => updateTime(h12, mNum, true)}
+                                      >
+                                        PM
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </>
+                          )
+                        })()}
+                      </div>
+                    </div>
+
+                    {/* Live Date/Time Preview Pill */}
+                    {(() => {
+                      if (!schedDate || !schedTime) return null
+                      const schedTimeMs = new Date(`${schedDate}T${schedTime}`).getTime()
+                      if (isNaN(schedTimeMs)) return null
+                      const diffMs = schedTimeMs - Date.now()
+                      const isPassed = diffMs <= 0
+                      const hours = Math.max(0, Math.floor(diffMs / 3600000))
+                      const mins = Math.max(0, Math.floor((diffMs % 3600000) / 60000))
+                      const formattedDate = new Date(schedTimeMs).toLocaleDateString(undefined, {
+                        weekday: 'short',
+                        month: 'short',
+                        day: 'numeric'
+                      })
+                      const formattedTime = new Date(schedTimeMs).toLocaleTimeString(undefined, {
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })
+
+                      return (
+                        <div className="sched-preview-pill">
+                          <div className="sched-preview-pill-left">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" style={{ color: '#a78bfa' }}>
+                              <circle cx="12" cy="12" r="10" />
+                              <path d="M12 6v6l4 2" />
+                            </svg>
+                            <span>
+                              {formattedDate} at {formattedTime}
+                            </span>
+                          </div>
+                          <div className={`sched-preview-pill-countdown ${isPassed ? 'passed' : ''}`}>
+                            {isPassed
+                              ? '⚠️ Time already passed'
+                              : `Starts in ${hours > 0 ? `${hours}h ` : ''}${mins}m`}
+                          </div>
+                        </div>
+                      )
+                    })()}
+
+                    <div className="grid-2">
+                      <div className="field-group-modern">
+                        <label>Applying for Role *</label>
+                        <div className="input-with-icon">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256" className="icon">
+                            <path d="M216,56H176V48a24,24,0,0,0-24-24H104A24,24,0,0,0,80,48v8H40A16,16,0,0,0,24,72V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V72A16,16,0,0,0,216,56ZM96,48a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96ZM216,200H40V72H216V200Z" />
+                          </svg>
+                          <input
+                            placeholder="e.g. Senior Frontend Developer"
+                            value={schedRole}
+                            onChange={(e) => setSchedRole(e.target.value)}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="field-group-modern">
+                        <label>Company (Optional)</label>
+                        <div className="input-with-icon">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256" className="icon">
+                            <path d="M240,208H224V96a16,16,0,0,0-16-16H144V48a16,16,0,0,0-24.88-13.32L39.12,82.91A16,16,0,0,0,32,96V208H16a8,8,0,0,0,0,16H240a8,8,0,0,0,0-16ZM208,96V208H144V96ZM48,96l80-48V208H48Z" />
+                          </svg>
+                          <input
+                            placeholder="e.g. Google, Amazon, Meta"
+                            value={schedCompany}
+                            onChange={(e) => setSchedCompany(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Custom Modern Resume Dropdown */}
+                    <div className="field-group-modern" ref={schedResumeDropdownRef} style={{ position: 'relative' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span>Target Resume *</span>
+                        <span style={{ fontSize: '11px', color: '#a78bfa', fontWeight: 600, background: 'rgba(167,139,250,0.12)', padding: '2px 8px', borderRadius: '6px', border: '1px solid rgba(167,139,250,0.2)' }}>
+                          {resumes.find(r => r.id === schedResumeId)?.name ? '✓ Attached' : `${resumes.length} available`}
+                        </span>
+                      </label>
+
+                      <div
+                        className={`custom-select-trigger ${isSchedResumeDropdownOpen ? 'active' : ''}`}
+                        onClick={() => setIsSchedResumeDropdownOpen(!isSchedResumeDropdownOpen)}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                          <div style={{
+                            width: '28px',
+                            height: '28px',
+                            borderRadius: '8px',
+                            background: 'rgba(139, 92, 246, 0.15)',
+                            border: '1px solid rgba(139, 92, 246, 0.3)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '14px',
+                            flexShrink: 0
+                          }}>
+                            📄
+                          </div>
+                          <span style={{
+                            color: schedResumeId ? '#f8fafc' : '#64748b',
+                            fontWeight: 600,
+                            fontSize: '13.5px',
+                            letterSpacing: '0.2px',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                          }}>
+                            {resumes.find(r => r.id === schedResumeId)?.name || 'Select target resume for this interview...'}
+                          </span>
+                        </div>
+
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          color: isSchedResumeDropdownOpen ? '#c4b5fd' : '#64748b',
+                          transform: isSchedResumeDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                          transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s ease',
+                          flexShrink: 0
+                        }}>
+                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
+                            <path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80a8,8,0,0,1,11.32-11.32L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z" />
+                          </svg>
+                        </div>
+                      </div>
+
+                      {isSchedResumeDropdownOpen && (
+                        <div className="custom-select-menu" style={{ maxHeight: '240px', overflowY: 'auto' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {resumes.length === 0 ? (
+                              <div style={{ padding: '12px', textAlign: 'center', color: '#64748b', fontSize: '12.5px' }}>
+                                No resumes found. Please upload one in the Resume Library tab.
+                              </div>
+                            ) : (
+                              resumes.map((r) => {
+                                const isSelected = schedResumeId === r.id
+                                return (
+                                  <div
+                                    key={r.id}
+                                    className={`custom-select-option ${isSelected ? 'selected' : ''}`}
+                                    onClick={() => {
+                                      setSchedResumeId(r.id)
+                                      setIsSchedResumeDropdownOpen(false)
+                                    }}
+                                    style={{ padding: '10px 12px' }}
+                                  >
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                                        <span style={{ fontSize: '16px', flexShrink: 0 }}>📄</span>
+                                        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                                          <span style={{
+                                            fontSize: '13px',
+                                            fontWeight: isSelected ? 700 : 500,
+                                            color: isSelected ? '#fff' : '#cbd5e1',
+                                            overflow: 'hidden',
+                                            textOverflow: 'ellipsis',
+                                            whiteSpace: 'nowrap'
+                                          }}>
+                                            {r.name}
+                                          </span>
+                                          <span style={{ fontSize: '10px', color: isSelected ? '#c4b5fd' : '#64748b' }}>
+                                            {(r.text?.length || 0)} characters • Ready
+                                          </span>
+                                        </div>
+                                      </div>
+                                      {isSelected && (
+                                        <span style={{ color: '#34d399', fontSize: '14px', fontWeight: 800, marginLeft: '8px' }}>✓</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                )
+                              })
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="sched-info-notice">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10"/>
+                        <line x1="12" y1="16" x2="12" y2="12"/>
+                        <line x1="12" y1="8" x2="12.01" y2="8"/>
+                      </svg>
+                      <div>
+                        <strong>1 Credit Pre-Verification:</strong> 1 credit is temporarily held at scheduling. Actual credit deduction happens dynamically at the end of the session based on exact minutes used (1 credit = 1 hour).
+                      </div>
+                    </div>
+
+                    {schedError && (
+                      <div className="error-modern" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                        {schedError}
+                      </div>
+                    )}
+
+                    {schedSuccess && (
+                      <div style={{
+                        color: '#34d399',
+                        fontSize: '13px',
+                        fontWeight: 700,
+                        background: 'rgba(52, 211, 153, 0.12)',
+                        border: '1px solid rgba(52, 211, 153, 0.3)',
+                        padding: '12px 16px',
+                        borderRadius: '10px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                      }}>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M20 6L9 17l-5-5"/>
+                        </svg>
+                        {schedSuccess}
+                      </div>
+                    )}
+
+                    <button 
+                      className="primary-action-btn shimmer-btn" 
+                      onClick={handleCreateScheduledSession}
+                      disabled={schedCreating || (sessionsBalance < 1 && trialRemainingSeconds <= 0)}
+                      style={{ width: '100%', padding: '14px', marginTop: '2px' }}
+                    >
+                      <div className="btn-shine" />
+                      <span className="btn-content" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '14px', fontWeight: 700 }}>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M5 12h14M12 5l7 7-7 7"/>
+                        </svg>
+                        {schedCreating ? 'Verifying & Scheduling...' : 'Schedule Auto-Launch Session'}
+                      </span>
+                    </button>
+                  </div>
+
+                  {/* Scheduled Queue Section */}
+                  <div className="sched-queue-section">
+                    <div className="sched-queue-header">
+                      <div className="sched-queue-title">
+                        <svg width="18" height="18" fill="currentColor" viewBox="0 0 256 256" style={{ color: '#a78bfa' }}>
+                          <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm64-88a8,8,0,0,1-8,8H128a8,8,0,0,1-8-8V72a8,8,0,0,1,16,0v48h48A8,8,0,0,1,192,128Z"/>
+                        </svg>
+                        <span>Scheduled Queue</span>
+                        {scheduledSessions.filter(s => !s.triggered).length > 0 && (
+                          <span className="sched-queue-badge">
+                            {scheduledSessions.filter(s => !s.triggered).length} upcoming
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {scheduledSessions.filter(s => !s.triggered).length === 0 ? (
+                      <div className="sched-empty-card">
+                        <div className="sched-empty-icon">
+                          <svg width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                            <line x1="16" y1="2" x2="16" y2="6"/>
+                            <line x1="8" y1="2" x2="8" y2="6"/>
+                            <line x1="3" y1="10" x2="21" y2="10"/>
+                          </svg>
+                        </div>
+                        <div className="sched-empty-title">No upcoming sessions scheduled</div>
+                        <div className="sched-empty-desc">
+                          Pick a date and time above to schedule an interview. The overlay will automatically launch when the time arrives.
+                        </div>
+                      </div>
+                    ) : (
+                      scheduledSessions.filter(s => !s.triggered).map(session => {
+                        const remaining = session.scheduledAt - Date.now()
+                        const hours = Math.max(0, Math.floor(remaining / 3600000))
+                        const mins = Math.max(0, Math.floor((remaining % 3600000) / 60000))
+                        const secs = Math.max(0, Math.floor((remaining % 60000) / 1000))
+                        const isImminent = remaining > 0 && remaining < 300000 // < 5 mins
+                        const timeString = remaining > 0
+                          ? `${hours > 0 ? `${hours}h ` : ''}${mins}m ${secs.toString().padStart(2, '0')}s`
+                          : 'Starting momentarily...'
+                        const dateObj = new Date(session.scheduledAt)
+                        const formattedDate = dateObj.toLocaleDateString(undefined, {
+                          weekday: 'short',
+                          month: 'short',
+                          day: 'numeric'
+                        })
+                        const formattedTime = dateObj.toLocaleTimeString(undefined, {
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })
+                        const resume = resumes.find(r => r.id === session.resumeId)
+
+                        return (
+                          <div key={session.id} className="sched-item-card">
+                            <div className="sched-item-left">
+                              <div className="sched-item-title-row">
+                                <span className="sched-item-title">{session.label}</span>
+                                <span className="sched-item-pill">{session.role}</span>
+                                {session.company && (
+                                  <span className="sched-item-pill" style={{ color: '#a78bfa', borderColor: 'rgba(167,139,250,0.25)' }}>
+                                    @{session.company}
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="sched-item-meta">
+                                <div className="sched-item-meta-item">
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                                    <line x1="16" y1="2" x2="16" y2="6"/>
+                                    <line x1="8" y1="2" x2="8" y2="6"/>
+                                    <line x1="3" y1="10" x2="21" y2="10"/>
+                                  </svg>
+                                  <span>{formattedDate} at {formattedTime}</span>
+                                </div>
+
+                                {resume && (
+                                  <div className="sched-item-meta-item">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                      <polyline points="14 2 14 8 20 8"/>
+                                    </svg>
+                                    <span>{resume.name}</span>
+                                  </div>
+                                )}
+
+                                <div className={`sched-countdown-chip ${isImminent ? 'imminent' : ''}`}>
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                    <circle cx="12" cy="12" r="10"/>
+                                    <polyline points="12 6 12 12 16 14"/>
+                                  </svg>
+                                  <span>Starts in {timeString}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="sched-item-actions">
+                              <button
+                                className="sched-btn-launch"
+                                onClick={() => handleLaunchNowScheduledSession(session)}
+                                title="Start interview immediately with this session's configuration"
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                  <polygon points="5 3 19 12 5 21 5 3"/>
+                                </svg>
+                                Launch Now
+                              </button>
+                              <button
+                                className="sched-btn-cancel"
+                                onClick={() => handleCancelScheduledSession(session.id, session.hasHold)}
+                                title="Cancel this scheduled session and release hold"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+            
             {showPaywall && (
               <div className="paywall-overlay fade-in">
                 <div className="paywall-card glass-modal">
@@ -1958,7 +3058,7 @@ export default function SetupPage({
                   <button
                     className="paywall-action-btn"
                     onClick={() =>
-                      window.api.openExternal('https://zyro-ai.in/#/dashboard/billing')
+                      window.api.openExternal('https://www.zyro-ai.in/dashboard/billing')
                     }
                   >
                     <span>Get Sessions</span>
