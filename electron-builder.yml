@@ -18,7 +18,8 @@ win:
     - nsis
   icon: build/icon.ico
   cscLink: build/codesign.pfx
-  cscKeyPassword: ***REMOVED***
+  # SECURITY (audit C6): the PFX password is never committed — it is read
+  # from the CSC_KEY_PASSWORD env var at build time.
 nsis:
   artifactName: ${productName}-Setup-${version}.${ext}
   shortcutName: Zyro-Ai

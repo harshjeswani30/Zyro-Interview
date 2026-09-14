@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { buildQuestionGeneratorPrompt } from './prompts/questionGenerator'
 import { getRelevantExamplesFromBank } from './data/questionBank'
+import { resumeRoutes } from './resume/routes'
 
 interface Env {
   GROQ_KEY_1?: string
@@ -19,14 +20,40 @@ interface Env {
   GROQ_WHISPER_KEY_3?: string
   GROQ_WHISPER_KEY_4?: string
   GROQ_WHISPER_KEY_5?: string
+  // Optional. Vision rotates over the shared Groq pool by default (see extractGroqKeys);
+  // set these only if you want dedicated keys for the qwen vision model.
+  GROQ_VISION_KEY_1?: string
+  GROQ_VISION_KEY_2?: string
+  GROQ_VISION_KEY_3?: string
+  GROQ_VISION_KEY_4?: string
+  GROQ_VISION_KEY_5?: string
   GROQ_API_KEYS?: string
   DEEPGRAM_STT_KEY?: string
+  DEEPGRAM_STT_KEY_2?: string
+  DEEPGRAM_STT_KEY_3?: string
+  DEEPGRAM_STT_KEY_4?: string
+  DEEPGRAM_STT_KEY_5?: string
   CARTESIA_API_KEY?: string
   CARTESIA_VOICE_ID?: string
   ELEVENLABS_API_KEY?: string
   ELEVENLABS_VOICE_ID?: string
-  GEMINI_API_KEY?: string
   AI?: any
+  // Resume AI — OpenRouter
+  OPENROUTER_API_KEY?: string
+  OPENROUTER_MODEL?: string
+  OPENROUTER_MODEL_FALLBACK?: string
+  OPENROUTER_BASE_URL?: string
+  OPENROUTER_SITE_URL?: string
+  OPENROUTER_APP_NAME?: string
+  SUPABASE_URL?: string
+  SUPABASE_ANON_KEY?: string
+  // ── Gateway Auth ──
+  // Shared HMAC secret between this Worker and the Supabase Edge Function.
+  // Set via: npx wrangler secret put GATEWAY_HMAC_SECRET
+  GATEWAY_HMAC_SECRET?: string
+  // KV namespace for instant token revocation (admin can revoke any userId instantly).
+  // Binding name: GATEWAY_REVOKED_KV (configured in wrangler.toml)
+  GATEWAY_REVOKED_KV?: KVNamespace
 }
 
 // 5 Verified Groq API Keys (configured via Cloudflare Worker env secrets)
@@ -38,8 +65,29 @@ const DEFAULT_CARTESIA_VOICE_ID = 'faf0731e-dfb9-4cfc-8119-259a79b27e12'
 const DEFAULT_ELEVENLABS_KEY = ''
 const DEFAULT_ELEVENLABS_VOICE_ID = 'EXAVITQu4vr4xnSDxMaL' // Bella (Premade Neural HD)
 
+/**
+ * Groq rate limits are enforced PER MODEL, not per key. whisper-large-v3-turbo has no
+ * TPM budget at all, so a 429 on the STT route says nothing about that key's headroom
+ * for openai/gpt-oss-120b. Cooldowns are therefore keyed by `${scope}:${apiKey}` so an
+ * STT throttle can no longer sideline the same key for the LLM/analyze routes.
+ *
+ * `stt_dg` is a separate scope for the Deepgram key pool. Deepgram rate-limits per
+ * PROJECT (all keys in one project share one concurrency pool), so rotation only buys
+ * real headroom when the keys belong to different Deepgram accounts; either way this
+ * scope keeps a Deepgram 429/quota-exhaustion from touching the Groq Whisper fallback.
+ *
+ * `vision` is its own scope for the same per-model reason: qwen/qwen3.8-27b carries a
+ * TPM budget independent of gpt-oss-120b, so the shared keys get a fresh vision bucket
+ * and a screenshot 429 can never sideline a key for the answer-generation route.
+ */
+type KeyScope = 'llm' | 'stt' | 'stt_dg' | 'analyze' | 'vision'
+
 // Global in-memory cooldown tracker (persists across requests within the worker isolate)
 const keyCooldowns = new Map<string, number>()
+
+function cooldownKey(scope: KeyScope, apiKey: string): string {
+  return `${scope}:${apiKey}`
+}
 
 function extractGroqKeys(env: Env): string[] {
   const set = new Set<string>()
@@ -69,6 +117,14 @@ function extractGroqKeys(env: Env): string[] {
   add(env.GROQ_WHISPER_KEY_4)
   add(env.GROQ_WHISPER_KEY_5)
 
+  // Optional dedicated vision keys. Unset by default — the pool above already gives
+  // /gateway/vision a full fresh quota bucket because Groq limits are per model.
+  add(env.GROQ_VISION_KEY_1)
+  add(env.GROQ_VISION_KEY_2)
+  add(env.GROQ_VISION_KEY_3)
+  add(env.GROQ_VISION_KEY_4)
+  add(env.GROQ_VISION_KEY_5)
+
   if (env.GROQ_API_KEYS) {
     env.GROQ_API_KEYS.split(',').forEach(add)
   }
@@ -76,6 +132,24 @@ function extractGroqKeys(env: Env): string[] {
   // Ensure all 5 default keys are always present
   DEFAULT_GROQ_KEYS.forEach(add)
 
+  return Array.from(set)
+}
+
+/**
+ * Deepgram STT key pool. Unlike Groq keys these carry no `gsk_` prefix (they are opaque
+ * tokens), so any non-empty secret counts. Deduplicated and order-stable so the
+ * round-robin in getOrderedKeys() is predictable.
+ */
+function extractDeepgramKeys(env: Env): string[] {
+  const set = new Set<string>()
+  const add = (k?: string): void => {
+    if (k && typeof k === 'string' && k.trim().length > 0) set.add(k.trim())
+  }
+  add(env.DEEPGRAM_STT_KEY)
+  add(env.DEEPGRAM_STT_KEY_2)
+  add(env.DEEPGRAM_STT_KEY_3)
+  add(env.DEEPGRAM_STT_KEY_4)
+  add(env.DEEPGRAM_STT_KEY_5)
   return Array.from(set)
 }
 
@@ -88,13 +162,13 @@ let globalKeyIndex = 0
  * 3. Rotates sequentially and wraps around to Key 1.
  * 4. Puts cooling keys at the end as last-resort fallbacks.
  */
-function getOrderedKeys(allKeys: string[]): string[] {
+function getOrderedKeys(allKeys: string[], scope: KeyScope): string[] {
   const now = Date.now()
   const healthy: string[] = []
   const cooling: string[] = []
 
   for (const k of allKeys) {
-    const until = keyCooldowns.get(k) || 0
+    const until = keyCooldowns.get(cooldownKey(scope, k)) || 0
     if (now >= until) {
       healthy.push(k)
     } else {
@@ -120,8 +194,56 @@ function getOrderedKeys(allKeys: string[]): string[] {
   return ordered
 }
 
-function markKeyCooldown(key: string, cooldownMs = 30000) {
-  keyCooldowns.set(key, Date.now() + cooldownMs)
+function markKeyCooldown(key: string, scope: KeyScope, cooldownMs: number) {
+  keyCooldowns.set(cooldownKey(scope, key), Date.now() + cooldownMs)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HMAC Auth Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Verifies a gateway token of the form "userId:expiryEpoch:hmacSignature".
+ * The HMAC is SHA-256 keyed with GATEWAY_HMAC_SECRET.
+ * Returns the userId on success, null on failure.
+ * This runs entirely in-process (WebCrypto) — zero external calls, ~0ms overhead.
+ */
+async function verifyGatewayToken(
+  token: string,
+  secret: string
+): Promise<string | null> {
+  if (!token || !secret) return null
+  const parts = token.split(':')
+  if (parts.length !== 3) return null
+  const [userId, expiryStr, signature] = parts
+
+  // 1. Check expiry first (cheap integer comparison)
+  const expiry = parseInt(expiryStr, 10)
+  if (isNaN(expiry) || Date.now() > expiry) return null
+
+  // 2. Verify HMAC signature
+  const enc = new TextEncoder()
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  )
+  const expectedSigBuffer = await crypto.subtle.sign('HMAC', key, enc.encode(`${userId}:${expiryStr}`))
+  const expectedSig = Array.from(new Uint8Array(expectedSigBuffer))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+
+  // Constant-time comparison to prevent timing attacks
+  if (expectedSig.length !== signature.length) return null
+  let diff = 0
+  for (let i = 0; i < expectedSig.length; i++) {
+    diff |= expectedSig.charCodeAt(i) ^ signature.charCodeAt(i)
+  }
+  if (diff !== 0) return null
+
+  return userId
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -130,7 +252,7 @@ const app = new Hono<{ Bindings: Env }>()
 app.use('*', cors({
   origin: (origin) => origin || '*',
   allowMethods: ['POST', 'GET', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'x-user-api-key'],
+  allowHeaders: ['Content-Type', 'Authorization', 'x-user-api-key', 'x-gateway-token'],
   maxAge: 86400,
   credentials: true
 }))
@@ -140,10 +262,60 @@ app.options('*', (c) => {
   return c.text('', 204, {
     'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-user-api-key',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-user-api-key, x-gateway-token',
     'Access-Control-Allow-Credentials': 'true',
     'Access-Control-Max-Age': '86400'
   })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GATEWAY AUTH MIDDLEWARE
+// Placed after CORS (so preflights pass) but before every route handler.
+// Free route: GET / and GET /gateway (health checks, no auth needed).
+// All POST routes (/gateway/llm, /gateway/stt, /gateway/vision, etc.) require
+// a valid HMAC token issued by the generate-gateway-token Supabase Edge Function.
+// ─────────────────────────────────────────────────────────────────────────────
+app.use('/gateway/*', async (c, next) => {
+  // Auth is REQUIRED on every gateway route, STT included (audit C7/M6 — the
+  // old /gateway/stt exemption left paid Whisper keys burnable with one curl).
+  // Local dev: set GATEWAY_HMAC_SECRET in .dev.vars to keep the same behaviour.
+  const secret = c.env.GATEWAY_HMAC_SECRET
+  if (!secret) {
+    console.warn('[Auth] GATEWAY_HMAC_SECRET not set — running in open mode (dev only)')
+    return next()
+  }
+
+  // The browser cannot set headers on a WebSocket handshake or an <audio>
+  // element, so those callers pass the same token as ?token= on the URL. The
+  // header is preferred everywhere else.
+  const token = c.req.header('x-gateway-token') || c.req.query('token') || ''
+  const userId = await verifyGatewayToken(token, secret)
+
+  if (!userId) {
+    return c.json(
+      { error: 'Unauthorized', message: 'Valid gateway token required. Please restart the app.' },
+      401,
+      { 'Access-Control-Allow-Origin': c.req.header('Origin') || '*' }
+    )
+  }
+
+  // KV revocation check — performed on every route, STT included (audit M6).
+  // This lets admins instantly block a userId by writing "revoked:{userId}" = "1" to KV.
+  // Hot KV reads are <5ms globally; cold reads are still faster than a Supabase round-trip.
+  if (c.env.GATEWAY_REVOKED_KV) {
+    const revoked = await c.env.GATEWAY_REVOKED_KV.get(`revoked:${userId}`)
+    if (revoked !== null) {
+      return c.json(
+        { error: 'Forbidden', message: 'Account access has been revoked. Please contact support.' },
+        403,
+        { 'Access-Control-Allow-Origin': c.req.header('Origin') || '*' }
+      )
+    }
+  }
+
+  // Attach userId to the context for downstream logging if needed
+  c.set('userId' as never, userId)
+  return next()
 })
 
 // Custom 404
@@ -163,7 +335,10 @@ app.onError((err, c) => {
   })
 })
 
-app.get('/', (c) => c.json({ status: 'alive', message: 'AI Gateway is running. Endpoints: /gateway/llm, /gateway/stt, /gateway/vision, /gateway/analyze' }))
+// Resume AI routes — mounted before inline handlers so /gateway/resume/* is caught first
+app.route('/gateway/resume', resumeRoutes)
+
+app.get('/', (c) => c.json({ status: 'alive', message: 'AI Gateway is running. Endpoints: /gateway/llm, /gateway/stt, /gateway/vision, /gateway/analyze, /gateway/resume' }))
 
 app.get('/gateway', (c) => {
   const keys = extractGroqKeys(c.env)
@@ -173,15 +348,15 @@ app.get('/gateway', (c) => {
     supportedModels: {
       llm: ['openai/gpt-oss-120b', 'llama-3.3-70b-versatile'],
       stt: ['whisper-large-v3-turbo', 'deepgram-nova-2'],
-      vision: ['gemini-2.5-flash', 'gemini-2.0-flash'],
+      vision: ['qwen/qwen3.8-27b', 'qwen/qwen3.6-27b'],
       tts: ['cartesia/sonic-preview']
     }
   })
 })
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // TTS ENDPOINT (Cartesia Sonic Neural Hindi -> ElevenLabs Fallback)
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.all('/gateway/tts', async (c) => {
   try {
     let text = ''
@@ -207,7 +382,7 @@ app.all('/gateway/tts', async (c) => {
     const elevenKey = c.env.ELEVENLABS_API_KEY || DEFAULT_ELEVENLABS_KEY
     const elevenVoiceId = c.env.ELEVENLABS_VOICE_ID || DEFAULT_ELEVENLABS_VOICE_ID
 
-    // ── Tier 1: Cartesia Sonic Neural TTS (Ultra-Fast ~120ms) ──
+    // â”€â”€ Tier 1: Cartesia Sonic Neural TTS (Ultra-Fast ~120ms) â”€â”€
     if (cartesiaKey) {
       try {
         const cartesiaRes = await fetch('https://api.cartesia.ai/tts/bytes', {
@@ -255,7 +430,7 @@ app.all('/gateway/tts', async (c) => {
       }
     }
 
-    // ── Tier 2: ElevenLabs Turbo v2.5 Fallback (Neural HD Multilingual) ──
+    // â”€â”€ Tier 2: ElevenLabs Turbo v2.5 Fallback (Neural HD Multilingual) â”€â”€
     if (elevenKey) {
       try {
         const elevenRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${elevenVoiceId}?output_format=mp3_44100_128`, {
@@ -303,9 +478,9 @@ app.all('/gateway/tts', async (c) => {
   }
 })
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // 1. EMBEDDINGS (Workers AI)
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.post('/gateway/embeddings', async (c) => {
   try {
     const body = await c.req.json() as { text: string | string[] }
@@ -331,9 +506,9 @@ app.post('/gateway/embeddings', async (c) => {
   }
 })
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // 2. STT (Audio Transcription with 5-Key Whisper + Deepgram Fallback)
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /** One entry of Whisper's verbose_json `segments` array (fields we care about). */
 interface WhisperSegment {
@@ -351,7 +526,7 @@ interface WhisperSegment {
  *   classifies a segment as silence. This is what produces confident nonsense out of
  *   a pause or of room noise.
  * - `compression_ratio > 2.4` is Whisper's degenerate-repetition test: a segment that
- *   gzips that well is a stuck decoder loop ("haan haan haan haan…"), not speech.
+ *   gzips that well is a stuck decoder loop ("haan haan haan haanâ€¦"), not speech.
  * - A very low `avg_logprob` on its own means the decoder was guessing.
  *
  * Anything without segment metadata falls back to the plain `text` field unchanged.
@@ -375,9 +550,147 @@ function filterHallucinatedSegments(data: { text?: string; segments?: WhisperSeg
   }
 
   // Every segment failing the checks means the clip really was silence/noise. Return
-  // empty rather than the unfiltered text — passing it through defeats the filter.
+  // empty rather than the unfiltered text â€” passing it through defeats the filter.
   return kept.join(' ').replace(/\s+/g, ' ').trim()
 }
+
+/**
+ * Live (streaming) STT -- a WebSocket proxy to Deepgram.
+ *
+ * The batch sibling below transcribes a finished clip, so the client only learns what
+ * was said once the clip is uploaded and decoded: a phrase at a time, never word by
+ * word. This route instead holds a socket open for the turn and relays Deepgram's
+ * interim results straight through, which is what a live word-by-word ticker needs.
+ *
+ * It exists as a proxy rather than a direct client connection for one reason: the keys
+ * live here. A browser cannot set an Authorization header on a WebSocket (it would have
+ * to pass the key as a subprotocol, in the clear), and a desktop build must not ship
+ * one at all. Proxying keeps the key server-side and lets the same rotation and
+ * cooldown bookkeeping as the batch path apply.
+ */
+app.get('/gateway/stt-stream', async (c) => {
+  if ((c.req.header('Upgrade') || '').toLowerCase() !== 'websocket') {
+    return c.text('expected a websocket upgrade', 426)
+  }
+
+  const deepgramKeys = getOrderedKeys(extractDeepgramKeys(c.env), 'stt_dg')
+  if (deepgramKeys.length === 0) {
+    return c.text('no deepgram key configured on this gateway', 503)
+  }
+
+  // Whitelist, do not forward. Everything Deepgram receives is either a value this
+  // gateway chose or one that passed a format check, so a client cannot rewrite the
+  // model, redirect billing, or smuggle arbitrary query parameters upstream.
+  const requested = c.req.query()
+  const language =
+    requested.language && /^[a-z]{2}(-[A-Za-z0-9]{2,8})?$|^multi$/.test(requested.language)
+      ? requested.language
+      : 'multi'
+  const sampleRate = /^\d{4,6}$/.test(requested.sample_rate || '')
+    ? requested.sample_rate
+    : '48000'
+
+  const params = new URLSearchParams({
+    model: 'nova-3',
+    language,
+    encoding: 'linear16',
+    sample_rate: sampleRate,
+    channels: '1',
+    interim_results: 'true',
+    smart_format: 'true',
+    punctuate: 'true'
+  })
+
+  // Try each healthy key in turn: a drained or throttled key refuses the upgrade, and
+  // failing over here is cheaper than surfacing it to the client mid-interview.
+  for (const dgKey of deepgramKeys) {
+    const dgId = dgKey.slice(0, 6) + '...'
+    let upstreamRes: Response
+    try {
+      upstreamRes = await fetch(`https://api.deepgram.com/v1/listen?${params.toString()}`, {
+        headers: { Upgrade: 'websocket', Authorization: `Token ${dgKey}` }
+      })
+    } catch (err) {
+      console.error(`[STT-STREAM] ${dgId} upgrade threw:`, (err as Error).message)
+      markKeyCooldown(dgKey, 'stt_dg', 15000)
+      continue
+    }
+
+    const upstream = upstreamRes.webSocket
+    if (!upstream) {
+      console.warn(`[STT-STREAM] ${dgId} refused the upgrade: ${upstreamRes.status}`)
+      // Same cooldown ladder the batch path uses.
+      if (upstreamRes.status === 402 || upstreamRes.status === 403) {
+        markKeyCooldown(dgKey, 'stt_dg', 600000)
+      } else if (upstreamRes.status === 429) {
+        markKeyCooldown(dgKey, 'stt_dg', 15000)
+      } else {
+        markKeyCooldown(dgKey, 'stt_dg', 60000)
+      }
+      continue
+    }
+
+    upstream.accept()
+    const pair = new WebSocketPair()
+    const clientSide = pair[0]
+    const edgeSide = pair[1]
+    edgeSide.accept()
+
+    // Straight relay in both directions. Audio frames go up as binary, Deepgram's
+    // JSON results and this client's control frames (KeepAlive, CloseStream) come
+    // back down as text; neither is inspected here.
+    edgeSide.addEventListener('message', (event) => {
+      try {
+        upstream.send(event.data)
+      } catch {
+        /* upstream already gone; its close handler tears the pair down */
+      }
+    })
+    upstream.addEventListener('message', (event) => {
+      try {
+        edgeSide.send(event.data)
+      } catch {
+        /* client already gone */
+      }
+    })
+
+    // Close one side, close the other -- otherwise a client that walks away leaves a
+    // Deepgram connection open and billing.
+    edgeSide.addEventListener('close', () => {
+      try {
+        upstream.close()
+      } catch {
+        /* already closed */
+      }
+    })
+    upstream.addEventListener('close', (event) => {
+      try {
+        edgeSide.close(event.code >= 1000 && event.code <= 4999 ? event.code : 1011, event.reason)
+      } catch {
+        /* already closed */
+      }
+    })
+    edgeSide.addEventListener('error', () => {
+      try {
+        upstream.close()
+      } catch {
+        /* already closed */
+      }
+    })
+    upstream.addEventListener('error', () => {
+      try {
+        edgeSide.close(1011, 'upstream error')
+      } catch {
+        /* already closed */
+      }
+    })
+
+    console.log(`[STT-STREAM] relaying via ${dgId} (${language} @ ${sampleRate}Hz)`)
+    return new Response(null, { status: 101, webSocket: clientSide })
+  }
+
+  return c.text('every deepgram key refused the streaming upgrade', 502)
+})
 
 app.post('/gateway/stt', async (c) => {
   const userApiKey = c.req.header('x-user-api-key')
@@ -385,7 +698,7 @@ app.post('/gateway/stt', async (c) => {
     ? [userApiKey.trim(), ...extractGroqKeys(c.env)]
     : extractGroqKeys(c.env)
 
-  const orderedKeys = getOrderedKeys(allKeys)
+  const orderedKeys = getOrderedKeys(allKeys, 'stt')
 
   let incomingFormData: FormData
   try {
@@ -428,7 +741,70 @@ app.post('/gateway/stt', async (c) => {
     return base
   })()
 
-  // 1. Try Groq Whisper rotation across all 5 keys
+  // 1. PRIMARY: Deepgram Nova-3 rotation across every configured Deepgram key.
+  //    Nova-3 `language=multi` keeps both halves of a Hinglish sentence; an explicit
+  //    locale is pinned on the same model. Rotation + cooldown fails a drained or
+  //    throttled key over to the next (per-project limit caveat noted on KeyScope).
+  const deepgramKeys = getOrderedKeys(extractDeepgramKeys(c.env), 'stt_dg')
+  if (deepgramKeys.length > 0) {
+    // `detect_language=true` is what makes Deepgram populate `detected_language`, which
+    // is the field read below and handed to the renderer as `language`. Without it that
+    // field was always undefined, so the per-utterance language signal the answer-language
+    // decision depends on was structurally dead on this path -- and Deepgram is the
+    // primary path. Only asked for in multi mode; a pinned locale needs no detection.
+    const dgQuery = sttLanguage
+      ? `model=nova-3&language=${encodeURIComponent(sttLanguage)}`
+      : 'model=nova-3&language=multi&detect_language=true'
+    const dgAudio = await audioBlob.arrayBuffer()
+    const dgContentType = audioBlob.type || 'audio/wav'
+
+    for (const dgKey of deepgramKeys) {
+      const dgId = dgKey.slice(0, 6) + '...'
+      try {
+        const dgRes = await fetch(
+          `https://api.deepgram.com/v1/listen?${dgQuery}&smart_format=true&encoding=linear16`,
+          {
+            method: 'POST',
+            headers: { 'Authorization': `Token ${dgKey}`, 'Content-Type': dgContentType },
+            body: dgAudio
+          }
+        )
+
+        if (dgRes.ok) {
+          const dgData = (await dgRes.json()) as any
+          const channel = dgData.results?.channels?.[0]
+          const transcript = channel?.alternatives?.[0]?.transcript || ''
+          const detectedLanguage =
+            channel?.detected_language || channel?.alternatives?.[0]?.languages?.[0]
+          return c.json({ text: transcript, language: detectedLanguage }, 200, {
+            'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
+            'Access-Control-Allow-Credentials': 'true'
+          })
+        }
+        const dgErrText = await dgRes.text().catch(() => '')
+        console.warn(
+          `[Gateway STT] Deepgram key ${dgId} returned ${dgRes.status}: ${dgErrText.substring(0, 120)}`
+        )
+
+        // 400 = malformed request (e.g. a locale this model can't pin). Every other
+        // key would fail identically, so stop rotating and drop to Whisper.
+        if (dgRes.status === 400) break
+
+        // 402/403 = credits exhausted or key disabled → park it 10 min so rotation
+        // moves to the next account's key. 429 = project concurrency, clears fast →
+        // short cooldown. 401/5xx → medium.
+        if (dgRes.status === 402 || dgRes.status === 403) markKeyCooldown(dgKey, 'stt_dg', 600000)
+        else if (dgRes.status === 429) markKeyCooldown(dgKey, 'stt_dg', 15000)
+        else markKeyCooldown(dgKey, 'stt_dg', 60000)
+      } catch (dgErr: any) {
+        console.error(`[Gateway STT] Deepgram key ${dgId} error:`, dgErr?.message)
+        markKeyCooldown(dgKey, 'stt_dg', 15000)
+      }
+    }
+    console.warn('[Gateway STT] All Deepgram keys exhausted — falling back to Groq Whisper')
+  }
+
+  // 2. FALLBACK: Groq Whisper rotation across all 5 keys
   for (let i = 0; i < orderedKeys.length; i++) {
     const apiKey = orderedKeys[i]
     const keyId = apiKey.slice(0, 10) + '...'
@@ -440,7 +816,7 @@ app.post('/gateway/stt', async (c) => {
       formData.append('language', sttLanguage)
     }
     if (prompt) {
-      // slice(0, …) not slice(-…): the prompt is a fixed vocabulary hint, and
+      // slice(0, â€¦) not slice(-â€¦): the prompt is a fixed vocabulary hint, and
       // left-truncating it fed Whisper a half-word fragment as leading context.
       formData.append('prompt', prompt.slice(0, 400))
     }
@@ -463,7 +839,11 @@ app.post('/gateway/stt', async (c) => {
 
       if (res.ok) {
         const data = await res.json() as any
-        return c.json({ text: filterHallucinatedSegments(data) }, 200, {
+        // Surface Whisper's detected language (verbose_json includes it) so the
+        // client can pick the answer language for Latin-script and CJK utterances
+        // that script detection alone can't disambiguate. Additive + optional:
+        // older clients simply ignore the extra field.
+        return c.json({ text: filterHallucinatedSegments(data), language: data.language }, 200, {
           'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
           'Access-Control-Allow-Credentials': 'true'
         })
@@ -474,59 +854,29 @@ app.post('/gateway/stt', async (c) => {
 
       // Put key in cooldown on rate limits or server errors and immediately try next key
       if (res.status === 429 || res.status === 401 || res.status >= 500) {
-        markKeyCooldown(apiKey, 45000)
+        markKeyCooldown(apiKey, 'stt', 15000)
         continue
       }
     } catch (err: any) {
       console.error(`[Gateway STT] Error on key ${keyId}:`, err.message)
-      markKeyCooldown(apiKey, 15000)
+      markKeyCooldown(apiKey, 'stt', 15000)
     }
   }
 
-  // 2. Fallback to Deepgram STT if all Groq Whisper keys are exhausted
-  const deepgramKey = c.env.DEEPGRAM_STT_KEY || '***REMOVED***'
-  if (deepgramKey) {
-    try {
-      // Only the unpinned ('auto') case needs nova-3 language=multi, which is the
-      // only Deepgram model that keeps both halves of a Hinglish sentence. An
-      // explicitly picked locale is honoured on nova-2.
-      const dgQuery = sttLanguage
-        ? `model=nova-2&language=${encodeURIComponent(sttLanguage)}`
-        : 'model=nova-3&language=multi'
-      console.log(`[Gateway STT] Falling back to Deepgram STT (${dgQuery})...`)
-      const arrayBuf = await audioBlob.arrayBuffer()
-      const dgRes = await fetch(`https://api.deepgram.com/v1/listen?${dgQuery}&smart_format=true&encoding=linear16`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Token ${deepgramKey}`,
-          'Content-Type': audioBlob.type || 'audio/wav'
-        },
-        body: arrayBuf
-      })
-
-      if (dgRes.ok) {
-        const dgData = await dgRes.json() as any
-        const transcript = dgData.results?.channels?.[0]?.alternatives?.[0]?.transcript || ''
-        return c.json({ text: transcript })
-      }
-    } catch (dgErr: any) {
-      console.error('[Gateway STT] Deepgram fallback failed:', dgErr.message)
-    }
-  }
-
+  // Both providers exhausted (Deepgram tried first, Whisper as the safety net).
   return c.json({ error: 'All STT providers failed or rate-limited' }, 503)
 })
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // 3. LLM (Answer Generation with 5-Key openai/gpt-oss-120b Pool)
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.post('/gateway/llm', async (c) => {
   const userApiKey = c.req.header('x-user-api-key')
   const allKeys = userApiKey && userApiKey.trim().startsWith('gsk_')
     ? [userApiKey.trim(), ...extractGroqKeys(c.env)]
     : extractGroqKeys(c.env)
 
-  const orderedKeys = getOrderedKeys(allKeys)
+  const orderedKeys = getOrderedKeys(allKeys, 'llm')
 
   let rawBody: any
   try {
@@ -537,10 +887,25 @@ app.post('/gateway/llm', async (c) => {
 
   // Strictly enforce openai/gpt-oss-120b (NO Llama model)
   const model = 'openai/gpt-oss-120b'
+
+  // Opt-in SSE streaming: normalize a truthy-but-not-`true` value to a real boolean.
+  const wantsStream = rawBody.stream === true
+
+  // max_tokens is deprecated upstream; accept it on the wire, send the new field.
+  const { max_tokens: _legacyMaxTokens, ...rest } = rawBody
+  const requestedTokens = Math.min(rawBody.max_completion_tokens || rawBody.max_tokens || 1600, 1600)
+
   const payload = {
-    ...rawBody,
+    ...rest,
     model,
-    max_tokens: Math.min(rawBody.max_tokens || 1600, 1600) // Ample token headroom for full complete answers
+    stream: wantsStream,
+    max_completion_tokens: requestedTokens,
+    // gpt-oss-120b defaults to 'medium', and reasoning tokens compete with the
+    // answer for the same ceiling. 'low' leaves the budget for the answer.
+    reasoning_effort: rawBody.reasoning_effort ?? 'low'
+    // Deliberately NOT sending reasoning_format or include_reasoning: Groq documents
+    // reasoning_format as unsupported on gpt-oss-*, and a 400 is not in the retry
+    // predicate at :616, so one unsupported field 503s this route for every key.
   }
 
   let lastError: any = null
@@ -567,6 +932,20 @@ app.post('/gateway/llm', async (c) => {
         })
 
         if (res.ok) {
+          if (wantsStream && res.body) {
+            // Committed to this key: status was 200, so no rotation is possible past here.
+            return new Response(res.body, {
+              status: 200,
+              headers: {
+                'Content-Type': 'text/event-stream; charset=utf-8',
+                'Cache-Control': 'no-cache, no-transform',
+                Connection: 'keep-alive',
+                'Access-Control-Allow-Origin': '*',
+                'x-gateway-stream': '1'
+              }
+            })
+          }
+
           const data = await res.json() as any
           if (data.choices?.[0]?.message) {
             let content = data.choices[0].message.content || ''
@@ -580,17 +959,27 @@ app.post('/gateway/llm', async (c) => {
             }
             content = content.trim()
 
-            // If content was in reasoning block, populate content
+            // Reasoning is chain-of-thought and must never be shown as the answer.
+            // An empty content field is a failed generation, not a cue to substitute it.
             if (!content && reasoning) {
-              content = reasoning.replace(/<think>[\s\S]*?<\/think>\n?/gi, '').trim()
+              console.warn(
+                `[Gateway LLM] empty content with ${reasoning.length} chars of reasoning ` +
+                  `(finish_reason=${data.choices?.[0]?.finish_reason}) — returning empty, not the reasoning`
+              )
             }
 
             data.choices[0].message.content = content
           }
 
+          const finishReason = data.choices?.[0]?.finish_reason ?? 'unknown'
+          if (finishReason === 'length') {
+            console.warn(`[Gateway LLM] truncated: finish_reason=length at max_completion_tokens=${requestedTokens}`)
+          }
+
           return c.json(data, 200, {
             'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
-            'Access-Control-Allow-Credentials': 'true'
+            'Access-Control-Allow-Credentials': 'true',
+            'x-finish-reason': String(finishReason)
           })
         }
 
@@ -607,7 +996,7 @@ app.post('/gateway/llm', async (c) => {
               cooldownMs = Math.min(Math.ceil(parsedSec * 1000) + 500, 15000)
             }
           }
-          markKeyCooldown(apiKey, cooldownMs)
+          markKeyCooldown(apiKey, 'llm', cooldownMs)
           lastError = { status: res.status, body: errText }
           continue // instantly try next key
         }
@@ -615,7 +1004,7 @@ app.post('/gateway/llm', async (c) => {
         lastError = { status: res.status, body: errText }
       } catch (err: any) {
         console.error(`[Gateway LLM] Network error on key ${keyId}:`, err.message)
-        markKeyCooldown(apiKey, 5000)
+        markKeyCooldown(apiKey, 'llm', 5000)
         lastError = err
       }
     }
@@ -627,124 +1016,250 @@ app.post('/gateway/llm', async (c) => {
   }, 503)
 })
 
-// ─────────────────────────────────────────────
-// 4. VISION (Gemini Vision Pipeline)
-// ─────────────────────────────────────────────
-app.post('/gateway/vision', async (c) => {
-  try {
-    const rawBody = await c.req.json() as any
-    const messages = rawBody.messages || []
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// 4. VISION (Groq Qwen3.8 Vision — 5-Key Rotation + SSE Streaming)
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+const VISION_MODELS = ['qwen/qwen3.8-27b', 'qwen/qwen3.6-27b'] as const
+const VISION_MAX_IMAGES = 3 // Groq hard limit on qwen/qwen3.8-27b
 
-    let promptText = 'Look at this screenshot. Identify ANY interview question visible (coding, MCQ, behavioral, HR, technical). Provide the answer the candidate should say out loud.'
-    let base64Data = ''
-    let mimeType = 'image/png'
-
-    for (const msg of messages) {
-      if (Array.isArray(msg.content)) {
-        for (const part of msg.content) {
-          if (part.type === 'text' && part.text) promptText = part.text
-          if (part.type === 'image_url' && part.image_url?.url) {
-            const url = part.image_url.url
-            let rawBase64 = url
-            if (url.includes(';base64,')) {
-              mimeType = url.split(';')[0].replace('data:', '')
-              rawBase64 = url.split(';base64,')[1]
-            } else if (url.includes(',')) {
-              rawBase64 = url.split(',')[1]
-            }
-            base64Data = rawBase64.trim()
-          }
-        }
-      } else if (typeof msg.content === 'string') {
-        promptText = msg.content
+/**
+ * Groq rejects vision requests carrying more than 3 images. Keep the LAST 3 image parts
+ * (the newest screenshot is the one on the candidate's screen) and leave text untouched.
+ */
+function clampVisionImages(messages: any[]): any[] {
+  let total = 0
+  for (const msg of messages) {
+    if (Array.isArray(msg?.content)) {
+      for (const part of msg.content) {
+        if (part?.type === 'image_url') total++
       }
     }
-
-    const GEMINI_API_KEY = c.env.GEMINI_API_KEY || ''
-    const systemInstruction = messages.find((m: any) => m.role === 'system')?.content || ''
-
-    const parts: any[] = [{ text: promptText }]
-    if (base64Data) {
-      parts.push({
-        inline_data: {
-          mime_type: mimeType,
-          data: base64Data
-        }
-      })
-    }
-
-    const payload = {
-      system_instruction: systemInstruction ? { parts: [{ text: systemInstruction }] } : undefined,
-      contents: [{ parts }],
-      generationConfig: {
-        maxOutputTokens: rawBody.max_tokens || 1024,
-        temperature: 0.2
-      }
-    }
-
-    const endpoints = [
-      { url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${GEMINI_API_KEY}`, model: 'gemini-3.5-flash-lite' }
-    ]
-
-    let res: Response | null = null
-    let lastError: any = null
-    let usedModel = 'gemini-3.5-flash-lite'
-
-    for (const endpoint of endpoints) {
-      try {
-        const tempRes = await fetch(endpoint.url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(15000) // 15s per-model timeout for vision processing
-        })
-        if (tempRes.ok) {
-          res = tempRes
-          usedModel = endpoint.model
-          break
-        } else {
-          lastError = await tempRes.json().catch(() => ({}))
-          console.warn(`[Vision] ${endpoint.model} failed:`, lastError?.error?.message)
-        }
-      } catch (err) {
-        lastError = err
-        console.warn(`[Vision] ${endpoint.model} timed out or failed:`, (err as any)?.message || err)
-      }
-    }
-
-    if (!res || !res.ok) {
-      console.error('[Gemini Vision Error]', lastError)
-      return c.json({ error: 'Gemini Vision failed', details: lastError?.error?.message || JSON.stringify(lastError) }, 400)
-    }
-
-    const data = await res.json() as any
-    const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from Gemini.'
-
-    return c.json({
-      id: 'chatcmpl-gemini-vision-' + Date.now(),
-      object: 'chat.completion',
-      created: Math.floor(Date.now() / 1000),
-      model: usedModel,
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: 'assistant',
-            content: responseText
-          },
-          finish_reason: 'stop'
-        }
-      ]
-    })
-  } catch (err: any) {
-    console.error('[Vision Error]', err)
-    return c.json({ error: 'Vision processing failed', message: err.message }, 500)
   }
+  if (total <= VISION_MAX_IMAGES) return messages
+
+  const dropBefore = total - VISION_MAX_IMAGES
+  let seen = 0
+  return messages.map((msg) => {
+    if (!Array.isArray(msg?.content)) return msg
+    const content = msg.content.filter((part: any) => {
+      if (part?.type !== 'image_url') return true
+      return seen++ >= dropBefore
+    })
+    return { ...msg, content }
+  })
+}
+
+function stripThinkTags(raw: string): string {
+  let content = (raw || '').replace(/<think>[\s\S]*?<\/think>\n?/gi, '')
+  const thinkStart = content.toLowerCase().indexOf('<think>')
+  if (thinkStart !== -1) content = content.substring(0, thinkStart)
+  return content.trim()
+}
+
+/**
+ * Last-resort shape fix for a 400: some providers refuse a `system` role alongside image
+ * parts. Folds the system text into the first user text part and drops the system turn.
+ */
+function foldSystemIntoUser(messages: any[]): any[] {
+  const systemText = messages
+    .filter((m) => m?.role === 'system')
+    .map((m) => (typeof m.content === 'string' ? m.content : ''))
+    .join('\n\n')
+    .trim()
+  if (!systemText) return messages
+
+  const rest = messages.filter((m) => m?.role !== 'system')
+  const firstUser = rest.find((m) => m?.role === 'user')
+  if (!firstUser) return [{ role: 'user', content: systemText }, ...rest]
+
+  return rest.map((m) => {
+    if (m !== firstUser) return m
+    if (Array.isArray(m.content)) {
+      const idx = m.content.findIndex((p: any) => p?.type === 'text')
+      if (idx >= 0) {
+        const content = [...m.content]
+        content[idx] = { ...content[idx], text: `${systemText}\n\n${content[idx].text || ''}` }
+        return { ...m, content }
+      }
+      return { ...m, content: [{ type: 'text', text: systemText }, ...m.content] }
+    }
+    return { ...m, content: `${systemText}\n\n${typeof m.content === 'string' ? m.content : ''}` }
+  })
+}
+
+app.post('/gateway/vision', async (c) => {
+  const userApiKey = c.req.header('x-user-api-key')
+  const allKeys = userApiKey && userApiKey.trim().startsWith('gsk_')
+    ? [userApiKey.trim(), ...extractGroqKeys(c.env)]
+    : extractGroqKeys(c.env)
+
+  const orderedKeys = getOrderedKeys(allKeys, 'vision')
+
+  let rawBody: any
+  try {
+    rawBody = await c.req.json()
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400)
+  }
+
+  if (orderedKeys.length === 0) {
+    return c.json({ error: 'No Groq provider keys configured for vision' }, 503)
+  }
+
+  // Opt-in SSE streaming: normalize a truthy-but-not-`true` value to a real boolean.
+  const wantsStream = rawBody.stream === true
+
+  // max_tokens is deprecated upstream; accept it on the wire, send the new field.
+  // model is forced here, so a client-supplied one is dropped rather than honoured.
+  const {
+    max_tokens: _legacyMaxTokens,
+    messages: _clientMessages,
+    model: _clientModel,
+    ...rest
+  } = rawBody
+  const requestedTokens = Math.min(rawBody.max_completion_tokens || rawBody.max_tokens || 1600, 4096)
+
+  const baseMessages = clampVisionImages(Array.isArray(rawBody.messages) ? rawBody.messages : [])
+  if (baseMessages.length === 0) {
+    return c.json({ error: 'messages[] is required' }, 400)
+  }
+
+  const buildPayload = (model: string, messages: any[]) => ({
+    ...rest,
+    model,
+    messages,
+    stream: wantsStream,
+    max_completion_tokens: requestedTokens,
+    // Zero thinking tokens: first byte as fast as possible, which is the entire point of
+    // the live-interview screenshot path. Deliberately NOT sending reasoning_format —
+    // Groq documents it as mutually exclusive with include_reasoning, and a 400 here
+    // would burn the whole key ladder for one unsupported field.
+    reasoning_effort: rawBody.reasoning_effort ?? 'none',
+    temperature: rawBody.temperature ?? 0.6,
+    top_p: rawBody.top_p ?? 0.8
+  })
+
+  let lastError: any = null
+  let foldedSystem = false
+  let messages = baseMessages
+
+  for (const model of VISION_MODELS) {
+    let nextModel = false
+
+    // 2-pass resilience: pass 1 tries every key, pass 2 retries after Groq's rolling
+    // token bucket refills. Same shape as /gateway/llm.
+    for (let pass = 0; pass < 2 && !nextModel; pass++) {
+      if (pass > 0) {
+        console.log(`[Gateway Vision] All keys busy on ${model}, waiting 1200ms for Groq token bucket refill...`)
+        await new Promise((r) => setTimeout(r, 1200))
+      }
+
+      for (let i = 0; i < orderedKeys.length; i++) {
+        const apiKey = orderedKeys[i]
+        const keyId = apiKey.slice(0, 10) + '...'
+
+        try {
+          const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${apiKey}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(buildPayload(model, messages))
+          })
+
+          if (res.ok) {
+            if (wantsStream && res.body) {
+              // Committed to this key: status was 200, so no rotation is possible past here.
+              return new Response(res.body, {
+                status: 200,
+                headers: {
+                  'Content-Type': 'text/event-stream; charset=utf-8',
+                  'Cache-Control': 'no-cache, no-transform',
+                  Connection: 'keep-alive',
+                  'Access-Control-Allow-Origin': '*',
+                  'x-gateway-stream': '1',
+                  'x-vision-model': model
+                }
+              })
+            }
+
+            const data = await res.json() as any
+            if (data.choices?.[0]?.message) {
+              // Defensive: reasoning_effort:'none' should never emit a <think> block.
+              data.choices[0].message.content = stripThinkTags(data.choices[0].message.content || '')
+            }
+
+            const finishReason = data.choices?.[0]?.finish_reason ?? 'unknown'
+            if (finishReason === 'length') {
+              console.warn(`[Gateway Vision] truncated: finish_reason=length at max_completion_tokens=${requestedTokens}`)
+            }
+
+            return c.json(data, 200, {
+              'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
+              'Access-Control-Allow-Credentials': 'true',
+              'x-vision-model': model,
+              'x-finish-reason': String(finishReason)
+            })
+          }
+
+          const errText = await res.text().catch(() => '')
+          console.warn(`[Gateway Vision] Key ${keyId} on ${model} returned ${res.status}: ${errText.substring(0, 150)}`)
+          lastError = { status: res.status, body: errText }
+
+          // Payload too large: no other key and no other model will accept it either.
+          if (res.status === 413) {
+            return c.json({
+              error: 'Screenshot too large for the vision model (Groq caps requests at 20MB)',
+              details: errText.substring(0, 300)
+            }, 413)
+          }
+
+          if (res.status === 429 || res.status === 401 || res.status >= 500) {
+            const resetHeader = res.headers.get('x-ratelimit-reset-tokens') || res.headers.get('retry-after')
+            let cooldownMs = 8000
+            if (resetHeader) {
+              const parsedSec = parseFloat(resetHeader)
+              if (!isNaN(parsedSec) && parsedSec > 0) {
+                cooldownMs = Math.min(Math.ceil(parsedSec * 1000) + 500, 15000)
+              }
+            }
+            markKeyCooldown(apiKey, 'vision', cooldownMs)
+            continue // instantly try next key
+          }
+
+          // One shape-fix attempt before giving up on this model: a 400 while a system
+          // turn sits next to image parts is the one failure a retry can actually fix.
+          if (res.status === 400 && !foldedSystem && messages.some((m: any) => m?.role === 'system')) {
+            foldedSystem = true
+            messages = foldSystemIntoUser(baseMessages)
+            console.warn('[Gateway Vision] 400 with a system turn — retrying once with it folded into the user message')
+            i-- // same key, fixed payload
+            continue
+          }
+
+          // 400/404 = the request or the model is the problem (unsupported field, preview
+          // model pulled). Every key fails identically, so rotating is wasted latency.
+          nextModel = true
+          break
+        } catch (err: any) {
+          console.error(`[Gateway Vision] Network error on key ${keyId}:`, err.message)
+          markKeyCooldown(apiKey, 'vision', 5000)
+          lastError = err
+        }
+      }
+    }
+  }
+
+  return c.json({
+    error: `All Groq provider keys exhausted or rate-limited for ${VISION_MODELS.join(' / ')}`,
+    details: lastError?.body || lastError?.message || lastError
+  }, 503)
 })
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // 5. HELPER FUNCTIONS FOR QUESTION GENERATOR & ANALYZE
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function tryParseJsonObject(raw: string): any | null {
   try {
     return JSON.parse(raw)
@@ -914,16 +1429,16 @@ function parseResumeSummary(summary: unknown): { skills: string[]; projects: str
   }
 }
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // 6. ANALYZE (Resume Parser, Question Generator, Answer Evaluator)
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.post('/gateway/analyze', async (c) => {
   const userApiKey = c.req.header('x-user-api-key')
   const allKeys = userApiKey && userApiKey.trim().startsWith('gsk_')
     ? [userApiKey.trim(), ...extractGroqKeys(c.env)]
     : extractGroqKeys(c.env)
 
-  const orderedKeys = getOrderedKeys(allKeys)
+  const orderedKeys = getOrderedKeys(allKeys, 'analyze')
   const { task, context } = await c.req.json()
 
   let prompt = ''
@@ -1070,14 +1585,14 @@ RETURN STRICTLY A JSON OBJECT:
         const errText = await res.text().catch(() => '')
         console.warn(`[Analyze] Key ${keyId} failed (${res.status}): ${errText.substring(0, 120)}`)
         if (res.status === 429 || res.status === 401 || res.status >= 500) {
-          markKeyCooldown(apiKey, 45000)
+          markKeyCooldown(apiKey, 'analyze', 45000)
           lastError = { status: res.status, body: errText }
           continue
         }
       }
     } catch (err: any) {
       console.error(`[Analyze] Network error on key ${keyId}:`, err.message)
-      markKeyCooldown(apiKey, 15000)
+      markKeyCooldown(apiKey, 'analyze', 15000)
       lastError = err
     }
   }

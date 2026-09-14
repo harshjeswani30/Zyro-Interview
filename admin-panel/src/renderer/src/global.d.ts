@@ -42,7 +42,6 @@ declare global {
   interface ImportMetaEnv {
     readonly MAIN_VITE_SUPABASE_URL: string
     readonly MAIN_VITE_SUPABASE_SERVICE_ROLE_KEY: string
-    readonly MAIN_VITE_ADMIN_PASSWORD: string
   }
 
   interface ImportMeta {

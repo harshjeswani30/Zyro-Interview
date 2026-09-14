@@ -1,10 +1,35 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.1"
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.98.0"
+
+// New sb_secret_ keys ship as SUPABASE_SECRET_KEYS, a JSON dict keyed by
+// name. Fall back to the legacy service_role JWT until it is deactivated.
+function serviceRoleKey(): string {
+  const raw = Deno.env.get('SUPABASE_SECRET_KEYS')
+  if (raw) {
+    try {
+      const key = (JSON.parse(raw) as Record<string, string>)['default']
+      if (key) return key
+    } catch { /* malformed JSON — fall back to the legacy key */ }
+  }
+  return Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+}
+
 import nodemailer from "npm:nodemailer@6.9.13"
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
+
+// Caller-controlled text is interpolated into the notification email's HTML —
+// escape it so a crafted subject/message cannot inject markup (audit C4).
+function escapeHtml(v: unknown): string {
+  return String(v ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
 }
 
 serve(async (req) => {
@@ -15,25 +40,20 @@ serve(async (req) => {
   try {
     const supabaseClient = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+      serviceRoleKey()
     )
 
-    // 1. Verify Authorization
-    const authHeader = req.headers.get('Authorization') || req.headers.get('authorization') || ''
-    const apiKeyHeader = req.headers.get('apikey') || req.headers.get('ApiKey') || ''
-    const token = authHeader.replace(/^Bearer\s+/i, '').trim()
-    const serviceRoleKey = (Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '').trim()
-    const anonKey = (Deno.env.get('SUPABASE_ANON_KEY') || '').trim()
-
-    let isAuthorized = false
-
-    if (token && (token === serviceRoleKey || token === anonKey || apiKeyHeader === serviceRoleKey || apiKeyHeader === anonKey)) {
-      isAuthorized = true
-    } else if (token.length > 20 || apiKeyHeader.length > 20) {
-      isAuthorized = true
+    // 1. Verify Authorization (audit C4: the old "any token >20 chars" check
+       // let anyone send branded emails — replaced with real Supabase JWT
+    // verification; this function is invoked by the logged-in submitter).
+    const authHeader = req.headers.get('Authorization') || ''
+    if (!authHeader.startsWith('Bearer ')) {
+      throw new Error('Unauthorized')
     }
+    const token = authHeader.slice(7).trim()
 
-    if (!isAuthorized) {
+    const { data: { user }, error: authError } = await supabaseClient.auth.getUser(token)
+    if (authError || !user) {
       throw new Error('Unauthorized')
     }
 
@@ -51,28 +71,28 @@ serve(async (req) => {
       <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; color: #333; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
         <h2 style="color: #4f46e5; margin-top: 0;">📩 New Customer Ticket / Feedback Received</h2>
         <p>A customer has submitted a new inquiry on the website:</p>
-        
+
         <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
           <tr>
             <td style="padding: 8px; font-weight: bold; width: 120px; color: #64748b;">Customer Email:</td>
-            <td style="padding: 8px; color: #1e293b;">${userEmail}</td>
+            <td style="padding: 8px; color: #1e293b;">${escapeHtml(userEmail)}</td>
           </tr>
           <tr>
             <td style="padding: 8px; font-weight: bold; color: #64748b;">Category:</td>
-            <td style="padding: 8px; color: #1e293b;"><span style="background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 12px; font-size: 12px;">${category || 'General'}</span></td>
+            <td style="padding: 8px; color: #1e293b;"><span style="background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 12px; font-size: 12px;">${escapeHtml(category || 'General')}</span></td>
           </tr>
           <tr>
             <td style="padding: 8px; font-weight: bold; color: #64748b;">Subject:</td>
-            <td style="padding: 8px; color: #1e293b;">${subject || 'Website Feedback'}</td>
+            <td style="padding: 8px; color: #1e293b;">${escapeHtml(subject || 'Website Feedback')}</td>
           </tr>
           <tr>
             <td style="padding: 8px; font-weight: bold; color: #64748b;">Ticket ID:</td>
-            <td style="padding: 8px; font-family: monospace; color: #64748b;">${ticketId}</td>
+            <td style="padding: 8px; font-family: monospace; color: #64748b;">${escapeHtml(ticketId)}</td>
           </tr>
         </table>
 
         <div style="background-color: #f8fafc; padding: 16px; border-left: 4px solid #4f46e5; border-radius: 4px; margin: 16px 0;">
-          <p style="margin: 0; white-space: pre-wrap; color: #0f172a;">${message}</p>
+          <p style="margin: 0; white-space: pre-wrap; color: #0f172a;">${escapeHtml(message)}</p>
         </div>
 
         <p style="font-size: 13px; color: #94a3b8; margin-top: 24px;">

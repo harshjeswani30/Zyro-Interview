@@ -1,5 +1,19 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.1"
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.98.0"
+
+// New sb_secret_ keys ship as SUPABASE_SECRET_KEYS, a JSON dict keyed by
+// name. Fall back to the legacy service_role JWT until it is deactivated.
+function serviceRoleKey(): string {
+  const raw = Deno.env.get('SUPABASE_SECRET_KEYS')
+  if (raw) {
+    try {
+      const key = (JSON.parse(raw) as Record<string, string>)['default']
+      if (key) return key
+    } catch { /* malformed JSON — fall back to the legacy key */ }
+  }
+  return Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+}
+
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -22,7 +36,7 @@ serve(async (req) => {
 
     const admin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+      serviceRoleKey()
     )
 
     const { data: { user }, error: authError } = await admin.auth.getUser(authHeader.slice(7))
@@ -33,7 +47,7 @@ serve(async (req) => {
     // 2. Read the caller's balance — identity is from token, never from request body
     const { data: profile, error: profileError } = await admin
       .from('profiles')
-      .select('sessions_balance, trial_seconds_used')
+      .select('sessions_balance, trial_seconds_used, held_credits, credits_used_total')
       .eq('id', user.id)
       .single()
 
@@ -46,14 +60,22 @@ serve(async (req) => {
     }
 
     const TRIAL_LIMIT = 600
+    const rawBalance = Number(profile.sessions_balance ?? 0)
+    const heldCredits = Number(profile.held_credits ?? 0)
+    // effective_balance = balance minus already-reserved scheduled session credits
+    const effectiveBalance = Math.max(0, rawBalance - heldCredits)
+
     const allowed =
-      (profile.sessions_balance ?? 0) > 0 ||
+      effectiveBalance > 0 ||
       (profile.trial_seconds_used ?? 0) < TRIAL_LIMIT
 
     return new Response(
       JSON.stringify({
         allowed,
-        sessions_balance: profile.sessions_balance,
+        sessions_balance: rawBalance,
+        effective_balance: effectiveBalance,
+        held_credits: heldCredits,
+        credits_used_total: Number(profile.credits_used_total ?? 0),
         trial_seconds_used: profile.trial_seconds_used,
         reason: allowed ? null : 'insufficient_balance'
       }),

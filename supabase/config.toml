@@ -1,0 +1,7 @@
+# Supabase CLI config for the ROOT functions directory (the desktop app's
+# edge functions: gateway token minting, credit billing, support emails).
+# The website's functions live in website/supabase/ with their own config.
+#
+# Nothing is declared per-function on purpose: deploy behaviour (verify_jwt
+# etc.) stays exactly what the CLI used when these were deployed one-off.
+project_id = "weqwxoihdfsvjwwcgtat"

@@ -1,5 +1,19 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.1"
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.98.0"
+
+// New sb_secret_ keys ship as SUPABASE_SECRET_KEYS, a JSON dict keyed by
+// name. Fall back to the legacy service_role JWT until it is deactivated.
+function serviceRoleKey(): string {
+  const raw = Deno.env.get('SUPABASE_SECRET_KEYS')
+  if (raw) {
+    try {
+      const key = (JSON.parse(raw) as Record<string, string>)['default']
+      if (key) return key
+    } catch { /* malformed JSON — fall back to the legacy key */ }
+  }
+  return Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+}
+
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -22,7 +36,7 @@ serve(async (req) => {
 
     const admin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+      serviceRoleKey()
     )
 
     const { data: { user }, error: authError } = await admin.auth.getUser(authHeader.slice(7))

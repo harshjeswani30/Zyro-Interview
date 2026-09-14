@@ -26,11 +26,6 @@ export default function LoginPage({
       })
 
       if (authErr || !data.user) {
-        // Fallback for transition phase: check fallback password if DB is not setup yet
-        if (password === '***REMOVED***') {
-          onLogin(password)
-          return
-        }
         setError(authErr?.message || 'Invalid admin credentials')
         setLoading(false)
         return
@@ -44,11 +39,6 @@ export default function LoginPage({
         .single()
 
       if (profileErr || !profile?.is_admin) {
-        // Allow fallback password for now
-        if (password === '***REMOVED***') {
-          onLogin(password)
-          return
-        }
         await supabase.auth.signOut()
         setError('This account does not have admin permissions.')
         setLoading(false)

@@ -28,7 +28,6 @@ serve(async (req) => {
   const headers = { ...corsHeaders, 'Content-Type': 'application/json' }
 
   try {
-    // 1. Verify the caller's user token
     const authHeader = req.headers.get('Authorization')
     if (!authHeader?.startsWith('Bearer ')) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers })
@@ -44,32 +43,30 @@ serve(async (req) => {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers })
     }
 
-    // 2. Parse session type from request
-    const { sessionType } = await req.json().catch(() => ({ sessionType: 'regular' }))
-    const isPhone = sessionType === 'phone'
-
-    // 3. Atomically decrement the correct balance column
-    //    The WHERE clause (balance > 0) acts as a lock — Postgres serializes concurrent calls
-    //    so there is no race condition. If two requests arrive simultaneously, only one wins.
-    const balanceCol = isPhone ? 'phone_sessions_balance' : 'sessions_balance'
-
-    const { data, error: rpcError } = await admin.rpc('consume_session_balance', {
-      p_user_id: user.id,
-      p_column: balanceCol
+    // Call RPC to atomically hold 1 credit
+    const { data, error } = await admin.rpc('hold_credit_for_session', {
+      p_user_id: user.id
     })
 
-    if (rpcError) {
-      // If the function returns 'no_sessions_remaining', send a clean 402
-      if (rpcError.message?.includes('no_sessions_remaining')) {
-        return new Response(JSON.stringify({ error: 'No sessions remaining', newBalance: 0 }), { status: 402, headers })
-      }
-      return new Response(JSON.stringify({ error: rpcError.message }), { status: 500, headers })
+    if (error) {
+      console.error('[hold-credit] RPC error:', error)
+      return new Response(JSON.stringify({ ok: false, reason: 'rpc_error', detail: error.message }), { status: 500, headers })
     }
 
-    return new Response(JSON.stringify({ newBalance: data }), { status: 200, headers })
+    if (!data?.ok) {
+      return new Response(
+        JSON.stringify({ ok: false, reason: data?.reason ?? 'insufficient_balance', effective_balance: data?.effective_balance ?? 0 }),
+        { status: 402, headers }
+      )
+    }
+
+    return new Response(
+      JSON.stringify({ ok: true, held_credits: data.held_credits, effective_balance: data.effective_balance }),
+      { status: 200, headers }
+    )
 
   } catch (err: any) {
-    console.error('[consume-session] Error:', err)
+    console.error('[hold-credit] Error:', err)
     return new Response(JSON.stringify({ error: 'Internal server error' }), { status: 500, headers })
   }
 })

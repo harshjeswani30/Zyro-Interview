@@ -1,10 +1,35 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.1"
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.98.0"
+
+// New sb_secret_ keys ship as SUPABASE_SECRET_KEYS, a JSON dict keyed by
+// name. Fall back to the legacy service_role JWT until it is deactivated.
+function serviceRoleKey(): string {
+  const raw = Deno.env.get('SUPABASE_SECRET_KEYS')
+  if (raw) {
+    try {
+      const key = (JSON.parse(raw) as Record<string, string>)['default']
+      if (key) return key
+    } catch { /* malformed JSON — fall back to the legacy key */ }
+  }
+  return Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+}
+
 import nodemailer from "npm:nodemailer@6.9.13"
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
+
+// Caller-controlled text is interpolated into the reply email's HTML —
+// escape it so a crafted subject/reply cannot inject markup (audit C4).
+function escapeHtml(v: unknown): string {
+  return String(v ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
 }
 
 serve(async (req) => {
@@ -15,26 +40,39 @@ serve(async (req) => {
   try {
     const supabaseClient = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+      serviceRoleKey()
     )
 
-    // 1. Verify Authorization
-    const authHeader = req.headers.get('Authorization') || req.headers.get('authorization') || ''
-    const apiKeyHeader = req.headers.get('apikey') || req.headers.get('ApiKey') || ''
-    const token = authHeader.replace(/^Bearer\s+/i, '').trim()
-    const serviceRoleKey = (Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '').trim()
-    const anonKey = (Deno.env.get('SUPABASE_ANON_KEY') || '').trim()
+    // 1. Verify Authorization (audit C4: the old "any token >20 chars" check
+       // let anyone send branded phishing emails — replaced with a real Supabase
+    // JWT verification + a staff_permissions row check).
+    const authHeader = req.headers.get('Authorization') || ''
+    if (!authHeader.startsWith('Bearer ')) {
+      throw new Error('Unauthorized')
+    }
+    const token = authHeader.slice(7).trim()
 
-    let isAuthorized = false
-
-    if (token && (token === serviceRoleKey || token === anonKey || apiKeyHeader === serviceRoleKey || apiKeyHeader === anonKey)) {
-      isAuthorized = true
-    } else if (token.length > 20 || apiKeyHeader.length > 20) {
-      isAuthorized = true
+    const { data: { user }, error: authError } = await supabaseClient.auth.getUser(token)
+    if (authError || !user) {
+      throw new Error('Unauthorized')
     }
 
-    if (!isAuthorized) {
-      throw new Error('Unauthorized')
+    // 2. Only staff may send ticket-reply emails (audit C4).
+    const { data: byId } = await supabaseClient
+      .from('staff_permissions')
+      .select('id')
+      .eq('staff_id', user.id)
+      .limit(1)
+    if (!byId || byId.length === 0) {
+      // The row may predate the staff member's auth id (heal-by-email).
+      const { data: byEmail } = await supabaseClient
+        .from('staff_permissions')
+        .select('id')
+        .ilike('staff_email', user.email)
+        .limit(1)
+      if (!byEmail || byEmail.length === 0) {
+        throw new Error('Unauthorized — staff only')
+      }
     }
 
     const { ticketId, userEmail, subject, replyText, isClosedOrResolved } = await req.json()
@@ -44,7 +82,10 @@ serve(async (req) => {
     }
 
     // Format subject & Threading Headers so email clients group into SAME thread
+    // cleanSubject stays raw for the plain-text subject header; safeSubject is
+    // the escaped variant for interpolation into the HTML body.
     const cleanSubject = (subject || '').replace(/^Re:\s*/i, '').replace(/\[Ticket\s+#[^\]]+\]\s*/i, '').trim()
+    const safeSubject = escapeHtml(cleanSubject)
     const formattedSubject = `Re: [Ticket #${ticketId}] ${cleanSubject || 'Support Inquiry'}`
     const threadMessageId = `<ticket-${ticketId}@zyro-ai.in>`
 
@@ -70,7 +111,7 @@ serve(async (req) => {
               Your Support Request Has Been Closed
             </h1>
             <p style="color: #a7f3d0; font-size: 13px; margin: 0;">
-              Ticket #${ticketId.slice(0, 8)} · ${cleanSubject || 'Support Request'}
+              Ticket #${ticketId.slice(0, 8)} · ${safeSubject || 'Support Request'}
             </p>
           </div>
 
@@ -84,7 +125,7 @@ serve(async (req) => {
             <!-- Resolution Note Card -->
             <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; border-left: 4px solid #10b981; border-radius: 12px; padding: 18px 20px; margin-bottom: 24px;">
               <p style="font-size: 11px; font-weight: 700; color: #15803d; text-transform: uppercase; margin: 0 0 6px 0; letter-spacing: 0.03em;">Resolution Note:</p>
-              <p style="font-size: 13px; color: #166534; line-height: 1.65; margin: 0; white-space: pre-wrap;">${replyText}</p>
+              <p style="font-size: 13px; color: #166534; line-height: 1.65; margin: 0; white-space: pre-wrap;">${escapeHtml(replyText)}</p>
             </div>
 
             <!-- Corporate Closed Notice -->
@@ -137,7 +178,7 @@ serve(async (req) => {
               New Response to Your Ticket
             </h1>
             <p style="color: #a78bfa; font-size: 13px; margin: 0;">
-              Ticket #${ticketId.slice(0, 8)} · ${cleanSubject || 'Support Request'}
+              Ticket #${ticketId.slice(0, 8)} · ${safeSubject || 'Support Request'}
             </p>
           </div>
 
@@ -150,7 +191,7 @@ serve(async (req) => {
 
             <!-- Support Reply Card -->
             <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #8b5cf6; border-radius: 12px; padding: 20px; margin-bottom: 24px;">
-              <p style="font-size: 14px; color: #0f172a; line-height: 1.65; margin: 0; white-space: pre-wrap;">${replyText}</p>
+              <p style="font-size: 14px; color: #0f172a; line-height: 1.65; margin: 0; white-space: pre-wrap;">${escapeHtml(replyText)}</p>
             </div>
 
             <p style="font-size: 13px; color: #64748b; line-height: 1.6; margin: 0;">

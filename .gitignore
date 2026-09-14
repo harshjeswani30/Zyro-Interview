@@ -35,6 +35,26 @@ ENV/
 # Wrangler local secrets
 .dev.vars
 
+# Wrangler build artifacts — they inline env values into the bundle
+.wrangler/
+
 # Scratch directory
 scratch/
+
+# Local scratch scripts (not part of the app)
+check-json.js
+get-models.js
+test-groq.js
+test-rag.js
+
+# Supabase CLI temp state
+supabase/.temp/
+
+# Playwright MCP session artifacts
+.playwright-mcp/
+
+# Personal files — never commit
+Resume template*.pdf
+Resume template.tex
+Screen Recording*.mp4
 

@@ -1,9 +1,90 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.1"
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.98.0"
+
+// New sb_secret_ keys ship as SUPABASE_SECRET_KEYS, a JSON dict keyed by
+// name. Fall back to the legacy service_role JWT until it is deactivated.
+function serviceRoleKey(): string {
+  const raw = Deno.env.get('SUPABASE_SECRET_KEYS')
+  if (raw) {
+    try {
+      const key = (JSON.parse(raw) as Record<string, string>)['default']
+      if (key) return key
+    } catch { /* malformed JSON — fall back to the legacy key */ }
+  }
+  return Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+}
+
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
+
+// Constant-time string compare (avoids leaking the signature via response timing).
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return diff === 0
+}
+
+// ── Audit C5: verify Resend's svix signature BEFORE the payload is trusted ──
+// Resend delivers inbound-email webhooks via Svix. Every request carries
+// svix-id / svix-timestamp / svix-signature; the signature is
+// base64(HMAC-SHA256(base64decode(signingSecret), `${id}.${ts}.${rawBody}`)).
+// The check is fail-closed: without it anyone could forge a "customer reply",
+// create tickets for arbitrary victims, or trigger the closed-ticket
+// auto-responder from our domain.
+async function verifySvixSignature(
+  req: Request,
+  rawBody: string
+): Promise<{ ok: true } | { ok: false; status: number; reason: string }> {
+  const secret = Deno.env.get('RESEND_WEBHOOK_SECRET')
+  if (!secret) {
+    return { ok: false, status: 503, reason: 'RESEND_WEBHOOK_SECRET not configured — set it (Resend dashboard → Webhooks → Signing Secret) before inbound email can be processed' }
+  }
+
+  const svixId = req.headers.get('svix-id')
+  const svixTimestamp = req.headers.get('svix-timestamp')
+  const svixSignature = req.headers.get('svix-signature')
+  if (!svixId || !svixTimestamp || !svixSignature) {
+    return { ok: false, status: 401, reason: 'Missing svix signature headers' }
+  }
+
+  // Replay guard: reject timestamps more than 5 minutes from now (Svix recommendation).
+  const ts = Number(svixTimestamp)
+  if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > 300) {
+    return { ok: false, status: 401, reason: 'Stale svix timestamp' }
+  }
+
+  // Signature covers the RAW body bytes — parse/re-serialize would break it,
+  // which is why rawBody is read once below and passed through.
+  const signedContent = `${svixId}.${svixTimestamp}.${rawBody}`
+  const secretBytes = Uint8Array.from(
+    atob(secret.replace(/^whsec_/, '')),
+    (ch) => ch.charCodeAt(0)
+  )
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    secretBytes,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  )
+  const sigBuf = await crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(signedContent))
+  const expected = btoa(String.fromCharCode(...new Uint8Array(sigBuf)))
+
+  // The header may carry several space-separated signatures, each "v1,<b64>".
+  const provided = svixSignature
+    .split(' ')
+    .map((s) => s.trim())
+    .filter((s) => s.startsWith('v1,'))
+    .map((s) => s.slice(3))
+
+  if (provided.length === 0 || !provided.some((sig) => timingSafeEqual(sig, expected))) {
+    return { ok: false, status: 401, reason: 'Invalid svix signature' }
+  }
+  return { ok: true }
 }
 
 serve(async (req) => {
@@ -14,10 +95,23 @@ serve(async (req) => {
   try {
     const supabaseClient = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+      serviceRoleKey()
     )
 
-    const payload = await req.json()
+    // Read the RAW body first — the svix signature is computed over these exact
+    // bytes — then verify, then parse. An unsigned/invalid request never reaches
+    // any table.
+    const rawBody = await req.text()
+    const verification = await verifySvixSignature(req, rawBody)
+    if (!verification.ok) {
+      console.warn(`[Inbound Webhook] Rejected: ${verification.reason}`)
+      return new Response(
+        JSON.stringify({ error: verification.reason }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: verification.status }
+      )
+    }
+
+    const payload = JSON.parse(rawBody)
     console.log('[Inbound Webhook] Received payload:', JSON.stringify(payload))
 
     // Parse email details from Resend / Mailgun / SendGrid / Custom Webhook payload

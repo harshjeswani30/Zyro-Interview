@@ -1,0 +1,68 @@
+# AI Gateway — environment variables
+#
+# Copy to `.dev.vars` for local development (`wrangler dev` reads it automatically),
+# and set the same names as encrypted secrets in production:
+#
+#     wrangler secret put OPENROUTER_API_KEY
+#     wrangler secret put OPENROUTER_MODEL
+#
+# `.dev.vars` is gitignored (root .gitignore). This example file is committed.
+# PLACEHOLDERS ONLY — never put a real key in this file.
+
+# ── Resume AI ────────────────────────────────────────────────────────────────
+# The OpenRouter key. Read only by the Worker, in src/resume/openrouter.ts.
+# It must never appear in website/src, in a VITE_-prefixed variable, or in any
+# file that reaches the browser bundle.
+#
+# Note: the resume routes are unauthenticated, like every other route in this
+# gateway. Anyone who knows the worker URL can therefore spend this key, and the
+# only brake is a best-effort per-IP rate limit in src/resume/routes.ts. Use a
+# key with a spending cap set on the OpenRouter side.
+OPENROUTER_API_KEY=sk-or-v1-your-key-here
+
+# The model slug, configurable without a code change. Any OpenRouter model that
+# supports JSON output works; the gateway degrades from json_schema to
+# json_object automatically for models that do not support strict schemas.
+OPENROUTER_MODEL=your/model-slug
+
+# Optional. Tried once if the primary model is unavailable.
+# OPENROUTER_MODEL_FALLBACK=your/fallback-model-slug
+
+# Optional overrides.
+# OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+# OPENROUTER_SITE_URL=https://your-domain.example
+# OPENROUTER_APP_NAME=Zyro Resume AI
+
+# ── Existing interview endpoints ─────────────────────────────────────────────
+GROQ_KEY_1=gsk_your_key_here
+GROQ_KEY_2=gsk_your_key_here
+GROQ_KEY_3=gsk_your_key_here
+GROQ_KEY_4=gsk_your_key_here
+GROQ_KEY_5=gsk_your_key_here
+
+GROQ_LLAMA_KEY_1=gsk_your_key_here
+GROQ_LLAMA_KEY_2=gsk_your_key_here
+GROQ_LLAMA_KEY_3=gsk_your_key_here
+GROQ_LLAMA_KEY_4=gsk_your_key_here
+GROQ_LLAMA_KEY_5=gsk_your_key_here
+
+GROQ_WHISPER_KEY_1=gsk_your_key_here
+GROQ_WHISPER_KEY_2=gsk_your_key_here
+GROQ_WHISPER_KEY_3=gsk_your_key_here
+GROQ_WHISPER_KEY_4=gsk_your_key_here
+GROQ_WHISPER_KEY_5=gsk_your_key_here
+
+# Optional. /gateway/vision (Groq qwen/qwen3.8-27b) rotates over the merged pool above
+# by default — Groq rate-limits per model, so the vision scope already gets its own
+# fresh quota bucket on the same keys. Set these only if you want dedicated keys.
+# GROQ_VISION_KEY_1=gsk_your_key_here
+# GROQ_VISION_KEY_2=gsk_your_key_here
+# GROQ_VISION_KEY_3=gsk_your_key_here
+# GROQ_VISION_KEY_4=gsk_your_key_here
+# GROQ_VISION_KEY_5=gsk_your_key_here
+
+DEEPGRAM_STT_KEY=your-deepgram-key-here
+CARTESIA_API_KEY=sk_car_your_key_here
+CARTESIA_VOICE_ID=your-voice-id-here
+ELEVENLABS_API_KEY=sk_your_key_here
+ELEVENLABS_VOICE_ID=your-voice-id-here
