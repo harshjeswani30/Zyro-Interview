@@ -33,16 +33,24 @@ jobs:
           node-version: 20
           cache: 'pnpm'
 
+      - name: Configure pnpm for universal mac build (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          printf 'supported-architectures[os][]=current\nsupported-architectures[os][]=darwin\nsupported-architectures[cpu][]=current\nsupported-architectures[cpu][]=x64\nsupported-architectures[cpu][]=arm64\n' >> .npmrc
+          cat .npmrc
+
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
+      # --publish never: the github publish config targets a separate downloads
+      # repo and needs a PAT we don't have in CI; artifacts are uploaded below.
       - name: Build and package application (macOS)
         if: matrix.os == 'macos-latest'
-        run: pnpm run build:mac
+        run: pnpm run build:mac -- --publish never
 
       - name: Build and package application (Windows)
         if: matrix.os == 'windows-latest'
-        run: pnpm run build:win
+        run: pnpm run build:win -- --publish never
 
       - name: Upload artifacts (macOS)
         if: matrix.os == 'macos-latest'

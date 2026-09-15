@@ -34,6 +34,12 @@ mac:
   files:
     - "!**/node_modules/koffi/**"
     - "!**/node_modules/@koromix/**"
+  # pnpm installs native packages per-runner-arch; with both darwin variants
+  # present (CI installs them via .npmrc supported-architectures) the two
+  # arch-specific variants are identical across the x64/arm64 temp builds,
+  # which @electron/universal rejects unless allow-listed here. At runtime
+  # @napi-rs resolves the right variant via process.arch.
+  x64ArchFiles: "**/node_modules/**"
   entitlementsInherit: build/entitlements.mac.plist
   target:
     - target: dmg
