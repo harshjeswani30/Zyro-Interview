@@ -1,0 +1,163 @@
+name: Release Desktop App
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      # Only cut a release when the app itself changes — docs, website, and
+      # workflow-only edits must not ship a new version to users.
+      - 'src/**'
+      - 'resources/**'
+      - 'build/**'
+      - 'electron-builder.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOWNLOADS_REPO: harshjeswani30/Zyro-Ai-Downloads
+
+jobs:
+  version:
+    name: Compute next version
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ZYRO_RELEASES_TOKEN }}
+    outputs:
+      version: ${{ steps.next_version.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine next version from the latest published release
+        id: next_version
+        shell: bash
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          LATEST_TAG=$(gh api "repos/$DOWNLOADS_REPO/releases/latest" --jq '.tag_name' 2>/dev/null || echo "")
+          if [ -z "$LATEST_TAG" ]; then
+            # No release yet — the package.json version is the seed.
+            NEXT="$PKG_VERSION"
+          else
+            # Seed with whichever is higher: the last release tag or the
+            # package.json version (tags can lag the version already shipping
+            # inside the assets, e.g. tag v1.0.0 carrying a 1.0.1 installer).
+            HIGHER=$(printf '%s\n%s\n' "${LATEST_TAG#v}" "$PKG_VERSION" | sort -V | tail -1)
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$HIGHER"
+            NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
+          fi
+          echo "Latest tag: ${LATEST_TAG:-none} | package.json: $PKG_VERSION | next: $NEXT"
+          echo "version=$NEXT" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.os }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Set app version for this release
+        shell: bash
+        run: npm version "${{ needs.version.outputs.version }}" --no-git-tag-version
+
+      - name: Configure pnpm for universal mac build (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          printf 'supported-architectures[os][]=current\nsupported-architectures[os][]=darwin\nsupported-architectures[cpu][]=current\nsupported-architectures[cpu][]=x64\nsupported-architectures[cpu][]=arm64\n' >> .npmrc
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      # --publish never here: the release itself is assembled by the release
+      # job below, so both OS builds must finish before anything is published.
+      - name: Build and package application (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          pnpm exec electron-vite build
+          pnpm exec electron-builder --mac --publish never
+
+      - name: Build and package application (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          pnpm run typecheck
+          pnpm exec electron-vite build
+          pnpm exec electron-builder --win --publish never
+
+      - name: Upload artifacts (macOS)
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-build
+          path: |
+            dist/*.dmg
+            dist/*.dmg.blockmap
+            dist/*-mac.zip
+            dist/*-mac.zip.blockmap
+            dist/latest-mac.yml
+
+      - name: Upload artifacts (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: |
+            dist/*.exe
+            dist/*.exe.blockmap
+            dist/latest.yml
+
+  release:
+    name: Publish release to downloads repo
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ZYRO_RELEASES_TOKEN }}
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub release with all installers
+        shell: bash
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          TAG="v$VERSION"
+          echo "Publishing $TAG with assets:"
+          ls -la artifacts/
+
+          if gh release view "$TAG" --repo "$DOWNLOADS_REPO" > /dev/null 2>&1; then
+            echo "Release $TAG already exists (re-run?) — uploading assets with --clobber"
+            gh release upload "$TAG" artifacts/* --repo "$DOWNLOADS_REPO" --clobber
+          else
+            gh release create "$TAG" artifacts/* \
+              --repo "$DOWNLOADS_REPO" \
+              --title "Zyro AI v$VERSION" \
+              --notes "Desktop app release v$VERSION — built automatically from the main branch.
+
+          **Downloads**
+          - **Windows**: \`AppService-Setup-$VERSION.exe\`
+          - **macOS** (Apple Silicon & Intel): \`zyro-ai-$VERSION.dmg\`
+
+          The \`latest.yml\` / \`latest-mac.yml\` feeds power in-app auto-updates — do not delete them."
+          fi

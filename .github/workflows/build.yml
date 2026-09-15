@@ -1,9 +1,8 @@
 name: Build Desktop App
 
 on:
-  push:
-    branches:
-      - main
+  # Pushes to main are handled by release.yml (which builds + releases).
+  # This workflow stays for PR validation and manual runs.
   pull_request:
     branches:
       - main

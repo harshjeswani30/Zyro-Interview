@@ -70,7 +70,7 @@ publish:
   provider: github
   owner: harshjeswani30
   repo: Zyro-Ai-Downloads
-  releaseType: prerelease
+  releaseType: release
 protocols:
   name: zyroapp
   schemes:
