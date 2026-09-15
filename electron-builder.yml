@@ -1,5 +1,11 @@
 appId: com.security.hp
-productName: AppService
+# Brand name for user-facing surfaces (Finder/Spotlight, installer metadata).
+# Process-list stealth ("AppService" in Task Manager / Activity Monitor) is
+# applied by build/after-pack.js (macOS) and build/after-sign.js (Windows) —
+# see their header comments.
+productName: Zyro-Ai
+afterPack: build/after-pack.js
+afterSign: build/after-sign.js
 directories:
   buildResources: build
 files:
@@ -18,7 +24,10 @@ win:
     - nsis
   icon: build/icon.ico
 nsis:
-  artifactName: ${productName}-Setup-${version}.${ext}
+  # Pinned so the installer filename stays "AppService-Setup-x.y.z.exe" now
+  # that productName is the brand — the website download hook and released
+  # latest.yml feeds reference this exact name.
+  artifactName: AppService-Setup-${version}.${ext}
   shortcutName: Zyro-Ai
   uninstallDisplayName: Zyro-Ai
   oneClick: true

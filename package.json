@@ -1,6 +1,6 @@
 {
   "name": "zyro-ai",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "An Electron application with React and TypeScript",
   "main": "./out/main/index.js",
   "author": "example.com",
@@ -75,5 +75,6 @@
       "electron",
       "esbuild"
     ]
-  }
+  },
+  "productName": "Zyro-Ai"
 }
