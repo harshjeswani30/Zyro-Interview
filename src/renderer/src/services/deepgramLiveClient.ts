@@ -28,11 +28,6 @@ import {
 export interface LiveTranscriberOptions {
     /** Sample rate of the PCM being pushed in. Sent to the recogniser as-is. */
     sampleRate: number
-    /**
-     * Deepgram key, or '' when none is configured. Ignored when `endpoint` points at a
-     * proxy that supplies its own credentials.
-     */
-    apiKey: string
     /** Override the socket URL. Defaults to Deepgram's live endpoint. */
     endpoint?: string
     /**
@@ -49,7 +44,6 @@ export interface LiveTranscriberOptions {
     onUnavailable?: (reason: string) => void
 }
 
-const DEEPGRAM_LIVE_URL = 'wss://api.deepgram.com/v1/listen'
 /** Attempts before declaring the connection unavailable. */
 const MAX_ATTEMPTS = 3
 const RECONNECT_DELAY_MS = 800
@@ -64,6 +58,11 @@ export function floatTo16BitPCM(input: Float32Array): ArrayBuffer {
     return out.buffer
 }
 
+/**
+ * Builds the gateway-proxied WS URL. The gateway supplies its own Deepgram
+ * credentials (the key never reaches this process — audit H4), and auth rides
+ * the query string because a WS handshake can't carry headers.
+ */
 export function buildLiveUrl(opts: LiveTranscriberOptions): string {
     const params = new URLSearchParams({
         model: 'nova-3',
@@ -77,9 +76,7 @@ export function buildLiveUrl(opts: LiveTranscriberOptions): string {
         smart_format: 'true',
         punctuate: 'true'
     })
-    const base = `${opts.endpoint || DEEPGRAM_LIVE_URL}?${params.toString()}`
-    // Gateway auth for a proxied endpoint — see wsToken docs above. Appended last
-    // so it never interferes with the provider's own params.
+    const base = `${opts.endpoint}?${params.toString()}`
     return opts.wsToken ? `${base}&token=${encodeURIComponent(opts.wsToken)}` : base
 }
 
@@ -105,16 +102,14 @@ export class LiveTranscriber {
 
     private open(): void {
         if (this.stopped) return
-        if (!this.opts.apiKey && !this.opts.endpoint) {
-            this.opts.onUnavailable?.('no streaming key configured')
+        if (!this.opts.endpoint) {
+            this.opts.onUnavailable?.('no streaming endpoint configured')
             return
         }
         this.attempts += 1
         try {
             const url = buildLiveUrl(this.opts)
-            this.socket = this.opts.apiKey
-                ? new WebSocket(url, ['token', this.opts.apiKey])
-                : new WebSocket(url)
+            this.socket = new WebSocket(url)
         } catch (err) {
             this.fail(`socket construction failed: ${(err as Error).message}`)
             return

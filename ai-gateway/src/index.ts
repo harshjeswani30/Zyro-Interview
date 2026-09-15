@@ -199,6 +199,33 @@ function markKeyCooldown(key: string, scope: KeyScope, cooldownMs: number) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CORS policy (audit M5)
+// ─────────────────────────────────────────────────────────────────────────────
+// The gateway is called from exactly three places: the website (www.zyro-ai.in),
+// local dev servers, and the desktop app's renderer (whose origin is the literal
+// string "null" because it loads from file://). Everything else gets no CORS
+// headers, so a malicious page opened in the user's browser cannot read gateway
+// responses cross-origin. Non-browser clients (curl, Electron's main process)
+// never send Origin and ignore CORS entirely.
+const ALLOWED_ORIGINS = new Set(['https://www.zyro-ai.in', 'https://zyro-ai.in'])
+
+function corsAllowOrigin(originHeader: string | undefined): string | null {
+  if (!originHeader) return null
+  if (ALLOWED_ORIGINS.has(originHeader)) return originHeader
+  // Desktop app: file:// renderer sends the literal origin "null"
+  if (originHeader === 'null') return 'null'
+  // Local dev servers (Vite etc.), any port
+  if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(originHeader)) return originHeader
+  return null
+}
+
+/** CORS headers for a request, or an empty object when the origin is not allowed. */
+function gatewayCorsHeaders(originHeader: string | undefined): Record<string, string> {
+  const origin = corsAllowOrigin(originHeader)
+  return origin ? { 'Access-Control-Allow-Origin': origin } : {}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // HMAC Auth Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -248,22 +275,29 @@ async function verifyGatewayToken(
 
 const app = new Hono<{ Bindings: Env }>()
 
-// Permissive CORS for all client requests (Desktop App, Web, Localhost)
+// CORS restricted to known origins (audit M5). No credentials — the gateway
+// authenticates via Authorization/x-gateway-token headers, never cookies, so
+// reflecting arbitrary origins with credentials:true only bought cross-site
+// request forgery against a logged-in user.
 app.use('*', cors({
-  origin: (origin) => origin || '*',
+  origin: (origin) => corsAllowOrigin(origin) ?? undefined,
   allowMethods: ['POST', 'GET', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'x-user-api-key', 'x-gateway-token'],
   maxAge: 86400,
-  credentials: true
+  credentials: false
 }))
 
-// Explicitly handle OPTIONS for fast preflight
+// Explicitly handle OPTIONS for fast preflight — same allowlist as above.
+// Requests from unknown origins get no ACAO header, so the browser blocks them.
 app.options('*', (c) => {
+  const headers = gatewayCorsHeaders(c.req.header('Origin'))
+  if (!headers['Access-Control-Allow-Origin']) {
+    return c.text('Origin not allowed', 403)
+  }
   return c.text('', 204, {
-    'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
+    ...headers,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-user-api-key, x-gateway-token',
-    'Access-Control-Allow-Credentials': 'true',
     'Access-Control-Max-Age': '86400'
   })
 })
@@ -295,7 +329,7 @@ app.use('/gateway/*', async (c, next) => {
     return c.json(
       { error: 'Unauthorized', message: 'Valid gateway token required. Please restart the app.' },
       401,
-      { 'Access-Control-Allow-Origin': c.req.header('Origin') || '*' }
+      { ...gatewayCorsHeaders(c.req.header('Origin')) }
     )
   }
 
@@ -308,7 +342,7 @@ app.use('/gateway/*', async (c, next) => {
       return c.json(
         { error: 'Forbidden', message: 'Account access has been revoked. Please contact support.' },
         403,
-        { 'Access-Control-Allow-Origin': c.req.header('Origin') || '*' }
+        { ...gatewayCorsHeaders(c.req.header('Origin')) }
       )
     }
   }
@@ -321,17 +355,17 @@ app.use('/gateway/*', async (c, next) => {
 // Custom 404
 app.notFound((c) => {
   return c.json({ error: 'Not Found', path: c.req.path }, 404, {
-    'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
-    'Access-Control-Allow-Credentials': 'true'
+    ...gatewayCorsHeaders(c.req.header('Origin'))
   })
 })
 
 // Global error handler
 app.onError((err, c) => {
+  // Log the real error server-side; the client gets a generic body (audit M5 —
+  // provider/upstream internals leaked through err.message before).
   console.error('[Global Error]', err)
-  return c.json({ error: 'Internal Server Error', message: err.message }, 500, {
-    'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
-    'Access-Control-Allow-Credentials': 'true'
+  return c.json({ error: 'Internal Server Error' }, 500, {
+    ...gatewayCorsHeaders(c.req.header('Origin'))
   })
 })
 
@@ -417,7 +451,7 @@ app.all('/gateway/tts', async (c) => {
               'Content-Type': 'audio/mpeg',
               'Content-Length': audioBytes.byteLength.toString(),
               'Cache-Control': 'public, max-age=86400',
-              'Access-Control-Allow-Origin': '*',
+              ...gatewayCorsHeaders(c.req.header('Origin')),
               'x-tts-provider': 'cartesia'
             }
           })
@@ -458,7 +492,7 @@ app.all('/gateway/tts', async (c) => {
               'Content-Type': 'audio/mpeg',
               'Content-Length': audioBytes.byteLength.toString(),
               'Cache-Control': 'public, max-age=86400',
-              'Access-Control-Allow-Origin': '*',
+              ...gatewayCorsHeaders(c.req.header('Origin')),
               'x-tts-provider': 'elevenlabs'
             }
           })
@@ -474,7 +508,7 @@ app.all('/gateway/tts', async (c) => {
     return c.json({ error: 'All neural TTS providers failed' }, 502)
   } catch (err: any) {
     console.error('[TTS Global Error]', err)
-    return c.json({ error: 'TTS processing failed', message: err.message }, 500)
+    return c.json({ error: 'TTS processing failed' }, 500)
   }
 })
 
@@ -502,7 +536,7 @@ app.post('/gateway/embeddings', async (c) => {
     return c.json(response)
   } catch (err: any) {
     console.error('[Embeddings Error]', err)
-    return c.json({ error: 'Failed to generate embeddings', message: err.message }, 500)
+    return c.json({ error: 'Failed to generate embeddings' }, 500)
   }
 })
 
@@ -777,8 +811,8 @@ app.post('/gateway/stt', async (c) => {
           const detectedLanguage =
             channel?.detected_language || channel?.alternatives?.[0]?.languages?.[0]
           return c.json({ text: transcript, language: detectedLanguage }, 200, {
-            'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
-            'Access-Control-Allow-Credentials': 'true'
+            ...gatewayCorsHeaders(c.req.header('Origin')),
+            
           })
         }
         const dgErrText = await dgRes.text().catch(() => '')
@@ -844,8 +878,8 @@ app.post('/gateway/stt', async (c) => {
         // that script detection alone can't disambiguate. Additive + optional:
         // older clients simply ignore the extra field.
         return c.json({ text: filterHallucinatedSegments(data), language: data.language }, 200, {
-          'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
-          'Access-Control-Allow-Credentials': 'true'
+          ...gatewayCorsHeaders(c.req.header('Origin')),
+          
         })
       }
 
@@ -892,12 +926,14 @@ app.post('/gateway/llm', async (c) => {
   const wantsStream = rawBody.stream === true
 
   // max_tokens is deprecated upstream; accept it on the wire, send the new field.
-  const { max_tokens: _legacyMaxTokens, ...rest } = rawBody
+  const { max_tokens: _legacyMaxTokens, ..._rest } = rawBody
+  void _rest // audit L3: explicit allowlist below — unknown client fields are
+  // dropped so they can't inject provider-level options through this proxy.
   const requestedTokens = Math.min(rawBody.max_completion_tokens || rawBody.max_tokens || 1600, 1600)
 
   const payload = {
-    ...rest,
     model,
+    messages: Array.isArray(rawBody.messages) ? rawBody.messages : [],
     stream: wantsStream,
     max_completion_tokens: requestedTokens,
     // gpt-oss-120b defaults to 'medium', and reasoning tokens compete with the
@@ -940,7 +976,7 @@ app.post('/gateway/llm', async (c) => {
                 'Content-Type': 'text/event-stream; charset=utf-8',
                 'Cache-Control': 'no-cache, no-transform',
                 Connection: 'keep-alive',
-                'Access-Control-Allow-Origin': '*',
+                ...gatewayCorsHeaders(c.req.header('Origin')),
                 'x-gateway-stream': '1'
               }
             })
@@ -977,8 +1013,7 @@ app.post('/gateway/llm', async (c) => {
           }
 
           return c.json(data, 200, {
-            'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
-            'Access-Control-Allow-Credentials': 'true',
+            ...gatewayCorsHeaders(c.req.header('Origin')),
             'x-finish-reason': String(finishReason)
           })
         }
@@ -1115,8 +1150,11 @@ app.post('/gateway/vision', async (c) => {
     max_tokens: _legacyMaxTokens,
     messages: _clientMessages,
     model: _clientModel,
-    ...rest
+    ..._rest
   } = rawBody
+  void _rest // audit L3: unknown client fields are dropped, not forwarded — the
+  // payload below is an explicit allowlist, so a caller can't inject provider-level
+  // options (other_models, response_format, tool specs, …) through this proxy.
   const requestedTokens = Math.min(rawBody.max_completion_tokens || rawBody.max_tokens || 1600, 4096)
 
   const baseMessages = clampVisionImages(Array.isArray(rawBody.messages) ? rawBody.messages : [])
@@ -1125,7 +1163,6 @@ app.post('/gateway/vision', async (c) => {
   }
 
   const buildPayload = (model: string, messages: any[]) => ({
-    ...rest,
     model,
     messages,
     stream: wantsStream,
@@ -1177,7 +1214,7 @@ app.post('/gateway/vision', async (c) => {
                   'Content-Type': 'text/event-stream; charset=utf-8',
                   'Cache-Control': 'no-cache, no-transform',
                   Connection: 'keep-alive',
-                  'Access-Control-Allow-Origin': '*',
+                  ...gatewayCorsHeaders(c.req.header('Origin')),
                   'x-gateway-stream': '1',
                   'x-vision-model': model
                 }
@@ -1196,8 +1233,7 @@ app.post('/gateway/vision', async (c) => {
             }
 
             return c.json(data, 200, {
-              'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
-              'Access-Control-Allow-Credentials': 'true',
+              ...gatewayCorsHeaders(c.req.header('Origin')),
               'x-vision-model': model,
               'x-finish-reason': String(finishReason)
             })

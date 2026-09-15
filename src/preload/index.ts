@@ -58,8 +58,6 @@ const api = {
     releaseHold?: boolean
     qa: { id: string; question: string; answer: string; timestamp: string }[]
   }): void => ipcRenderer.send('end-interview-and-exit', payload),
-  supabaseManualSync: (accessToken: string, refreshToken?: string, userId?: string): Promise<{ ok: boolean; userId: string | null }> =>
-    ipcRenderer.invoke('supabase-manual-sync', { accessToken, refreshToken, userId }),
   // ── Credit-Hour Billing ──────────────────────────────────
   supabaseHoldCredit: (): Promise<{ ok: boolean; reason?: string; effective_balance?: number; held_credits?: number }> =>
     ipcRenderer.invoke('supabase-hold-credit'),
@@ -140,14 +138,13 @@ const api = {
   reloadWindow: (): void => ipcRenderer.send('reload-window'),
   minimizeWindow: (): void => ipcRenderer.send('minimize-window'),
   closeWindow: (): void => ipcRenderer.send('close-window'),
-  installUpdate: (): Promise<void> => ipcRenderer.invoke('install-update'),
+  installUpdate: (): Promise<boolean> => ipcRenderer.invoke('install-update'),
   downloadUpdate: (): Promise<void> => ipcRenderer.invoke('download-update'),
   // ── Overlay window ────────────────────────────────────────
   getSession: (): Promise<unknown> => ipcRenderer.invoke('get-session'),
   getAiGatewayUrl: (): Promise<string> => ipcRenderer.invoke('get-ai-gateway-url'),
-  getDeepgramKey: (): Promise<string> => ipcRenderer.invoke('get-deepgram-key'),
   getSupabaseToken: (): Promise<string | null> => ipcRenderer.invoke('get-supabase-token'),
-  getSupabaseSessionData: (): Promise<{ accessToken: string | null; refreshToken: string | null }> => ipcRenderer.invoke('get-supabase-session-data'),
+  getSupabaseSessionData: (): Promise<{ accessToken: string | null }> => ipcRenderer.invoke('get-supabase-session-data'),
   // ── Knowledge Base (via main process — always uses valid user token) ───
   kbList: (): Promise<{ data: { id: string; title: string; created_at: string }[] | null; error: string | null }> =>
     ipcRenderer.invoke('kb-list'),
@@ -273,11 +270,10 @@ const api = {
       ipcRenderer.removeListener('update-error', listener)
     }
   },
-  onAuthCallbackSuccess: (
-    cb: (data: { accessToken: string; refreshToken?: string }) => void
-  ): (() => void) => {
-    const listener = (_e: unknown, data: { accessToken: string; refreshToken?: string }): void =>
-      cb(data)
+  // No tokens cross this boundary (audit H4) — the payload only signals that
+  // main stored the session; the renderer pulls the profile via supabaseGetProfile.
+  onAuthCallbackSuccess: (cb: () => void): (() => void) => {
+    const listener = (): void => cb()
     ipcRenderer.on('auth-callback-success', listener)
     return (): void => {
       ipcRenderer.removeListener('auth-callback-success', listener)

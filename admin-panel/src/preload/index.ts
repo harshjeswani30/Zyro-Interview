@@ -10,7 +10,11 @@ contextBridge.exposeInMainWorld('adminEnv', {
 contextBridge.exposeInMainWorld('api', {
   reloadWindow: () => ipcRenderer.send('reload-window'),
   closeWindow: () => ipcRenderer.send('close-window'),
-  openExternal: (url: string) => ipcRenderer.send('open-external', url)
+  openExternal: (url: string) => ipcRenderer.send('open-external', url),
+  // Audit H6: the renderer hands its Supabase JWT to main after login; main
+  // verifies the account is an admin before any privileged IPC will run.
+  setAdminSession: (token: string) => ipcRenderer.invoke('admin:set-session', token),
+  clearAdminSession: () => ipcRenderer.invoke('admin:clear-session')
 })
 
 // Stripe API — secret key stays in main process, never exposed to renderer

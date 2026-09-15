@@ -23,32 +23,25 @@ export function DesktopLoginPage({ onLoginSuccess }: DesktopLoginPageProps): Rea
   const [error, setError] = useState('')
 
   useEffect(() => {
-    // Listen for Google OAuth success from deep link
-    const removeListener = window.api.onAuthCallbackSuccess(async ({ accessToken, refreshToken }) => {
+    // Listen for Google OAuth success from deep link.
+    // The payload carries no tokens — main stored the session itself; the
+    // renderer only needs to pull the profile (audit H4/H5).
+    const removeListener = window.api.onAuthCallbackSuccess(async () => {
       console.log('[DesktopLogin] Received OAuth success from callback!')
       setLoading(true)
       setError('')
       try {
-        console.log('[DesktopLogin] Syncing session to main process...')
-
-        // First attempt: main process may have already set userId during handleProtocolUrl
-        let profile = await window.api.supabaseGetProfile()
-
-        if (!profile) {
-          // Main process may need a moment to resolve userId — do an explicit awaitable sync
-          console.log('[DesktopLogin] Profile null, running manual sync...')
-          await window.api.supabaseManualSync(accessToken, refreshToken)
-
-          // Retry with backoff — give main process time to complete user fetch
-          for (let attempt = 0; attempt < 3; attempt++) {
-            await new Promise((r) => setTimeout(r, 600 + attempt * 400))
-            profile = await window.api.supabaseGetProfile()
-            if (profile) {
-              console.log(`[DesktopLogin] Profile resolved on attempt ${attempt + 1}`)
-              break
-            }
-            console.warn(`[DesktopLogin] Profile still null on attempt ${attempt + 1}`)
+        // Main process resolved/stored the user during handleProtocolUrl —
+        // retry with backoff since the user fetch can still be in flight.
+        let profile: UserProfile | null = null
+        for (let attempt = 0; attempt < 4; attempt++) {
+          profile = await window.api.supabaseGetProfile()
+          if (profile) {
+            console.log(`[DesktopLogin] Profile resolved on attempt ${attempt + 1}`)
+            break
           }
+          console.warn(`[DesktopLogin] Profile not ready on attempt ${attempt + 1}`)
+          await new Promise((r) => setTimeout(r, 600 + attempt * 400))
         }
 
         if (profile) {

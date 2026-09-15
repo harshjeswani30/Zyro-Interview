@@ -2039,10 +2039,10 @@ export default function OverlayPage(): React.ReactElement {
             //      strictly worse than a slow one.
             void (async () => {
                 try {
-                    // Preferred route: the gateway proxies the socket to Deepgram, so the
-                    // key stays a Worker secret. A key read straight from the desktop env
-                    // is only a fallback for a machine that has one locally -- shipping a
-                    // Deepgram key inside the app would make it extractable.
+                    // Preferred (and only) route: the gateway proxies the socket to
+                    // Deepgram, so the key stays a Worker secret. There is no direct-
+                    // key fallback — shipping a Deepgram key inside the app would
+                    // make it extractable (audit H4 removed that IPC entirely).
                     const gatewayBase = window.api.getAiGatewayUrl
                         ? await window.api.getAiGatewayUrl()
                         : ''
@@ -2052,20 +2052,15 @@ export default function OverlayPage(): React.ReactElement {
                     const endpoint = gatewayBase
                         ? `${gatewayBase.replace(/^http/, 'ws').replace(/\/+$/, '')}/gateway/stt-stream`
                         : ''
-                    const dgKey =
-                        !endpoint && window.api.getDeepgramKey
-                            ? await window.api.getDeepgramKey()
-                            : ''
-                    if (!endpoint && !dgKey) {
+                    if (!endpoint) {
                         console.info('[STT] no streaming route — batch transcript ticker in use')
                         return
                     }
-                    console.info('[STT] live stream via', endpoint || 'deepgram direct')
+                    console.info('[STT] live stream via', endpoint)
                     streamedTextRef.current = ''
                     const transcriber = new LiveTranscriber({
                         sampleRate: sr,
-                        apiKey: dgKey,
-                        endpoint: endpoint || undefined,
+                        endpoint,
                         wsToken: gatewayToken || undefined,
                         onText: (text, liveWords) => {
                             // First real text is what earns the handover from batch.

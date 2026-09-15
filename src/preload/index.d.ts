@@ -109,13 +109,12 @@ interface Api {
   reloadWindow: () => void
   getSession: () => Promise<SessionData | null>
   getAiGatewayUrl: () => Promise<string>
-  getDeepgramKey: () => Promise<string>
   getSupabaseToken: () => Promise<string | null>
-  getSupabaseSessionData: () => Promise<{ accessToken: string | null; refreshToken: string | null }>
+  getSupabaseSessionData: () => Promise<{ accessToken: string | null }>
   getScreenSize: () => Promise<{ width: number; height: number }>
   getDesktopSources: () => Promise<any[]>
   endInterview: () => void
-  installUpdate: () => Promise<void>
+  installUpdate: () => Promise<boolean>
   downloadUpdate: () => Promise<void>
   setOverlayPosition: (x: number, y: number) => void
   setPosition: (x: number, y: number) => void
@@ -161,14 +160,12 @@ interface Api {
     releaseHold?: boolean
     qa: { id: string; question: string; answer: string; timestamp: string }[]
   }) => void
-  supabaseManualSync: (accessToken: string, refreshToken?: string, userId?: string) => Promise<{ ok: boolean; userId: string | null }>
   // Knowledge Base via main process IPC
   kbList: () => Promise<{ data: { id: string; title: string; created_at: string }[] | null; error: string | null }>
   kbSave: (args: { title: string; content: string }) => Promise<{ data: { id: string; title: string; created_at: string } | null; error: string | null }>
   kbDelete: (kbId: string) => Promise<{ error: string | null }>
   indexLocalContent: (source: string, content: string) => Promise<number>
   searchLocalVectorDb: (query: string, topK?: number) => Promise<string[]>
-  getSupabaseSessionData: () => Promise<{ accessToken: string | null; refreshToken: string | null }>
 
   onSttReady: (cb: (data: { transcript: string; isFinal: boolean }) => void) => void
   onSttError: (cb: (data: { message: string }) => void) => void
@@ -184,7 +181,7 @@ interface Api {
   onUpdateReady: (cb: (info: any) => void) => () => void
   onUpdateError: (cb: (error: string) => void) => () => void
   onAuthCallbackSuccess: (
-    cb: (data: { accessToken: string; refreshToken?: string }) => void
+    cb: (data: Record<string, never>) => void
   ) => () => void
   onOverlayToggle: (cb: (visible: boolean) => void) => () => void
   onScreenProtectionToggle: (cb: (enabled: boolean) => void) => () => void

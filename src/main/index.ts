@@ -14,6 +14,7 @@ import {
   clipboard
 } from 'electron'
 import { join } from 'path'
+import { randomBytes, timingSafeEqual } from 'crypto'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { readFileSync } from 'fs'
 // OpenAI and other SDKs removed — all AI calls now route via AI_GATEWAY fetch
@@ -218,6 +219,58 @@ const SUPABASE_ANON_KEY =
 let supabaseAccessToken: string | null = null
 let supabaseUserId: string | null = null
 let supabaseRefreshToken: string | null = null
+
+// ── External URL policy (audit H2) ──
+// shell.openExternal hands a URL to the OS. Handlers like file://, smb:// and
+// search-ms: let a crafted page abuse OS handlers (NTLM leak, malicious search
+// scopes), so only https to a fixed set of hosts ever leaves the app.
+const EXTERNAL_URL_HOSTS = new Set([
+  'www.zyro-ai.in',
+  'zyro-ai.in',
+  'api.razorpay.com',
+  'checkout.razorpay.com',
+  'weqwxoihdfsvjwwcgtat.supabase.co'
+])
+
+function safeOpenExternal(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'https:' || !EXTERNAL_URL_HOSTS.has(parsed.hostname)) {
+      console.warn(`[Main] Blocked external URL (scheme/host not allowed): ${parsed.protocol}//${parsed.hostname}`)
+      return false
+    }
+    shell.openExternal(parsed.toString())
+    return true
+  } catch {
+    console.warn('[Main] Blocked malformed external URL')
+    return false
+  }
+}
+
+// ── OAuth state (anti-CSRF for the zyroapp:// deep link) ──
+// Generated when a Google login starts, echoed back by the website's callback
+// page, and consumed exactly once by handleProtocolUrl. Without it, a crafted
+// link carrying an attacker's tokens would silently log the victim into the
+// attacker's account (audit H1).
+let pendingAuthState: { value: string; expiresAt: number } | null = null
+const AUTH_STATE_TTL_MS = 10 * 60 * 1000
+
+function generateAuthState(): string {
+  const value = randomBytes(32).toString('hex')
+  pendingAuthState = { value, expiresAt: Date.now() + AUTH_STATE_TTL_MS }
+  return value
+}
+
+/** Single-use: a valid state is consumed on first check, expired or wrong ones fail closed. */
+function consumeAuthState(candidate: string | null): boolean {
+  if (!candidate || !pendingAuthState) return false
+  const expected = pendingAuthState
+  pendingAuthState = null
+  if (Date.now() > expected.expiresAt) return false
+  const a = Buffer.from(candidate)
+  const b = Buffer.from(expected.value)
+  return a.length === b.length && timingSafeEqual(a, b)
+}
 
 // ── Gateway token state ──
 // Short-lived HMAC token issued by the Supabase Edge Function.
@@ -433,71 +486,86 @@ app.on('open-url', (event, url) => {
 })
 
 async function handleProtocolUrl(url: string): Promise<void> {
-  console.log('[Main] Received protocol URL:', url)
-  if (url.includes('auth-callback')) {
-    let accessToken: string | null = null
-    let refreshToken: string | null = null
-
-    // Try query params first (new format): zyroapp://auth-callback?access_token=...&refresh_token=...
-    const queryStart = url.indexOf('?')
-    if (queryStart !== -1) {
-      const params = new URLSearchParams(url.substring(queryStart + 1))
-      accessToken = params.get('access_token')
-      refreshToken = params.get('refresh_token')
-    }
-
-    // Fallback: hash format (legacy): zyroapp://auth-callback#access_token=...&refresh_token=...
-    if (!accessToken) {
-      const hashStart = url.indexOf('#')
-      if (hashStart !== -1) {
-        const params = new URLSearchParams(url.substring(hashStart + 1))
-        accessToken = params.get('access_token')
-        refreshToken = params.get('refresh_token')
-      }
-    }
-
-    if (accessToken) {
-      console.log('[Main] OAuth token received, fetching user from Supabase...')
-      try {
-        // Fetch user info so we can store userId in main process
-        const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-          headers: {
-            apikey: SUPABASE_ANON_KEY,
-            Authorization: `Bearer ${accessToken}`
-          }
-        })
-        if (userRes.ok) {
-          const userData = await userRes.json()
-          const userId = userData.id as string
-          console.log('[Main] OAuth user resolved:', userId)
-          // Store in module-level vars so supabase-get-profile can use them
-          supabaseAccessToken = accessToken
-          supabaseRefreshToken = refreshToken
-          supabaseUserId = userId
-          storeSecureSession({ accessToken, refreshToken, userId })
-        } else {
-          console.error('[Main] Failed to fetch user from access token, status:', userRes.status)
-          // Still store the token — profile fetch may still work
-          supabaseAccessToken = accessToken
-        }
-      } catch (err) {
-        console.error('[Main] Error resolving user from token:', err)
-        supabaseAccessToken = accessToken
-      }
-
-      // Now notify the renderer — it will call supabase-get-profile next
-      if (mainWindow) {
-        safeSend(mainWindow, 'auth-callback-success', { accessToken, refreshToken })
-      } else {
-        console.log('[Main] mainWindow not ready, queuing token...')
-        pendingSessionData = { accessToken, refreshToken }
-      }
-      // Fetch gateway token immediately after successful auth (fire-and-forget)
-      fetchGatewayToken().catch((e) => console.warn('[GatewayToken] Initial fetch failed:', e))
-    } else {
-      console.warn('[Main] Protocol URL received but no access_token found:', url)
-    }
+  // Never log the full URL — it carries session tokens.
+  if (!url.includes('auth-callback')) {
+    console.log('[Main] Received protocol URL (non-auth)')
+    return
   }
+
+  // H1: a token-bearing callback is only accepted when it echoes the single-use
+  // state we generated when the login started. Crafted links fail closed here.
+  const state = extractProtocolParam(url, 'state')
+  if (!consumeAuthState(state)) {
+    console.warn('[Main] Rejected auth-callback: missing, expired, or mismatched state')
+    return
+  }
+
+  const accessToken: string | null = extractProtocolParam(url, 'access_token')
+  const refreshToken: string | null = extractProtocolParam(url, 'refresh_token')
+
+  if (accessToken) {
+    console.log('[Main] OAuth token received (state valid), fetching user from Supabase...')
+    // A fresh OAuth login always resets the dead-session guard (forceLogout may
+    // have set it for the previous session)
+    sessionPermanentlyDead = false
+    try {
+      // Fetch user info so we can store userId in main process
+      const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${accessToken}`
+        }
+      })
+      if (userRes.ok) {
+        const userData = await userRes.json()
+        const userId = userData.id as string
+        console.log('[Main] OAuth user resolved:', userId)
+        // Store in module-level vars so supabase-get-profile can use them
+        supabaseAccessToken = accessToken
+        supabaseRefreshToken = refreshToken
+        supabaseUserId = userId
+        storeSecureSession({ accessToken, refreshToken, userId })
+      } else {
+        console.error('[Main] Failed to fetch user from access token, status:', userRes.status)
+        // Still store the token — supabase-get-profile resolves the user itself
+        supabaseAccessToken = accessToken
+        supabaseRefreshToken = refreshToken
+      }
+    } catch (err) {
+      console.error('[Main] Error resolving user from token:', err)
+      supabaseAccessToken = accessToken
+      supabaseRefreshToken = refreshToken
+    }
+
+    // Notify the renderer that login succeeded. No tokens in the payload (audit H4):
+    // main already stored the session securely; the renderer pulls the profile via IPC.
+    if (mainWindow) {
+      safeSend(mainWindow, 'auth-callback-success', {})
+    } else {
+      console.log('[Main] mainWindow not ready — session stored, will be picked up on login screen')
+    }
+    // Fetch gateway token immediately after successful auth (fire-and-forget)
+    fetchGatewayToken().catch((e) => console.warn('[GatewayToken] Initial fetch failed:', e))
+  } else {
+    console.warn('[Main] Auth-callback received without access_token')
+  }
+}
+
+/**
+ * Reads a param from a zyroapp:// URL, whether it sits in the query string
+ * (`zyroapp://auth-callback?k=v`) or the legacy hash fragment (`…#k=v`).
+ */
+function extractProtocolParam(url: string, key: string): string | null {
+  const queryStart = url.indexOf('?')
+  if (queryStart !== -1) {
+    const value = new URLSearchParams(url.substring(queryStart + 1)).get(key)
+    if (value) return value
+  }
+  const hashStart = url.indexOf('#')
+  if (hashStart !== -1) {
+    return new URLSearchParams(url.substring(hashStart + 1)).get(key)
+  }
+  return null
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -608,7 +676,8 @@ function createMainWindow(): void {
     }
   })
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    // H2: deny-by-default — only https to allowlisted hosts may reach the OS
+    safeOpenExternal(details.url)
     return { action: 'deny' }
   })
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
@@ -701,10 +770,6 @@ function setupIPC(): void {
   // made from here in main, so the URL had no reason to leave this file before.
   ipcMain.handle('get-ai-gateway-url', () => AI_GATEWAY)
 
-  ipcMain.handle('get-deepgram-key', () => {
-    return process.env.DEEPGRAM_API_KEY || process.env.DEEPGRAM_STT_KEY || ''
-  })
-
   ipcMain.handle('index-local-content', (_event, { source, content }) => {
     return localVectorDb.indexContent(source, content)
   })
@@ -717,12 +782,11 @@ function setupIPC(): void {
   ipcMain.handle('get-supabase-token', async () => {
     return await ensureFreshSupabaseToken()
   })
+  // H4: the renderer gets the short-lived access token only — the refresh token
+  // never crosses the IPC boundary, so a compromised renderer can't mint sessions.
   ipcMain.handle('get-supabase-session-data', async () => {
     const token = await ensureFreshSupabaseToken()
-    return {
-      accessToken: token,
-      refreshToken: supabaseRefreshToken
-    }
+    return { accessToken: token }
   })
 
   // ── Knowledge Base IPC Handlers ──────────────────────────────
@@ -1108,62 +1172,20 @@ function setupIPC(): void {
   ipcMain.handle('supabase-login-google', async () => {
     // Initiate OAuth directly via Supabase, but redirect back to our React web app
     // so we can show a nice "Success! You can close this tab" screen to avoid a hanging blank tab.
-    const redirectUri = 'https://www.zyro-ai.in/auth/callback?is_desktop=true'
+    // H1: the single-use state travels with the redirect and must come back on the
+    // zyroapp:// callback — handleProtocolUrl rejects callbacks without it.
+    const state = generateAuthState()
+    const redirectUri = `https://www.zyro-ai.in/auth/callback?is_desktop=true&state=${state}`
     const authUrl = `${SUPABASE_URL}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(redirectUri)}`
-    
-    console.log('[Main] Opening Google login in browser via Supabase directly:', authUrl)
-    shell.openExternal(authUrl)
+
+    console.log('[Main] Opening Google login in browser via Supabase directly (state issued)')
+    safeOpenExternal(authUrl)
   })
 
-  ipcMain.handle('supabase-manual-sync', async (_e, { accessToken, refreshToken, userId }) => {
-    // ── Input validation ──
-    if (typeof accessToken !== 'string' || accessToken.length < 20) {
-      console.error('[Main] Manual sync rejected: invalid accessToken')
-      return { ok: false, userId: null }
-    }
-
-    console.log('[Main] Manually syncing session for user:', userId || '(resolving...)')
-
-    // ── CRITICAL: Reset dead-session guard on any fresh token sync ──
-    sessionPermanentlyDead = false
-    supabaseAccessToken = accessToken
-    supabaseRefreshToken = (typeof refreshToken === 'string' && refreshToken.length > 10) ? refreshToken : null
-
-    // If userId wasn't passed, resolve it from the access token directly
-    if (userId && typeof userId === 'string' && userId.length > 8) {
-      supabaseUserId = userId
-    } else if (accessToken) {
-      try {
-        const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-          headers: {
-            apikey: SUPABASE_ANON_KEY,
-            Authorization: `Bearer ${accessToken}`
-          }
-        })
-        if (userRes.ok) {
-          const userData = await userRes.json()
-          if (!userData.id) throw new Error('No user ID in response')
-          supabaseUserId = userData.id as string
-          console.log('[Main] Resolved userId from token during manual sync:', supabaseUserId)
-        } else {
-          console.error('[Main] Failed to resolve userId during manual sync, status:', userRes.status)
-          // Don't store a broken session
-          supabaseAccessToken = null
-          supabaseRefreshToken = null
-          return { ok: false, userId: null }
-        }
-      } catch (err) {
-        console.error('[Main] Error resolving userId during manual sync:', err)
-        supabaseAccessToken = null
-        supabaseRefreshToken = null
-        return { ok: false, userId: null }
-      }
-    }
-
-    storeSecureSession({ accessToken, refreshToken: supabaseRefreshToken, userId: supabaseUserId || '' })
-    console.log('[Main] Manual sync complete. supabaseUserId:', supabaseUserId)
-    return { ok: true, userId: supabaseUserId }
-  })
+  // H5: the old `supabase-manual-sync` handler was removed. It accepted
+  // renderer-supplied tokens, which made it an injection point — and since H4
+  // stopped handing tokens to the renderer, it had no legitimate caller left.
+  // `supabase-get-profile` now resolves the user itself when the id is missing.
 
   ipcMain.handle('supabase-logout', async () => {
     if (supabaseAccessToken) {
@@ -1183,16 +1205,30 @@ function setupIPC(): void {
   })
 
   ipcMain.handle('supabase-get-profile', async () => {
-    console.log(`[Supabase] Fetching profile for: ${supabaseUserId}`)
-    if (!supabaseUserId) {
-      console.warn('[Supabase] No session found for profile fetch')
-      return null
-    }
-
     const token = await ensureFreshSupabaseToken()
     if (!token) {
       console.warn('[Supabase] No access token available for profile fetch')
       return null
+    }
+
+    // Deep-link flow can land before the user fetch resolves the id — resolve it
+    // from the token itself instead of failing (this replaced the manual-sync path).
+    if (!supabaseUserId) {
+      try {
+        const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` }
+        })
+        if (userRes.ok) {
+          supabaseUserId = ((await userRes.json()) as { id?: string }).id ?? null
+          console.log('[Supabase] Resolved userId from token during profile fetch:', supabaseUserId)
+        }
+      } catch (err) {
+        console.warn('[Supabase] Could not resolve userId during profile fetch:', err)
+      }
+      if (!supabaseUserId) {
+        console.warn('[Supabase] No session found for profile fetch')
+        return null
+      }
     }
 
     // Use Edge Function — identity derived from JWT server-side, no service_role in client
@@ -2226,10 +2262,30 @@ function setupIPC(): void {
   ipcMain.on('minimize-window', (): void => mainWindow?.minimize())
   ipcMain.on('close-window', (): void => mainWindow?.close())
 
-  ipcMain.handle('install-update', (): void => {
-    console.log('[Updater] User triggered install — quitting and installing...')
+  ipcMain.handle('install-update', async (): Promise<boolean> => {
+    // H7: quitting and installing is destructive — the renderer can trigger it,
+    // so the decision is confirmed by the user in a native dialog, not in page JS.
+    const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+    const options = {
+      type: 'question' as const,
+      buttons: ['Install & Relaunch', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Update Zyro AI',
+      message: 'A new version has been downloaded.',
+      detail: 'The app will close and relaunch with the new version. Finish anything you are doing first.'
+    }
+    const { response } = parent
+      ? await dialog.showMessageBox(parent, options)
+      : await dialog.showMessageBox(options)
+    if (response !== 0) {
+      console.log('[Updater] User deferred the update install')
+      return false
+    }
+    console.log('[Updater] User confirmed install — quitting and installing...')
     // isSilent=true, isForceRunAfter=true → relaunches app after install
     autoUpdater.quitAndInstall(true, true)
+    return true
   })
 
   // Manual download trigger (kept for compatibility, normally auto-downloaded)
@@ -2276,7 +2332,7 @@ function setupIPC(): void {
   })
 
   ipcMain.on('open-external', (_, url) => {
-    shell.openExternal(url)
+    if (typeof url === 'string') safeOpenExternal(url)
   })
 }
 

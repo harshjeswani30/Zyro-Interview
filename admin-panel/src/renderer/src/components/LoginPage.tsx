@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { AlertCircle, RefreshCw, X, Mail, Lock } from 'lucide-react'
 import ZyroMascot from './ZyroMascot'
 import { supabase } from '../lib/supabase'
@@ -45,12 +45,33 @@ export default function LoginPage({
         return
       }
 
+      // 3. Establish the main-process session gate (audit H6): main re-verifies
+      // the token and the is_admin flag server-side, then unlocks admin IPC.
+      // Kept fresh via onAuthStateChange below — supabase-js rotates the JWT hourly.
+      const sessionToken = data.session?.access_token
+      if (sessionToken && window.api.setAdminSession) {
+        await window.api.setAdminSession(sessionToken)
+      }
+
       onLogin(password)
     } catch (err: any) {
       setError(err.message || 'Authentication error')
       setLoading(false)
     }
   }
+
+  // Keep the main-process session in step with the renderer session: whenever
+  // supabase-js refreshes the JWT (hourly), hand the new token to main.
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.access_token && window.api.setAdminSession) {
+        window.api.setAdminSession(session.access_token).catch((err: unknown) => {
+          console.warn('[AdminLogin] Session sync to main failed:', err)
+        })
+      }
+    })
+    return () => sub.subscription.unsubscribe()
+  }, [])
 
   return (
     <div className="login-wrapper">

@@ -36,6 +36,8 @@ declare global {
       reloadWindow: () => void
       closeWindow: () => void
       openExternal: (url: string) => void
+      setAdminSession: (token: string) => Promise<{ ok: boolean }>
+      clearAdminSession: () => Promise<void>
     }
   }
 

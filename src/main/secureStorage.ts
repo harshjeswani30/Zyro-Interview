@@ -10,11 +10,17 @@ function getSessionFile(): string {
 /**
  * Stores user session encrypted using the OS keychain (safeStorage).
  * On Windows this uses DPAPI, on macOS it uses Keychain.
+ *
+ * If OS encryption is unavailable we DO NOT persist at all (audit M3): a plaintext
+ * file holding the refresh token is a permanent-account-access credential for
+ * anyone who copies it. The session stays in memory for this run; the user
+ * simply logs in again after a restart.
  */
 export async function storeSecureSession(data: object): Promise<void> {
   if (!safeStorage.isEncryptionAvailable()) {
-    console.warn('[secureStorage] OS encryption not available, storing in plaintext')
-    writeFileSync(getSessionFile(), JSON.stringify(data))
+    console.warn(
+      '[secureStorage] OS encryption not available — session kept in memory only, not persisted'
+    )
     return
   }
   const json = JSON.stringify(data)
@@ -43,9 +49,15 @@ export function loadSecureSession(): Record<string, string> | null {
       }
     }
 
-    // Fallback: try plaintext JSON (handles legacy or non-encrypted sessions)
+    // Legacy read: sessions written as plaintext by very old builds still load
+    // (one last read, then the next store rewrites them encrypted). No new
+    // plaintext is ever written — see storeSecureSession.
     try {
-      return JSON.parse(fileData.toString())
+      const parsed = JSON.parse(fileData.toString())
+      console.warn(
+        '[secureStorage] Loaded a legacy plaintext session — it will be re-stored encrypted'
+      )
+      return parsed
     } catch {
       // File is corrupt/unreadable — delete it so we don't keep failing
       try {
