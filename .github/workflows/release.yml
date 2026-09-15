@@ -89,7 +89,9 @@ jobs:
 
       - name: Set app version for this release
         shell: bash
-        run: npm version "${{ needs.version.outputs.version }}" --no-git-tag-version
+        # --allow-same-version: when package.json already carries the target
+        # version (fresh-start seeds like 1.0.0), npm version errors on no-op.
+        run: npm version "${{ needs.version.outputs.version }}" --no-git-tag-version --allow-same-version
 
       - name: Configure pnpm for universal mac build (macOS)
         if: matrix.os == 'macos-latest'
