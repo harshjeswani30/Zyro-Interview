@@ -156,7 +156,7 @@ jobs:
               --notes "Desktop app release v$VERSION — built automatically from the main branch.
 
           **Downloads**
-          - **Windows**: \`AppService-Setup-$VERSION.exe\`
+          - **Windows**: \`Zyro-Ai-Setup-$VERSION.exe\`
           - **macOS** (Apple Silicon & Intel): \`zyro-ai-$VERSION.dmg\`
 
           The \`latest.yml\` / \`latest-mac.yml\` feeds power in-app auto-updates — do not delete them."

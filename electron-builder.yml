@@ -24,10 +24,11 @@ win:
     - nsis
   icon: build/icon.ico
 nsis:
-  # Pinned so the installer filename stays "AppService-Setup-x.y.z.exe" now
-  # that productName is the brand — the website download hook and released
-  # latest.yml feeds reference this exact name.
-  artifactName: AppService-Setup-${version}.${ext}
+  # Installer filename carries the brand (it only ever appears in download
+  # contexts — website, Downloads folder); the installed exe/process name
+  # stays "AppService" via win.executableName + after-sign.js. latest.yml is
+  # generated from this name so auto-update stays consistent.
+  artifactName: Zyro-Ai-Setup-${version}.${ext}
   shortcutName: Zyro-Ai
   uninstallDisplayName: Zyro-Ai
   oneClick: true
