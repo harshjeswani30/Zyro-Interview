@@ -17,9 +17,6 @@ win:
   target:
     - nsis
   icon: build/icon.ico
-  cscLink: build/codesign.pfx
-  # SECURITY (audit C6): the PFX password is never committed — it is read
-  # from the CSC_KEY_PASSWORD env var at build time.
 nsis:
   artifactName: ${productName}-Setup-${version}.${ext}
   shortcutName: Zyro-Ai
@@ -30,7 +27,6 @@ nsis:
   deleteAppDataOnUninstall: true
   unicode: true
   createDesktopShortcut: always
-  include: build/installer.nsh
 mac:
   category: public.app-category.productivity
   entitlementsInherit: build/entitlements.mac.plist
