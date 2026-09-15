@@ -29,6 +29,11 @@ nsis:
   createDesktopShortcut: always
 mac:
   category: public.app-category.productivity
+  # koffi is Windows-only (user32.dll FFI) — its darwin native modules break
+  # universal builds (x64/arm64 merge conflict in @electron/universal)
+  files:
+    - "!**/node_modules/koffi/**"
+    - "!**/node_modules/@koromix/**"
   entitlementsInherit: build/entitlements.mac.plist
   target:
     - target: dmg

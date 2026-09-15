@@ -10,7 +10,10 @@ website/node_modules
 .env
 .env.local
 website/.env.local
-build/
+# Code signing material — never commit (build resources like icons ARE tracked)
+*.pfx
+*.cer
+*.key
 *.spec
 lint_errors.txt
 src_lint_errors.txt
