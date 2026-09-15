@@ -44,13 +44,21 @@ jobs:
 
       # --publish never: the github publish config targets a separate downloads
       # repo and needs a PAT we don't have in CI; artifacts are uploaded below.
+      # electron-builder is invoked via pnpm exec (not through the package.json
+      # script) so --publish reaches it — `pnpm run x -- --flag` forwards the
+      # literal "--" and the flag gets ignored.
       - name: Build and package application (macOS)
         if: matrix.os == 'macos-latest'
-        run: pnpm run build:mac -- --publish never
+        run: |
+          pnpm exec electron-vite build
+          pnpm exec electron-builder --mac --publish never
 
       - name: Build and package application (Windows)
         if: matrix.os == 'windows-latest'
-        run: pnpm run build:win -- --publish never
+        run: |
+          pnpm run typecheck
+          pnpm exec electron-vite build
+          pnpm exec electron-builder --win --publish never
 
       - name: Upload artifacts (macOS)
         if: matrix.os == 'macos-latest'
