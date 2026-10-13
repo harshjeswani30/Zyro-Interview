@@ -21,34 +21,34 @@
   --bg: rgba(9, 7, 15, var(--overlay-op));
   --bg-2: rgba(255, 255, 255, calc(0.01 + 0.03 * var(--overlay-op)));
   --bg-3: rgba(255, 255, 255, calc(0.02 + 0.05 * var(--overlay-op)));
-  --line: rgba(255, 255, 255, calc(0.02 + 0.06 * var(--overlay-op)));
-  --line-2: rgba(255, 255, 255, calc(0.04 + 0.11 * var(--overlay-op)));
+  --line: hsl(var(--border) / calc(0.35 + 0.5 * var(--overlay-op)));
+  --line-2: hsl(var(--border) / calc(0.55 + 0.35 * var(--overlay-op)));
   --white: #f7f5ff;
   --fg: #EEF1F5;
   --fg-2: #A7AFBB;
   --fg-3: #6B7380;
-  --acc: #8DF0C4;      /* signal mint */
+  --acc: #8DF0C4;      /* signal mint — keep, not purple */
   --acc-dim: rgba(141, 240, 196, 0.14);
   --think: #9BB8FF;
   --think-dim: rgba(155, 184, 255, 0.14);
-  --p: #b79cff;
-  --p2: #8b5cf6;
-  --p3: #5b2edb;
-  --p-dim: rgba(139, 92, 246, 0.16);
-  --p-line: rgba(183, 156, 255, 0.35);
+  --p: hsl(var(--primary-hover));
+  --p2: hsl(var(--primary));
+  --p3: hsl(263 72% 38%);
+  --p-dim: hsl(var(--primary) / 0.16);
+  --p-line: hsl(var(--primary) / 0.35);
   --ok: #8DF0C4;
   --ok-dim: rgba(141, 240, 196, 0.14);
   --bad: #FF6B6B;
   --bad-dim: rgba(255, 107, 107, 0.14);
   --warn: #FFB454;
   --warn-dim: rgba(255, 180, 84, 0.14);
-  --sans: 'Inter', system-ui, sans-serif;
-  --mono: 'JetBrains Mono', ui-monospace, monospace;
+  --sans: var(--font-sans);
+  --mono: var(--font-mono);
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
-  --r-xl: 24px;
-  --r-lg: 22px;
-  --r-md: 14px;
-  --r-sm: 9px;
+  --r-xl: var(--radius-2xl);
+  --r-lg: var(--radius-xl);
+  --r-md: var(--radius-md);
+  --r-sm: var(--radius-sm);
   --d-scale: var(--hdr-scale, 1);
   --rail-w: clamp(210px, calc(270px * var(--d-scale)), 270px);
 

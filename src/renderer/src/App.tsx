@@ -4,6 +4,7 @@ import OverlayPage from './components/OverlayPage'
 import MicSpeakerTest from './components/MicSpeakerTest'
 import { DesktopLoginPage } from './components/DesktopLoginPage'
 import PegtopLoader from './components/PegtopLoader'
+import { AppShell } from './components/layout/AppShell'
 import { supabase } from './lib/supabase'
 import './assets/main.css'
 
@@ -199,9 +200,9 @@ function App(): React.ReactElement {
     />
   )
   return (
-    <>
+    <AppShell>
       <SetupPage userProfile={userProfile} onLogout={handleLogout} onGoToMicTest={handleGoToMicTest} />
-    </>
+    </AppShell>
   )
 }
 

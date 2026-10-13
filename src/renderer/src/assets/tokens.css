@@ -1,0 +1,110 @@
+/* =====================================================================
+   Zyro tokens.css — design-system foundation (Phase A)
+   ---------------------------------------------------------------------
+   Dark theme for the Electron desktop shell. White-purple is canonical.
+   These vars are consumed as `hsl(var(--*))` by Tailwind/CVA and as
+   `var(--*)` in plain CSS. Import this file BEFORE main.css so every
+   later sheet can alias to these values.
+
+   Mapping: Parakeet's HSL scale → Zyro's purple (#8b5cf6 / #a78bfa).
+   Light website tokens live separately in website/src/index.css.
+   ===================================================================== */
+
+:root {
+  /* — Base surfaces (dark) — */
+  --background: 240 10% 3.9%;      /* #0a0b0f */
+  --foreground: 240 6% 94%;        /* #f0f0f5 */
+  --card: 232 12% 9%;              /* #12141a */
+  --card-foreground: 240 6% 94%;
+  --popover: 232 12% 9%;
+  --popover-foreground: 240 6% 94%;
+  --muted: 240 4% 16%;
+  --muted-foreground: 240 5% 64%;  /* #9092a3 */
+  --border: 240 4% 16%;
+  --input: 240 4% 16%;
+  --ring: 263 70% 60%;             /* #8b5cf6 */
+
+  /* — Brand (purple) — replaces Parakeet's lime brand — */
+  --primary: 263 70% 60%;          /* #8b5cf6 */
+  --primary-foreground: 0 0% 98%;
+  --primary-hover: 263 70% 68%;    /* #a78bfa */
+  --primary-glow: 263 70% 60%;
+
+  --secondary: 240 4% 16%;
+  --secondary-foreground: 240 6% 94%;
+  --accent: 240 4% 16%;
+  --accent-foreground: 240 6% 94%;
+
+  /* — Sidebar — */
+  --sidebar: 232 12% 9%;                 /* same as --card */
+  --sidebar-foreground: 240 6% 94%;
+  --sidebar-border: 240 4% 16%;
+
+  /* — Semantic pillars for wizard steps — */
+  --session: 263 70% 60%;          /* purple (Zyro brand) */
+  --session-foreground: 0 0% 98%;
+  --documents: 199 89% 48%;        /* sky for Resume Library */
+  --documents-foreground: 0 0% 98%;
+  --cv: 142 76% 36%;               /* emerald for Interview Content */
+  --cv-foreground: 0 0% 98%;
+
+  /* — Status — */
+  --destructive: 0 84% 60%;        /* #ef4444 in overlay */
+  --destructive-foreground: 0 0% 98%;
+  --warning: 38 92% 50%;
+  --warning-foreground: 240 10% 3.9%;
+  --success: 142 71% 45%;
+  --success-foreground: 0 0% 98%;
+
+  /* — Overlay / glass — keep mint for signal, map purple to primary — */
+  --overlay-p: 263 100% 84%;       /* #b79cff */
+  --overlay-p2: 263 70% 60%;       /* #8b5cf6 */
+  --overlay-p3: 263 72% 38%;       /* #5b2edb */
+  --overlay-ok: 142 76% 73%;       /* #8DF0C4 mint */
+
+  /* — Alpha scale (replaces 60+ rgba(255,255,255,0.0x) literals) — */
+  --alpha-10: rgba(255, 255, 255, 0.04);
+  --alpha-20: rgba(255, 255, 255, 0.06);
+  --alpha-30: rgba(255, 255, 255, 0.08);
+  --alpha-40: rgba(255, 255, 255, 0.10);
+  --alpha-50: rgba(255, 255, 255, 0.14);
+  --alpha-60: rgba(255, 255, 255, 0.18);
+  --alpha-70: rgba(255, 255, 255, 0.24);
+  --alpha-80: rgba(255, 255, 255, 0.32);
+  --alpha-90: rgba(255, 255, 255, 0.45);
+
+  /* — Radius (Parakeet lg/md/sm delta, Zyro keeps 12px base) — */
+  --radius: 0.75rem;                          /* 12px */
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);     /* 10px */
+  --radius-sm: calc(var(--radius) - 6px);     /* 6px */
+  --radius-xl: 1rem;                          /* 16px */
+  --radius-2xl: 1.25rem;                      /* 20px */
+  --radius-3xl: 1.5rem;                       /* 24px */
+
+  /* — Typography scale — */
+  --text-xs: 0.75rem;      /* 12px */
+  --text-sm: 0.8125rem;    /* 13px */
+  --text-base: 0.875rem;   /* 14px */
+  --text-lg: 1rem;         /* 16px */
+  --text-xl: 1.25rem;      /* 20px */
+  --text-2xl: 1.5rem;      /* 24px */
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --font-display: 'Striper', 'Inter', sans-serif;
+
+  /* — Spacing aliases that mirror Parakeet's card gap — */
+  --space-card: 1rem;      /* 16px */
+  --space-section: 1.5rem; /* 24px */
+
+  /* — Legacy aliases (so existing main.css/overlay.css keep working) — */
+  --bg-deep: hsl(var(--background));
+  --bg-card: hsl(var(--card));
+  --bg-card2: hsl(var(--muted));
+  --text-primary: hsl(var(--foreground));
+  --text-secondary: hsl(var(--muted-foreground));
+  --accent: hsl(var(--primary));
+  --accent-hover: hsl(var(--primary-hover));
+  --accent-glow: hsla(var(--primary), 0.4);
+  --bright-purple: hsl(var(--primary));
+}

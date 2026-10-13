@@ -628,10 +628,12 @@ function protectWindowFromInspection(win: BrowserWindow | null): void {
 // ─────────────────────────────────────────────
 function createMainWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 768,
-    height: 522,
-    resizable: false,
-    maximizable: false,
+    width: 860,
+    height: 560,
+    minWidth: 860,
+    minHeight: 560,
+    resizable: true,
+    maximizable: true,
     fullscreenable: false,
     frame: false,
     show: false,

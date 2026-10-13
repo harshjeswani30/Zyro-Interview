@@ -46,7 +46,8 @@ export default defineConfig({
       ...(isProduction
         ? [
             obfuscator({
-              options: obfuscatorOptions
+              // Don’t mangle real class names that Tailwind purges on
+              options: { ...obfuscatorOptions, stringArrayThreshold: 0.5 }
             })
           ]
         : [])
@@ -68,7 +69,7 @@ export default defineConfig({
       ...(isProduction
         ? [
             obfuscator({
-              options: obfuscatorOptions
+              options: { ...obfuscatorOptions, stringArrayThreshold: 0.5 }
             })
           ]
         : [])
