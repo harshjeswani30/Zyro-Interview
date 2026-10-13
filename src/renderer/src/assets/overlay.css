@@ -1,4 +1,4 @@
-/* =====================================================================
+﻿/* =====================================================================
    Zyro live overlay -- v2 design system
    ---------------------------------------------------------------------
    Every selector here is scoped under .zv-overlay on purpose. The mockup
@@ -417,12 +417,13 @@
   height: calc(8px * var(--d-scale));
   min-height: 6px;
   background: linear-gradient(90deg, var(--p2, #8b5cf6), var(--p, #b79cff), var(--p2, #8b5cf6));
-  box-shadow: 0 0 14px rgba(139, 92, 246, 0.6), 0 2px 8px rgba(0, 0, 0, 0.8);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
 }
 
 .zv-overlay .dock-drag-bar__pill:active {
-  background: #fff;
-  box-shadow: 0 0 16px var(--p, #b79cff);
+  background: linear-gradient(90deg, var(--p2, #8b5cf6), var(--p, #b79cff), var(--p2, #8b5cf6));
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  opacity: 0.85;
   cursor: default !important;
 }
 
@@ -826,6 +827,7 @@
    ------------------------------------------------------------------ */
 
 .zv-overlay .deck {
+  position: relative;
   border-radius: var(--r-xl);
   display: grid;
   grid-template-columns: var(--rail-w) minmax(0, 1fr);
@@ -907,6 +909,17 @@
   cursor: default !important;
   position: relative;
   z-index: 10;
+}
+
+/* Corner resize handles ALWAYS stay active, clickable, and draggable in all modes (Click-Through ON or OFF) */
+.zv-overlay .resize-handle-adv,
+.zv-overlay .resize-handle-adv *,
+.zv-overlay:not([data-click-through='true']) .resize-handle-adv,
+.zv-overlay:not([data-click-through='true']) .resize-handle-adv *,
+.zv-overlay:not([data-click-through='true']) .deck > .resize-handle-adv,
+.zv-overlay:not([data-click-through='true']) .deck > .resize-handle-adv * {
+  pointer-events: auto !important;
+  z-index: 2147483647 !important;
 }
 
 .zv-overlay .panel-head {
@@ -1099,7 +1112,13 @@
 }
 
 .zv-overlay .click-through-btn:hover {
-  border-color: rgba(183, 156, 255, 0.45);
+  border-color: rgba(183, 156, 255, 0.35);
+  cursor: default !important;
+}
+
+.zv-overlay .click-through-btn:active {
+  transform: scale(0.96);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
   cursor: default !important;
 }
 
@@ -1147,21 +1166,22 @@
 /* Active State: Click-Through Mode is ON */
 .zv-overlay .click-through-btn.active {
   background: rgba(26, 18, 52, 0.95);
-  border-color: rgba(183, 156, 255, 0.65);
-  box-shadow: 0 0 12px rgba(183, 156, 255, 0.3);
+  border-color: rgba(183, 156, 255, 0.35);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
 }
 
 .zv-overlay .click-through-btn.active .click-through-btn__icon {
-  color: var(--p);
+  color: var(--p2);
 }
 
 .zv-overlay .click-through-btn.active .click-through-btn__lbl {
-  color: var(--fg-1);
+  color: var(--fg-2);
 }
 
-.zv-overlay .click-through-btn.active .click-through-btn__dot {
-  background: #00ffb2;
-  box-shadow: 0 0 6px #00ffb2;
+.zv-overlay .click-through-btn.active .click-through-btn__dot,
+.zv-overlay .click-through-btn__dot.on {
+  background: #10b981;
+  box-shadow: none;
 }
 
 @media (max-width: 820px) {
@@ -2378,4 +2398,35 @@
   width: 15px;
   height: 15px;
   stroke-width: 3;
+}
+
+
+/* Suppress all shortcut hints and tooltip hints on overlay buttons */
+.zv-overlay .key .sc { display: none !important; }
+.zv-overlay .key .txt { justify-content: center; }
+
+
+/* Corner resize handle arrows (nwse-resize and nesw-resize) matching red indicator hover */
+.zv-overlay .resize-handle-adv.handle-nw,
+.zv-overlay .resize-handle-adv.handle-nw *,
+.zv-overlay .resize-handle-adv.handle-se,
+.zv-overlay .resize-handle-adv.handle-se * {
+  cursor: nwse-resize !important;
+}
+
+.zv-overlay .resize-handle-adv.handle-ne,
+.zv-overlay .resize-handle-adv.handle-ne *,
+.zv-overlay .resize-handle-adv.handle-sw,
+.zv-overlay .resize-handle-adv.handle-sw * {
+  cursor: nesw-resize !important;
+}
+
+body.is-resizing-nwse,
+body.is-resizing-nwse * {
+  cursor: nwse-resize !important;
+}
+
+body.is-resizing-nesw,
+body.is-resizing-nesw * {
+  cursor: nesw-resize !important;
 }

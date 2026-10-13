@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+﻿import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
     initAI,
     generateInterviewAnswer,
@@ -10,7 +10,7 @@ import {
 } from '../services/aiService'
 import 'highlight.js/styles/github-dark.css'
 import '../assets/overlay.css'
-import { TopResizeHandles, BottomResizeHandles } from './ResizeHandles'
+import { BottomResizeHandles } from './ResizeHandles'
 import { TimerTab } from './overlay/TimerTab'
 import { OverlayDock } from './overlay/OverlayDock'
 import { TranscriptRail } from './overlay/TranscriptRail'
@@ -29,6 +29,7 @@ import { AudioRing } from '../services/audioRing'
 import { resolveSessionClock, TRIAL_LIMIT_SEC } from '../services/sessionClock'
 import { LiveTranscriber } from '../services/deepgramLiveClient'
 import { shouldAnswerFinalizedTurn } from '../services/pipeline/turnGating'
+import { shouldApplyVadStatus } from '../services/pipeline/captureStatus'
 import {
     diagDisplayed,
     diagDropped,
@@ -1243,6 +1244,26 @@ export default function OverlayPage(): React.ReactElement {
                 }
             }
 
+            // 6. Check corner resize handles:
+            // ALWAYS interactive (whether clickThrough is true or false) so user can resize overlay anytime!
+            let overResize = false
+            const resizeEls = document.querySelectorAll('.resize-handle-adv')
+            for (let i = 0; i < resizeEls.length; i++) {
+                const r = resizeEls[i].getBoundingClientRect()
+                if (r.width > 0 && r.height > 0) {
+                    const pad = 12
+                    if (
+                        e.clientX >= r.left - pad &&
+                        e.clientX <= r.right + pad &&
+                        e.clientY >= r.top - pad &&
+                        e.clientY <= r.bottom + pad
+                    ) {
+                        overResize = true
+                        break
+                    }
+                }
+            }
+
             let isOverInteractive = false
             if (clickThroughRef.current) {
                 // Click-Through / Overlay Focus is ON:
@@ -1250,18 +1271,20 @@ export default function OverlayPage(): React.ReactElement {
                 isOverInteractive =
                     overPanel ||
                     overClickThrough ||
+                    overResize ||
                     !!el?.closest(
                         '.dock, .ttab, .dock-drag-bar__pill, .resize-handle-adv, .deck, .deck *'
                     )
             } else {
                 // Click-Through / Overlay Focus is OFF: Background focus mode.
                 // Clicks pass straight through the answer panel to background windows.
-                // Only upper dock, timer tab, drag pill, and the click-through toggle button itself remain interactive.
+                // Only upper dock, timer tab, drag pill, resize handles, and the click-through toggle button itself remain interactive.
                 isOverInteractive =
                     overPanel ||
                     overClickThrough ||
+                    overResize ||
                     !!el?.closest(
-                        '.dock, .ttab, .dock-drag-bar__pill, .click-through-btn, .click-through-btn *'
+                        '.dock, .ttab, .dock-drag-bar__pill, .click-through-btn, .click-through-btn *, .resize-handle-adv, .resize-handle-adv *'
                     )
             }
 
@@ -1334,10 +1357,15 @@ export default function OverlayPage(): React.ReactElement {
         const MIN_STT_SEC = 0.3
         // Partial cadence, adaptive between these: a short tail is cheap to re-transcribe
         // often, a long one is not.
-        const PARTIAL_MIN_MS = 140
-        const PARTIAL_MAX_MS = 1200
+        const PARTIAL_MIN_MS = 900
+        const PARTIAL_MAX_MS = 1800
+        // Partials are only a cosmetic fallback for a live-stream outage. Keep a hard
+        // per-utterance ceiling so a delayed socket cannot turn one spoken question into
+        // dozens of multipart STT requests and consume the same provider budget needed by
+        // the authoritative final pass.
+        const MAX_PARTIAL_REQUESTS = 8
         // The tail must have grown by this much before re-sending it is worth anything.
-        const PARTIAL_GROWTH_SEC = 0.18
+        const PARTIAL_GROWTH_SEC = 0.35
         // Ring capacity. Only has to cover the longest single utterance plus whatever is
         // still in flight; 90s of mono float32 at 48kHz is ~17MB.
         const RING_SEC = 90
@@ -1427,6 +1455,8 @@ export default function OverlayPage(): React.ReactElement {
             const committedSegments: string[] = []
             /** Tail length at the last partial request, for the growth gate. */
             let lastPartialTailSamples = 0
+            /** Hard cap for the cosmetic batch fallback; reset for every utterance. */
+            let partialRequestCount = 0
             const renderTicker = (): void => {
                 setPendingTranscript(joinSegments(committedSegments.join(' '), partialTailTextRef.current))
             }
@@ -1454,6 +1484,7 @@ export default function OverlayPage(): React.ReactElement {
                 utteranceLangRef.current = ''
                 utteranceWhisperLangRef.current = ''
                 lastPartialTailSamples = 0
+                partialRequestCount = 0
                 manualStopPendingRef.current = false
                 segmentFromRef.current = ringRef.current?.head ?? 0
                 partialAppliedSeqRef.current = partialSeqRef.current
@@ -1820,6 +1851,7 @@ export default function OverlayPage(): React.ReactElement {
                     // would only overwrite it with staler text and cost a request.
                     if (streamingDisplayRef.current) return
                     if (partialInFlightRef.current) return
+                    if (partialRequestCount >= MAX_PARTIAL_REQUESTS) return
 
                     const r = ringRef.current
                     if (!r) return
@@ -1832,6 +1864,7 @@ export default function OverlayPage(): React.ReactElement {
                     if (samples < lastPartialTailSamples + sr * PARTIAL_GROWTH_SEC) return
 
                     lastPartialTailSamples = samples
+                    partialRequestCount += 1
                     const utteranceId = utteranceIdRef.current
                     const seq = ++partialSeqRef.current
                     partialInFlightRef.current = true
@@ -1964,7 +1997,11 @@ export default function OverlayPage(): React.ReactElement {
                     // Only apply VAD-driven status in auto mode.
                     // In manual mode the status chip is controlled by UI interactions
                     // (handleToggleManual), not by the detector's internal state changes.
-                    if (autoAnswerRef.current) setStatusText(data)
+                    if (shouldApplyVadStatus(
+                        autoAnswerRef.current,
+                        isFinalizingRef.current,
+                        isGeneratingRef.current
+                    )) setStatusText(data)
 
                 } else if (type === 'speech_active') {
                     const isSpeaking = data as boolean
@@ -1991,17 +2028,24 @@ export default function OverlayPage(): React.ReactElement {
             processor.onaudioprocess = (e: AudioProcessingEvent) => {
                 const chunk = new Float32Array(e.inputBuffer.getChannelData(0))
 
-                // Always buffer, always feed the detector. The old loop returned early for
-                // the whole of `isFinalizingRef` — which spanned the entire LLM generation —
-                // and in auto mode only pushed chunks that were already above the speech
-                // threshold. Between them, utterances that began during a generation were
-                // silently lost and every utterance lost its onset.
+                // Ring buffer always fills so a manual turn still has pre-roll the instant
+                // Listen is pressed, and the level meter always runs for UI feedback.
                 ringRef.current?.push(chunk)
-                liveStreamRef.current?.push(chunk)
-                worker.postMessage({ type: 'audio', data: chunk })
+                // Keep the worker clock aligned with the ring even when detection is gated.
+                const sttActive = autoAnswerRef.current || manualListenRef.current
+                worker.postMessage({ type: 'audio', data: chunk, enabled: sttActive })
+
+                // STT is gated on intent. In auto mode we listen continuously (the old
+                // "always feed the detector" rule — losing an utterance's onset was the bug
+                // that rule fixed). In MANUAL mode nothing should be transcribed until the
+                // user actually presses Listen: without this gate the Deepgram socket and
+                // the batch detector both ran on mount, so system audio was streamed and the
+                // transcript painted itself with no Listen click. Feeding the recogniser and
+                // the VAD worker only while `sttActive` keeps manual mode silent until asked.
+                if (sttActive) liveStreamRef.current?.push(chunk)
 
                 const chunkRms = computeRMS(chunk)
-                if (chunkRms >= VOICED_RMS) {
+                if (sttActive && chunkRms >= VOICED_RMS) {
                     voicedSinceCommitRef.current += chunk.length
                     utteranceVoicedRef.current += chunk.length
                 }
@@ -2013,7 +2057,11 @@ export default function OverlayPage(): React.ReactElement {
                 const levelNow = Date.now()
                 if (levelNow - lastLevelPushRef.current >= 100) {
                     lastLevelPushRef.current = levelNow
-                    setAudioLevel(chunkRms < 0.006 ? 0 : Math.min(1, chunkRms / 0.12))
+                    // The wave meter only reflects audio we are actually listening to. In
+                    // manual mode with Listen off there is no active turn, so the bars must
+                    // rest flat even though system audio is still flowing — otherwise they
+                    // wobble to sound the app is deliberately ignoring.
+                    setAudioLevel(sttActive && chunkRms >= 0.006 ? Math.min(1, chunkRms / 0.12) : 0)
                 }
 
                 if (manualListenRef.current || utteranceStartRef.current !== null) {
@@ -2063,6 +2111,11 @@ export default function OverlayPage(): React.ReactElement {
                         endpoint,
                         wsToken: gatewayToken || undefined,
                         onText: (text, liveWords) => {
+                            // Manual mode with Listen off: ignore any late socket text so a
+                            // reply still in flight when the user stops (or that never got
+                            // gated at the source) cannot repaint the transcript. Auto mode
+                            // and an active manual-listen turn both pass.
+                            if (!autoAnswerRef.current && !manualListenRef.current) return
                             // First real text is what earns the handover from batch.
                             if (!streamingDisplayRef.current) {
                                 streamingDisplayRef.current = true
@@ -2546,10 +2599,7 @@ export default function OverlayPage(): React.ReactElement {
                 } as React.CSSProperties
             }
         >
-            {/* Corner resize grips. They anchor to .zv-overlay, which spans the whole
-                window, so each one sits on the window edge it resizes. */}
-            <TopResizeHandles />
-            {!minimized && <BottomResizeHandles />}
+            {/* Corner resize grips: Top handles sit in OverlayDock, Bottom handles sit in deck */}
 
             {showScheduledSuccess && (
                 <div className="zv-scheduled-toast">
@@ -2596,7 +2646,6 @@ export default function OverlayPage(): React.ReactElement {
             {!minimized && (
                 <div
                     className="dock-drag-bar"
-                    title="Drag to move overlay"
                 >
                     <div
                         className="dock-drag-bar__pill"
@@ -2608,6 +2657,7 @@ export default function OverlayPage(): React.ReactElement {
             )}
 
             <section className="deck glass">
+                {!minimized && <BottomResizeHandles />}
                 <TranscriptRail
                     words={railWords}
                     wordCount={displayedWords.length}

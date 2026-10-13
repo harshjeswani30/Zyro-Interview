@@ -27,6 +27,13 @@ import { autoUpdater } from 'electron-updater'
 import { localVectorDb } from './localVectorDb'
 import { prepareInterviewStart } from './interviewReadiness'
 import { drainSseEvents, extractDelta, stripThinkBlocks, SSE_DONE } from './sseParser'
+import { streamOwnAccount, streamOwnAccountVision, resetOwnAccountConversation, type OwnAccountProvider } from './ownAccountExecutor'
+import { isOwnAccountProvider } from './ownAccountProvider'
+import { isGlmLoggedIn } from './glmAuth'
+import { disposeChatGptBridge, probeChatGptSession } from './chatgptBrowserBridge'
+import { disposeClaudeBridge } from './claudeBrowserBridge'
+import { disposeGeminiBridge, probeGeminiSession } from './geminiBrowserBridge'
+import { disposeGlmBridge, probeGlmSession } from './glmBrowserBridge'
 
 // ── Native Windows Stealth Engine (Ghostly Algorithm via Koffi FFI) ──
 const WDA_MONITOR = 1
@@ -680,6 +687,34 @@ function createMainWindow(): void {
     safeOpenExternal(details.url)
     return { action: 'deny' }
   })
+  // ── Black-screen recovery ──────────────────────────────────────────────
+  // The window is opaque #0a0b0f and the document is transparent until React
+  // paints, so anything that stops the renderer from mounting leaves a bare black
+  // window with no way back. These handlers reload once (guarded so a load that
+  // keeps failing cannot loop) instead of stranding the user on a black screen.
+  let recovered = false
+  const recoverRenderer = (why: string): void => {
+    if (recovered || !mainWindow || mainWindow.isDestroyed()) return
+    recovered = true
+    console.warn(`[MainWindow] renderer lost (${why}) — reloading once to recover`)
+    try {
+      mainWindow.webContents.reloadIgnoringCache()
+    } catch (err) {
+      console.warn('[MainWindow] recovery reload failed:', (err as Error)?.message)
+    }
+  }
+  mainWindow.webContents.on('did-fail-load', (_e, errorCode, errorDesc, _url, isMainFrame) => {
+    // -3 is ERR_ABORTED (a superseded/again-issued load), not a real failure.
+    if (isMainFrame && errorCode !== -3) recoverRenderer(`did-fail-load ${errorCode} ${errorDesc}`)
+  })
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    recoverRenderer(`render-process-gone ${details.reason}`)
+  })
+  // A successful load is the signal the last recovery worked; re-arm for the future.
+  mainWindow.webContents.on('did-finish-load', () => {
+    recovered = false
+  })
+
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -769,6 +804,138 @@ function setupIPC(): void {
   // The renderer needs this for the live-STT WebSocket. Every other gateway call is
   // made from here in main, so the URL had no reason to leave this file before.
   ipcMain.handle('get-ai-gateway-url', () => AI_GATEWAY)
+  // ── Own-Account Provider Auth (ChatGPT / Claude Web) ────────────────────────
+    ipcMain.handle('open-provider-login', async (_event, provider) => {
+    const CONFIG: Record<string, { loginUrl: string; domain: string; successUrls: string[] }> = {
+      chatgpt: { loginUrl: 'https://chatgpt.com/auth/login', domain: '.chatgpt.com', successUrls: ['https://chatgpt.com/', 'https://chatgpt.com/?'] },
+      claude:  { loginUrl: 'https://claude.ai/login',        domain: '.claude.ai',   successUrls: ['https://claude.ai/new', 'https://claude.ai/chats'] },
+      gemini:  { loginUrl: 'https://gemini.google.com',      domain: '.google.com',  successUrls: ['https://gemini.google.com/app', 'https://gemini.google.com/u/'] },
+      glm:     { loginUrl: 'https://chat.z.ai/',             domain: '.z.ai',        successUrls: ['https://chat.z.ai/', 'https://chat.z.ai/c/'] },
+    }
+    const cfg = CONFIG[provider]
+    if (!cfg) return { connected: false, error: 'Unknown provider' }
+
+    return new Promise((resolve) => {
+      const authWin = new BrowserWindow({
+        width: 480, height: 680,
+        title: provider === 'chatgpt' ? 'Connect ChatGPT Account' : provider === 'claude' ? 'Connect Claude Account' : provider === 'gemini' ? 'Connect Gemini Account' : 'Connect GLM Account',
+        webPreferences: { nodeIntegration: false, contextIsolation: true, partition: 'persist:' + provider + '-auth' },
+        resizable: false, minimizable: false, maximizable: false, show: true,
+        parent: mainWindow ?? undefined, modal: false, autoHideMenuBar: true,
+      })
+      authWin.loadURL(cfg.loginUrl)
+
+      let poll: NodeJS.Timeout | null = null
+      let done = false
+
+      const cleanup = () => { if (poll) clearInterval(poll); poll = null; try { if (!authWin.isDestroyed()) authWin.close() } catch {} }
+      const succeed = () => {
+        if (done) return; done = true
+        cleanup(); resolve({ connected: true })
+      }
+
+      authWin.on('closed', () => { if (!done) { done = true; if (poll) clearInterval(poll); resolve({ connected: false, error: 'closed' }) } })
+
+      poll = setInterval(async () => {
+        try {
+          if (authWin.isDestroyed()) return
+          const url = authWin.webContents.getURL()
+          // For Gemini, we must check for an actual auth cookie because the unauthenticated 
+          if (provider === 'gemini') {
+            const cookies = await session.fromPartition('persist:gemini-auth').cookies.get({ domain: '.google.com' })
+            if (cookies.some(c => c.name.includes('1PSID'))) succeed()
+          } else if (provider === 'chatgpt') {
+            const cookies = await session.fromPartition('persist:chatgpt-auth').cookies.get({})
+            if (cookies.some(c => c.domain?.includes('chatgpt.com') && (c.name.includes('next-auth.session-token') || c.name.includes('oai-did')))) succeed()
+          } else if (provider === 'claude') {
+            const cookies = await session.fromPartition('persist:claude-auth').cookies.get({ domain: 'claude.ai' })
+            if (cookies.some(c => c.name.includes('sessionKey'))) succeed()
+          } else if (provider === 'glm') {
+            // A logged-in Z.ai token carries an `email` claim (+ a short ~1h `exp`);
+            // the pre-login guest token does not — confirmed against a live token —
+            // so isGlmLoggedIn (cookie OR localStorage) is a reliable signal here.
+            const cookies = await session.fromPartition('persist:glm-auth').cookies.get({})
+            const lsData: { values: string[] } = await authWin.webContents.executeJavaScript(
+              `(() => { try { return { values: Object.keys(localStorage).map(k => localStorage.getItem(k) || '') } } catch(e) { return { values: [] } } })()`
+            ).catch(() => ({ values: [] }))
+            if (isGlmLoggedIn([...cookies.map(c => c.value), ...lsData.values])) succeed()
+          } else if (cfg.successUrls.some(s => url === s || url.startsWith(s + 'c/'))) {
+            succeed()
+          }
+        } catch {}
+      }, 1000)
+    })
+  })
+
+  ipcMain.handle('get-provider-status', async (_event, provider) => {
+    const part = 'persist:' + provider + '-auth'
+    try {
+      if (provider === 'gemini') {
+        const cookies = await session.fromPartition(part).cookies.get({ domain: '.google.com' })
+        return { connected: cookies.some(c => c.name.includes('1PSID')) }
+      } else if (provider === 'chatgpt') {
+        const cookies = await session.fromPartition(part).cookies.get({})
+        const hasAuth = cookies.some(c => c.domain?.includes('chatgpt.com') && (c.name.includes('next-auth.session-token') || c.name.includes('oai-did')))
+        return { connected: hasAuth }
+      } else if (provider === 'claude') {
+        const cookies = await session.fromPartition(part).cookies.get({ domain: 'claude.ai' })
+        return { connected: cookies.some(c => c.name.includes('sessionKey')) }
+      } else if (provider === 'glm') {
+        // Cookie-only check here (no window to read localStorage). If Z.ai keeps its
+        // token only in localStorage this can under-report on restart — see glmAuth.
+        const cookies = await session.fromPartition(part).cookies.get({})
+        return { connected: isGlmLoggedIn(cookies.map(c => c.value)) }
+      }
+      return { connected: false }
+    } catch { return { connected: false } }
+  })
+ipcMain.handle('disconnect-provider', async (_event, provider) => {
+    const P: Record<string, string> = { chatgpt: 'persist:chatgpt-auth', claude: 'persist:claude-auth', gemini: 'persist:gemini-auth', glm: 'persist:glm-auth' }
+    try { await session.fromPartition(P[provider] || '').clearStorageData() } catch {}
+    return { ok: true }
+  })
+
+  // Startup liveness validation — confirms each linked account's session actually
+  // WORKS (not just that a cookie exists), so a dead session shows red BEFORE the
+  // user hits it. Claude = cheap HTTP ping; browser-bridge providers = real page
+  // probe (which also pre-warms the hidden answer window).
+  ipcMain.handle('validate-provider-sessions', async () => {
+    const result: Record<'chatgpt' | 'claude' | 'gemini' | 'glm', 'valid' | 'expired' | 'disconnected'> = {
+      chatgpt: 'disconnected', claude: 'disconnected', gemini: 'disconnected', glm: 'disconnected'
+    }
+    try {
+      const cs = session.fromPartition('persist:claude-auth')
+      const cookies = await cs.cookies.get({ domain: 'claude.ai' })
+      if (cookies.some(c => c.name.includes('sessionKey'))) {
+        try {
+          const res = await cs.fetch('https://claude.ai/api/organizations', {
+            headers: { Accept: 'application/json', Origin: 'https://claude.ai', Referer: 'https://claude.ai/new' },
+            credentials: 'include',
+          })
+          result.claude = res.ok ? 'valid' : 'expired'
+        } catch { result.claude = 'expired' }
+      }
+    } catch {}
+    try {
+      const cookies = await session.fromPartition('persist:chatgpt-auth').cookies.get({})
+      if (cookies.some(c => c.domain?.includes('chatgpt.com') && (c.name.includes('next-auth.session-token') || c.name.includes('oai-did')))) {
+        result.chatgpt = (await probeChatGptSession()) ? 'valid' : 'expired'
+      }
+    } catch {}
+    try {
+      const cookies = await session.fromPartition('persist:gemini-auth').cookies.get({ domain: '.google.com' })
+      if (cookies.some(c => c.name.includes('1PSID'))) {
+        result.gemini = (await probeGeminiSession()) ? 'valid' : 'expired'
+      }
+    } catch {}
+    try {
+      const cookies = await session.fromPartition('persist:glm-auth').cookies.get({})
+      if (cookies.length > 0) {
+        result.glm = (await probeGlmSession()) ? 'valid' : 'expired'
+      }
+    } catch {}
+    return result
+  })
 
   ipcMain.handle('index-local-content', (_event, { source, content }) => {
     return localVectorDb.indexContent(source, content)
@@ -866,6 +1033,9 @@ function setupIPC(): void {
   }
 
   ipcMain.handle('start-interview', async (_event, sessionData: unknown) => {
+    // Fresh interview → fresh own-account chat (the previous interview's Claude/
+    // ChatGPT conversation is abandoned; this one opens a brand-new thread).
+    resetOwnAccountConversation()
     const token = await ensureFreshSupabaseToken()
     if (!supabaseUserId || !token) throw new Error('Not logged in')
 
@@ -1023,6 +1193,14 @@ function setupIPC(): void {
 
   ipcMain.on('end-interview', () => {
     pendingSessionData = null
+
+    // Interview over → drop the own-account chat so the next one starts fresh, and
+    // tear down the hidden ChatGPT/Claude windows (also frees them from blocking quit).
+    resetOwnAccountConversation()
+    disposeChatGptBridge()
+    disposeClaudeBridge()
+    disposeGeminiBridge()
+    disposeGlmBridge()
 
     // Clear cached gateway token so the next session fetches a fresh one.
     // Free user tokens now encode remaining trial time — keeping a stale token
@@ -1966,30 +2144,94 @@ function setupIPC(): void {
     }
   }
 
-  ipcMain.handle('generate-answer-stream', async (event, data) =>
-    streamGatewayCompletion(event, {
-      requestId: data.requestId,
+  ipcMain.handle('generate-answer-stream', async (event, data) => {
+    const requestId = data.requestId as string
+    const send = (payload: Record<string, unknown>): void => {
+      if (!event.sender.isDestroyed()) event.sender.send('answer-chunk', { requestId, ...payload })
+    }
+    const aiSource = data.aiSource as string | undefined
+    const ownProvider = data.ownProvider as OwnAccountProvider | undefined
+    // Providers to try, in priority order (renderer sends the connected ones). Old
+    // single-provider payloads still work via the ownProvider fallback.
+    const ownProviders: OwnAccountProvider[] = Array.isArray(data.ownProviders)
+      ? (data.ownProviders as unknown[]).filter(isOwnAccountProvider)
+      : (isOwnAccountProvider(ownProvider) ? [ownProvider] : [])
+    if (aiSource === 'own_account' && ownProviders.length) {
+      console.log(`[OwnAccount] Failover chain: ${ownProviders.join(' -> ')}`)
+      let flushTimer: NodeJS.Timeout | null = null
+      let lastSent = ''
+      const controller = new AbortController()
+      const result = await streamOwnAccount({
+        providers: ownProviders,
+        systemPrompt: data.systemPrompt as string,
+        userMessage: data.transcript as string,
+        signal: controller.signal,
+        onDelta: (text) => {
+          if (flushTimer) clearTimeout(flushTimer)
+          flushTimer = setTimeout(() => { if (text !== lastSent) { lastSent = text; send({ full: text, done: false }) } }, 50)
+        },
+      })
+      if (flushTimer) clearTimeout(flushTimer)
+      if (result.ok && result.text.trim()) {
+        console.log(`[OwnAccount] answered via ${result.provider}`)
+        send({ done: true, full: result.text })
+        return result.text
+      }
+      send({ done: true, full: '', error: result.error || 'Linked account unavailable' })
+      return ''
+    }
+    return streamGatewayCompletion(event, {
+      requestId,
       path: '/gateway/llm',
       body: {
         stream: true,
         model: data.model || 'openai/gpt-oss-120b',
-        messages: [
-          { role: 'system', content: data.systemPrompt },
-          { role: 'user', content: data.transcript }
-        ],
+        messages: [{ role: 'system', content: data.systemPrompt }, { role: 'user', content: data.transcript }],
         temperature: data.temperature ?? 0.65,
         max_completion_tokens: data.maxTokens ?? 1024,
         presence_penalty: data.presencePenalty ?? 0.4,
         frequency_penalty: data.frequencyPenalty ?? 0.4
       }
     })
-  )
+  })
+
 
   // Streaming screenshot analysis. Same channel and same requestId contract as the text
   // path, so the renderer reuses onAnswerChunk untouched. The screenshot itself still
   // comes from `capture-screenshot` (stealth micro-blink) in the renderer.
-  ipcMain.handle('analyze-screen-stream', async (event, data) =>
-    streamGatewayCompletion(event, {
+  ipcMain.handle('analyze-screen-stream', async (event, data) => {
+    const requestId = data.requestId as string
+    const send = (payload: Record<string, unknown>): void => {
+      if (!event.sender.isDestroyed()) event.sender.send('answer-chunk', { requestId, ...payload })
+    }
+    const ownProviders: OwnAccountProvider[] = Array.isArray(data.ownProviders)
+      ? (data.ownProviders as unknown[]).filter(isOwnAccountProvider)
+      : []
+    if (data.aiSource === 'own_account' && ownProviders.length) {
+      console.log(`[OwnAccount] Vision failover chain: ${ownProviders.join(' -> ')}`)
+      let flushTimer: NodeJS.Timeout | null = null
+      let lastSent = ''
+      const controller = new AbortController()
+      const result = await streamOwnAccountVision({
+        providers: ownProviders,
+        systemPrompt: (data.systemPrompt as string) + '\n\n' + (data.userPrompt as string || VISION_USER_PROMPT),
+        imageDataUrl: data.base64Image as string,
+        signal: controller.signal,
+        onDelta: (text) => {
+          if (flushTimer) clearTimeout(flushTimer)
+          flushTimer = setTimeout(() => { if (text !== lastSent) { lastSent = text; send({ full: text, done: false }) } }, 60)
+        },
+      })
+      if (flushTimer) clearTimeout(flushTimer)
+      if (result.ok && result.text.trim()) {
+        console.log(`[OwnAccount] vision answered via ${result.provider}`)
+        send({ done: true, full: result.text })
+        return result.text
+      }
+      send({ done: true, full: '', error: result.error || 'Linked account could not read the screen' })
+      return ''
+    }
+    return streamGatewayCompletion(event, {
       requestId: data.requestId,
       path: '/gateway/vision',
       // Image prefill is heavier than text, so the first token needs more headroom than
@@ -2010,7 +2252,7 @@ function setupIPC(): void {
         ]
       }
     })
-  )
+  })
 
   ipcMain.handle('analyze-screen', async (_event, { systemPrompt, model: _model }) => {
     try {
@@ -2357,6 +2599,10 @@ app.whenReady().then(() => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
+  disposeChatGptBridge()
+  disposeClaudeBridge()
+  disposeGeminiBridge()
+  disposeGlmBridge()
 })
 
 app.on('window-all-closed', () => {

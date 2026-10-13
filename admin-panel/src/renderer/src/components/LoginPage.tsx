@@ -8,7 +8,7 @@ export default function LoginPage({
 }: {
   onLogin: (password: string) => void
 }): JSX.Element {
-  const [email, setEmail] = useState('admin@zyro.ai')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)

@@ -1,4 +1,5 @@
-import React from 'react'
+﻿import React from 'react'
+import { TopResizeHandles } from '../ResizeHandles'
 import {
     IconAuto,
     IconCamera,
@@ -56,6 +57,7 @@ export function OverlayDock({
 
     return (
         <header className={`dock glass ${isTranscribing ? 'is-transcribing' : ''}`} onPointerDown={onPointerDown}>
+            <TopResizeHandles />
             <div className="brand">
                 <span
                     className={`wave ${speaking || isTranscribing ? 'is-speaking' : ''} ${isTranscribing ? 'is-transcribing' : ''}`}
@@ -112,7 +114,6 @@ export function OverlayDock({
                     </span>
                     <span className="txt">
                         <span className="lbl">{listening ? 'Stop' : 'Listen'}</span>
-                        <span className="sc">Ctrl + Space</span>
                     </span>
                     <span className="led" />
                 </button>
@@ -128,7 +129,6 @@ export function OverlayDock({
                     </span>
                     <span className="txt">
                         <span className="lbl">Capture</span>
-                        <span className="sc">Ctrl + S</span>
                     </span>
                     <span className="led" />
                 </button>
@@ -143,7 +143,6 @@ export function OverlayDock({
                     </span>
                     <span className="txt">
                         <span className="lbl">Stealth</span>
-                        <span className="sc">Ctrl + N</span>
                     </span>
                     <span className="led" />
                 </button>
@@ -154,7 +153,6 @@ export function OverlayDock({
                     type="button"
                     className="key icon-only minimize-btn no-drag"
                     onClick={onToggleMinimize}
-                    title={minimized ? 'Expand (Ctrl+M)' : 'Minimize (Ctrl+M)'}
                 >
                     <span className="ico">{minimized ? <IconExpand /> : <IconMinimize />}</span>
                 </button>
@@ -162,7 +160,6 @@ export function OverlayDock({
                     type="button"
                     className="key icon-only danger no-drag"
                     onClick={onEnd}
-                    title="End session"
                 >
                     <span className="ico">
                         <IconPower />

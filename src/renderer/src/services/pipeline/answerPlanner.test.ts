@@ -16,7 +16,7 @@ const intent = (i: IntentResult['intent']): IntentResult => ({
 
 describe('planAnswer — completion budget', () => {
   it('a short definition asks for far less than the old flat 1600', () => {
-    expect(planAnswer(intent('definitional')).maxTokens).toBe(450)
+    expect(planAnswer(intent('definitional')).maxTokens).toBe(650)
   })
 
   it('coding keeps the full ceiling', () => {

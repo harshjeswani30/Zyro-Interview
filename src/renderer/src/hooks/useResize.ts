@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+﻿import { useCallback } from 'react'
 import { MIN_OVERLAY_WIDTH, MAX_OVERLAY_WIDTH } from './useHeaderScale'
 
 // direction: 'e'|'w'|'ne'|'nw'|'se'|'sw' (height is locked — width only)
@@ -11,8 +11,16 @@ export function useResize(direction: string): { onPointerDown: (e: React.Pointer
     const startMouse = { x: e.screenX, y: e.screenY }
     const startBounds = await window.api.getBounds()
 
-    const target = e.target as HTMLElement
-    target.setPointerCapture(e.pointerId)
+    const target = (e.currentTarget as HTMLElement) || (e.target as HTMLElement)
+    try {
+      target.setPointerCapture(e.pointerId)
+    } catch {}
+
+    ;(window as any).__isInteractingWithOverlay = true
+    ;(window as any).__isResizingOverlay = true
+    const resizeClass = direction === 'nw' || direction === 'se' ? 'is-resizing-nwse' : 'is-resizing-nesw'
+    document.body.classList.add(resizeClass)
+    window.api?.setIgnoreMouseEvents(false)
 
     const onMove = (ev: PointerEvent): void => {
       const dx = ev.screenX - startMouse.x
@@ -66,12 +74,26 @@ export function useResize(direction: string): { onPointerDown: (e: React.Pointer
     }
 
     const onUp = (): void => {
+      try {
+        if (target.hasPointerCapture(e.pointerId)) {
+          target.releasePointerCapture(e.pointerId)
+        }
+      } catch {}
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      window.removeEventListener('blur', onUp)
+      setTimeout(() => {
+        ;(window as any).__isInteractingWithOverlay = false
+        ;(window as any).__isResizingOverlay = false
+        document.body.classList.remove('is-resizing-nwse', 'is-resizing-nesw')
+      }, 100)
     }
 
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+    window.addEventListener('blur', onUp)
   }, [direction])
 
   return { onPointerDown: onResizeStart }

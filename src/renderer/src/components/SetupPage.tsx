@@ -11,6 +11,11 @@ import Tooltip from './Tooltip'
 import CloudSyncButton from './CloudSyncButton'
 import MinimalUpdateButton from './MinimalUpdateButton'
 import TeleprompterText from './TeleprompterText'
+import openaiLogo from '../assets/logos/openai.png'
+import claudeLogo from '../assets/logos/claude.png'
+import geminiLogo from '../assets/logos/gemini.webp'
+import zyroLogo from '../assets/logos/zyro-logo-mark.webp'
+import '../assets/aiSource.css'
 
 const HAMBURGER_VARIANTS = {
   top: {
@@ -195,15 +200,15 @@ interface CodingLanguageOption {
 
 const CODING_LANGUAGES: CodingLanguageOption[] = [
   { id: 'Python', name: 'Python', icon: '🐍', tag: 'AI & Data / Scripting' },
-  { id: 'JavaScript', name: 'JavaScript', icon: '🟨', tag: 'Web & Fullstack' },
-  { id: 'TypeScript', name: 'TypeScript', icon: '🔷', tag: 'Frontend & Node' },
+  { id: 'JavaScript', name: 'JavaScript', icon: '💛', tag: 'Web & Fullstack' },
+  { id: 'TypeScript', name: 'TypeScript', icon: '💙', tag: 'Frontend & Node' },
   { id: 'Java', name: 'Java', icon: '☕', tag: 'Enterprise & Android' },
-  { id: 'C++', name: 'C++', icon: '⚡', tag: 'DSA & Systems' },
+  { id: 'C++', name: 'C++', icon: '⚙️', tag: 'DSA & Systems' },
   { id: 'SQL', name: 'SQL', icon: '🗄️', tag: 'Database & Analytics' },
-  { id: 'C#', name: 'C#', icon: '🟣', tag: '.NET & Game Dev' },
+  { id: 'C#', name: 'C#', icon: '💠', tag: '.NET & Game Dev' },
   { id: 'Go', name: 'Go (Golang)', icon: '🐹', tag: 'Cloud & Microservices' },
   { id: 'Rust', name: 'Rust', icon: '🦀', tag: 'High-Performance' },
-  { id: 'Kotlin', name: 'Kotlin', icon: '🎯', tag: 'Android & Server' },
+  { id: 'Kotlin', name: 'Kotlin', icon: '🤖', tag: 'Android & Server' },
   { id: 'Swift', name: 'Swift', icon: '🍎', tag: 'iOS & macOS' },
   { id: 'PHP', name: 'PHP', icon: '🐘', tag: 'Backend Web' },
   { id: 'Ruby', name: 'Ruby', icon: '💎', tag: 'Rails & Scripting' }
@@ -351,7 +356,21 @@ export default function SetupPage({
   const [resumes, setResumes] = useState<Resume[]>([])
   const [selectedResumeId, setSelectedResumeId] = useState('')
   const [isParsing, setIsParsing] = useState(false)
-  const [step, setStep] = useState<1 | 2 | 3 | 'knowledge_base' | 'scheduled'>(1)
+  const [step, setStep] = useState<1 | 2 | 3 | 'knowledge_base' | 'ai_source'>(1)
+  // -- AI Source (Own Account) State --------------------------------------------
+  const [aiSource, setAiSource] = useState<'gateway' | 'own_account'>(() => {
+    try { return (localStorage.getItem('zyro_ai_source') as any) || 'gateway' } catch { return 'gateway' }
+  })
+  const [chatgptStatus, setChatgptStatus] = useState<'checking' | 'connected' | 'disconnected' | 'expired'>('checking')
+  const [ownAccountSessionWarning, setOwnAccountSessionWarning] = useState<string | null>(null)
+  const [claudeStatus, setClaudeStatus] = useState<'checking' | 'connected' | 'disconnected' | 'expired'>('checking')
+  const [chatgptExpanded, setChatgptExpanded] = useState(false)
+  const [claudeExpanded, setClaudeExpanded] = useState(false)
+  const [geminiStatus, setGeminiStatus] = useState<'checking' | 'connected' | 'disconnected' | 'expired'>('checking')
+  const [geminiExpanded, setGeminiExpanded] = useState(false)
+  const [glmStatus, setGlmStatus] = useState<'checking' | 'connected' | 'disconnected' | 'expired'>('checking')
+  const [glmExpanded, setGlmExpanded] = useState(false)
+  const [providerLoading, setProviderLoading] = useState<'chatgpt' | 'claude' | 'gemini' | 'glm' | null>(null)
   const [activeKbId, setActiveKbId] = useState('')
   const [kbs, setKbs] = useState<{ id: string; title: string; created_at: string }[]>([])
   const [newKbTitle, setNewKbTitle] = useState('')
@@ -379,69 +398,35 @@ export default function SetupPage({
   const [showPaywall, setShowPaywall] = useState(false)
   const [showEmail, setShowEmail] = useState(false)
 
-  // ── Scheduled Sessions State ────────────────────────────────────
-  interface ScheduledSession {
-    id: string
-    label: string
-    role: string
-    company: string
-    resumeId: string
-    scheduledAt: number // Unix ms
-    hasHold: boolean   // true = credit was pre-held
-    triggered: boolean
-  }
-  const SCHEDULED_SESSIONS_KEY = 'zyro_scheduled_sessions'
-  const [scheduledSessions, setScheduledSessions] = useState<ScheduledSession[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(SCHEDULED_SESSIONS_KEY) || '[]')
-    } catch { return [] }
-  })
-  const [schedLabel, setSchedLabel] = useState('')
-  const [schedRole, setSchedRole] = useState('')
-  const [schedCompany, setSchedCompany] = useState('')
-  const [schedResumeId, setSchedResumeId] = useState('')
-  const [isSchedResumeDropdownOpen, setIsSchedResumeDropdownOpen] = useState(false)
-  const schedResumeDropdownRef = React.useRef<HTMLDivElement>(null)
-  
-  const [isSchedDateDropdownOpen, setIsSchedDateDropdownOpen] = useState(false)
-  const schedDateDropdownRef = React.useRef<HTMLDivElement>(null)
-  const [calendarViewDate, setCalendarViewDate] = useState(() => new Date())
-
-  const [isSchedTimeDropdownOpen, setIsSchedTimeDropdownOpen] = useState(false)
-  const schedTimeDropdownRef = React.useRef<HTMLDivElement>(null)
-
-  const getLocalDateString = (offsetDays = 0) => {
-    const d = new Date()
-    d.setDate(d.getDate() + offsetDays)
-    const year = d.getFullYear()
-    const month = String(d.getMonth() + 1).padStart(2, '0')
-    const day = String(d.getDate()).padStart(2, '0')
-    return `${year}-${month}-${day}`
-  }
-
-  const getLocalTimeString = (offsetMinutes = 30) => {
-    const d = new Date(Date.now() + offsetMinutes * 60 * 1000)
-    const hours = String(d.getHours()).padStart(2, '0')
-    const minutes = String(d.getMinutes()).padStart(2, '0')
-    return `${hours}:${minutes}`
-  }
-
-  const [schedDate, setSchedDate] = useState(() => getLocalDateString(0))
-  const [schedTime, setSchedTime] = useState(() => getLocalTimeString(30))
-  const [schedError, setSchedError] = useState('')
-  const [schedSuccess, setSchedSuccess] = useState('')
-  const [schedCreating, setSchedCreating] = useState(false)
-  const [, setSchedTick] = useState(0) // Force re-render for countdown
-
-  // ── Auto-Update state ───────────────────────────────────────
+  // -- Auto-Update state ---------------------------------------
   const [updateInfo, setUpdateInfo] = useState<{ version: string } | null>(null)
   const [updateProgress, setUpdateProgress] = useState(0)
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'available' | 'downloading' | 'ready'>('idle')
 
-  const sessionsBalance = userProfile?.sessions_balance ?? 0
+  const sessionsBalance = Number((userProfile?.sessions_balance ?? 0).toFixed(1))
   const trialUsed = userProfile?.trial_seconds_used ?? 0
   const TRIAL_LIMIT = 600
   const trialRemainingSeconds = Math.max(0, TRIAL_LIMIT - trialUsed)
+
+  // -- Subscription & BYOK State ---------------------------------
+  let unlimitedDaysLeft = 0
+  if (userProfile?.unlimited_expires_at) {
+    const expDate = new Date(userProfile.unlimited_expires_at)
+    const msLeft = expDate.getTime() - Date.now()
+    if (msLeft > 0) {
+      unlimitedDaysLeft = Math.ceil(msLeft / (1000 * 60 * 60 * 24))
+    }
+  }
+
+  let hasByokAccess = false
+  if (userProfile?.byok_expires_at) {
+    const byokExpDate = new Date(userProfile.byok_expires_at)
+    if (byokExpDate.getTime() > Date.now()) {
+      hasByokAccess = true
+    }
+  }
+
+  const [showByokPaywall, setShowByokPaywall] = useState(false)
 
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60)
@@ -449,6 +434,41 @@ export default function SetupPage({
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
+
+  useEffect(() => {
+    localStorage.setItem('zyro_chatgpt_connected', String(chatgptStatus === 'connected'))
+    localStorage.setItem('zyro_claude_connected', String(claudeStatus === 'connected'))
+    localStorage.setItem('zyro_gemini_connected', String(geminiStatus === 'connected'))
+    localStorage.setItem('zyro_glm_connected', String(glmStatus === 'connected'))
+  }, [chatgptStatus, claudeStatus, geminiStatus, glmStatus])
+  // Check provider connection status on mount and when ai_source tab is visited
+  // On app start, validate each linked account's session for real (not just that a
+  // cookie exists) so an expired/dead session shows red + a reconnect prompt BEFORE
+  // the user relies on it. Runs once in the background; also pre-warms the bridges.
+  useEffect(() => {
+    const asStatus = (s: 'valid' | 'expired' | 'disconnected'): 'connected' | 'expired' | 'disconnected' =>
+      s === 'valid' ? 'connected' : s
+    const validate = async (): Promise<void> => {
+      setChatgptStatus('checking'); setClaudeStatus('checking'); setGeminiStatus('checking'); setGlmStatus('checking')
+      try {
+        const r = await window.api.validateProviderSessions()
+        setChatgptStatus(asStatus(r.chatgpt))
+        setClaudeStatus(asStatus(r.claude))
+        setGeminiStatus(asStatus(r.gemini))
+        setGlmStatus(asStatus(r.glm))
+        const names: Record<string, string> = { chatgpt: 'ChatGPT', claude: 'Claude', gemini: 'Gemini', glm: 'GLM' }
+        const expired = Object.entries(r).filter(([, v]) => v === 'expired').map(([k]) => names[k])
+        setOwnAccountSessionWarning(
+          expired.length
+            ? `${expired.join(', ')} ${expired.length > 1 ? 'sessions have' : 'session has'} expired. Open Setup → AI Source and reconnect.`
+            : null
+        )
+      } catch {
+        setChatgptStatus('disconnected'); setClaudeStatus('disconnected'); setGeminiStatus('disconnected'); setGlmStatus('disconnected')
+      }
+    }
+    validate()
+  }, [])
   useEffect(() => {
     const cleanup = window.api.onInterviewEnd(() => {
       setStep(3)
@@ -482,28 +502,19 @@ export default function SetupPage({
       if (responseLangDropdownRef.current && !responseLangDropdownRef.current.contains(event.target as Node)) {
         setIsResponseLangOpen(false)
       }
-      if (schedResumeDropdownRef.current && !schedResumeDropdownRef.current.contains(event.target as Node)) {
-        setIsSchedResumeDropdownOpen(false)
-      }
-      if (schedDateDropdownRef.current && !schedDateDropdownRef.current.contains(event.target as Node)) {
-        setIsSchedDateDropdownOpen(false)
-      }
-      if (schedTimeDropdownRef.current && !schedTimeDropdownRef.current.contains(event.target as Node)) {
-        setIsSchedTimeDropdownOpen(false)
-      }
       if (menuContainerRef.current && !menuContainerRef.current.contains(event.target as Node)) {
         setIsSidebarMenuOpen(false)
       }
     }
-    if (isLangDropdownOpen || isResponseLangOpen || isSchedResumeDropdownOpen || isSchedDateDropdownOpen || isSchedTimeDropdownOpen || isSidebarMenuOpen) {
+    if (isLangDropdownOpen || isResponseLangOpen || isSidebarMenuOpen) {
       document.addEventListener('mousedown', handleClickOutside)
     }
     return () => {
       document.removeEventListener('mousedown', handleClickOutside)
     }
-  }, [isLangDropdownOpen, isResponseLangOpen, isSchedResumeDropdownOpen, isSchedDateDropdownOpen, isSchedTimeDropdownOpen, isSidebarMenuOpen])
+  }, [isLangDropdownOpen, isResponseLangOpen, isSidebarMenuOpen])
 
-  // ── Wire up auto-update events ──────────────────────────────
+  // -- Wire up auto-update events ------------------------------
   useEffect(() => {
     const unsubAvailable = window.api.onUpdateAvailable((info) => {
       const typed = info as { version: string }
@@ -692,7 +703,7 @@ export default function SetupPage({
     }
   }, [manualResumeTitle, manualResumeText, name, role, company, language, autoAnswer, resumes, saveData, experienceLevel, experienceDuration, workHistory, codingLanguage, responseLanguages, interviewContent, activeKbId])
 
-  const handleStartInterview = useCallback(() => {
+  const handleStartInterview = useCallback(async () => {
     if (!name || !role) {
       setError('Please fill in your name and role.')
       setStep(1)
@@ -705,7 +716,26 @@ export default function SetupPage({
       return
     }
 
-    if (sessionsBalance <= 0 && trialRemainingSeconds <= 0) {
+    if (aiSource === 'own_account') {
+      try {
+        const [cg, cl] = await Promise.all([
+          window.api.getProviderStatus('chatgpt'),
+          window.api.getProviderStatus('claude')
+        ])
+        const cgOk = !!cg?.connected
+        const clOk = !!cl?.connected
+        setChatgptStatus(cgOk ? 'connected' : 'disconnected')
+        setClaudeStatus(clOk ? 'connected' : 'disconnected')
+        if (!cgOk && !clOk) {
+          setOwnAccountSessionWarning('Neither your ChatGPT nor Claude account session is currently connected. Please link at least one provider account in the AI Source tab, or switch to Zyro AI Gateway.')
+          return
+        }
+      } catch (err) {
+        console.warn('Failed to verify provider sessions before start:', err)
+      }
+    }
+
+    if (unlimitedDaysLeft <= 0 && sessionsBalance <= 0 && trialRemainingSeconds <= 0) {
       setShowPaywall(true)
       return
     }
@@ -777,174 +807,7 @@ export default function SetupPage({
     onGoToMicTest
   ])
 
-  // ── Scheduled Sessions Logic ────────────────────────────────────
-  const handleCreateScheduledSession = async () => {
-    setSchedError('')
-    setSchedSuccess('')
-    if (!schedLabel || !schedRole || !schedDate || !schedTime || !schedResumeId) {
-      setSchedError('Please fill all required fields (Label, Role, Date, Time, Resume).')
-      return
-    }
 
-    const scheduledTime = new Date(`${schedDate}T${schedTime}`).getTime()
-    if (isNaN(scheduledTime) || scheduledTime <= Date.now()) {
-      setSchedError('Scheduled time must be in the future.')
-      return
-    }
-
-    setSchedCreating(true)
-    try {
-      // 1. Try to hold a credit (if not on trial)
-      let hasHold = false
-      if (sessionsBalance >= 1.0) {
-        const holdRes = await window.api.supabaseHoldCredit()
-        if (!holdRes.ok) {
-          setSchedError(`Cannot schedule: ${holdRes.reason === 'insufficient_balance' ? 'Insufficient sessions (need 1.0)' : 'Error reserving session'}`)
-          setSchedCreating(false)
-          return
-        }
-        hasHold = true
-      } else if (trialRemainingSeconds <= 0) {
-        setSchedError('Insufficient sessions and free trial exhausted.')
-        setSchedCreating(false)
-        return
-      }
-
-      // 2. Add to localStorage
-      const newSession: ScheduledSession = {
-        id: Date.now().toString(),
-        label: schedLabel,
-        role: schedRole,
-        company: schedCompany,
-        resumeId: schedResumeId,
-        scheduledAt: scheduledTime,
-        hasHold,
-        triggered: false
-      }
-      
-      const updated = [...scheduledSessions, newSession]
-      setScheduledSessions(updated)
-      localStorage.setItem(SCHEDULED_SESSIONS_KEY, JSON.stringify(updated))
-      
-      // Reset form
-      setSchedLabel('')
-      setSchedCompany('')
-      setSchedDate(getLocalDateString(0))
-      setSchedTime(getLocalTimeString(30))
-      setSchedSuccess('Session scheduled successfully!')
-      setTimeout(() => setSchedSuccess(''), 4000)
-    } catch (e) {
-      setSchedError('Failed to schedule session.')
-    } finally {
-      setSchedCreating(false)
-    }
-  }
-
-  const handleCancelScheduledSession = async (id: string, hasHold: boolean) => {
-    if (hasHold) {
-      await window.api.supabaseReleaseHold().catch(console.error)
-    }
-    const updated = scheduledSessions.filter(s => s.id !== id)
-    setScheduledSessions(updated)
-    localStorage.setItem(SCHEDULED_SESSIONS_KEY, JSON.stringify(updated))
-  }
-
-  const handleLaunchNowScheduledSession = async (session: ScheduledSession) => {
-    const targetResume = resumes.find(r => r.id === session.resumeId) || resumes[0]
-    if (!targetResume || !targetResume.text || targetResume.text.trim().length < 10) {
-      setSchedError('Valid resume not found. Please attach a valid resume.')
-      return
-    }
-
-    const sessionData: SessionData = {
-      name: name || 'Candidate',
-      role: session.role,
-      company: session.company,
-      language: language,
-      resumeText: targetResume.text || '',
-      autoAnswer,
-      experienceLevel,
-      experienceDuration: experienceLevel === 'experienced' ? experienceDuration : undefined,
-      workHistory: experienceLevel === 'experienced' && workHistory.trim() ? workHistory.trim() : undefined,
-      codingLanguage,
-      responseLanguages,
-      interviewContent: interviewContent.trim() ? interviewContent.trim() : undefined,
-      activeKbId: activeKbId || undefined,
-      sessionStartedFromSchedule: true,
-      hasHold: session.hasHold
-    }
-
-    // Remove from scheduled queue
-    const updated = scheduledSessions.filter(s => s.id !== session.id)
-    setScheduledSessions(updated)
-    localStorage.setItem(SCHEDULED_SESSIONS_KEY, JSON.stringify(updated))
-
-    console.log('[Setup] Instant-launching scheduled session:', session.label)
-    saveData(sessionData)
-    window.api.startInterview(sessionData).then((res: { allowed: boolean } | null) => {
-      if (res && !res.allowed) {
-        setShowPaywall(true)
-      }
-    })
-  }
-
-  // Polling loop for scheduled sessions
-  useEffect(() => {
-    const iv = setInterval(() => {
-      setSchedTick(t => t + 1) // For countdown re-renders
-      
-      const now = Date.now()
-      let updated = false
-      const currentList = [...scheduledSessions]
-
-      for (const session of currentList) {
-        if (!session.triggered && session.scheduledAt <= now) {
-          // Trigger time!
-          session.triggered = true
-          updated = true
-          
-          const targetResume = resumes.find(r => r.id === session.resumeId)
-          if (!targetResume) continue
-
-          const sessionData = {
-            name: name || 'Candidate',
-            role: session.role,
-            company: session.company,
-            language: language,
-            resumeText: targetResume.text || '',
-            autoAnswer,
-            experienceLevel,
-            experienceDuration: experienceLevel === 'experienced' ? experienceDuration : undefined,
-            workHistory: experienceLevel === 'experienced' && workHistory.trim() ? workHistory.trim() : undefined,
-            codingLanguage,
-            responseLanguages,
-            interviewContent: interviewContent.trim() ? interviewContent.trim() : undefined,
-            activeKbId: activeKbId || undefined,
-            // Custom flags for Overlay
-            sessionStartedFromSchedule: true,
-            hasHold: session.hasHold
-          }
-
-          console.log('[Setup] Auto-triggering scheduled session:', session.label)
-          window.api.startInterview(sessionData).then((res: { allowed: boolean } | null) => {
-            if (res && !res.allowed) {
-              setShowPaywall(true)
-            }
-          })
-        }
-      }
-
-      if (updated) {
-        setScheduledSessions(currentList)
-        // Clean out old triggered sessions
-        const remaining = currentList.filter(s => !s.triggered)
-        localStorage.setItem(SCHEDULED_SESSIONS_KEY, JSON.stringify(remaining))
-        setScheduledSessions(remaining)
-      }
-    }, 5000) // Poll every 5s
-
-    return () => clearInterval(iv)
-  }, [scheduledSessions, name, language, resumes, autoAnswer, experienceLevel, experienceDuration, workHistory, codingLanguage, responseLanguages, interviewContent, activeKbId])
 
 
   const handleDeleteResume = useCallback(
@@ -1215,6 +1078,13 @@ export default function SetupPage({
                 </svg>
               },
               {
+                id: 'ai_source',
+                label: 'AI Source',
+                icon: <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256">
+                  <path d="M232,112a56.06,56.06,0,0,0-56-56H136V40a16,16,0,0,0-16-16H72A16,16,0,0,0,56,40V72H32A16,16,0,0,0,16,88v80a16,16,0,0,0,16,16H56v16a16,16,0,0,0,16,16h48a16,16,0,0,0,16-16V184h40A56.06,56.06,0,0,0,232,112Z" />
+                </svg>
+              },
+              {
                 id: 3,
                 label: 'Final Check',
                 icon: <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256">
@@ -1224,13 +1094,15 @@ export default function SetupPage({
             ].map((t) => {
               const isCurrent = step === t.id
               const isPast =
-                (step === 3 && (t.id === 1 || t.id === 2 || t.id === 'knowledge_base')) ||
+                (step === 3 && (t.id === 1 || t.id === 2 || t.id === 'knowledge_base' || (t.id as any) === 'ai_source')) ||
+                ((step as any) === 'ai_source' && (t.id === 1 || t.id === 2 || t.id === 'knowledge_base')) ||
                 (step === 'knowledge_base' && (t.id === 1 || t.id === 2)) ||
                 (step === 2 && t.id === 1)
               const canClick =
                 t.id === 1 ||
                 (t.id === 2 && name && role) ||
                 (t.id === 'knowledge_base' && name && role) ||
+                ((t.id as any) === 'ai_source' && name && role) ||
                 (t.id === 3 && selectedResumeId)
 
               return (
@@ -1240,57 +1112,38 @@ export default function SetupPage({
                   onClick={() => {
                     if (canClick) {
                       setStep(t.id as any)
+                      setShowByokPaywall(false)
                     }
                   }}
                 >
-                  <span className="nav-icon">{isPast ? '✓' : t.icon}</span>
+                  <span className="nav-icon">
+                    {isPast ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="#22c55e" viewBox="0 0 256 256">
+                        <path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z" />
+                      </svg>
+                    ) : (
+                      t.icon
+                    )}
+                  </span>
                   <span className="nav-text">{t.label}</span>
+                  {(t.id as any) === 'ai_source' && (chatgptStatus === 'connected' || claudeStatus === 'connected' || geminiStatus === 'connected') && (
+                    <span style={{
+                      position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)',
+                      width: '7px', height: '7px', borderRadius: '50%',
+                      background: '#22c55e', boxShadow: '0 0 6px #22c55e'
+                    }} />
+                  )}
                   {isCurrent && <div className="nav-active-glow" />}
                 </button>
               )
             })}
 
-            {/* ── Create Session — always accessible, separate from wizard flow ── */}
-            {(() => {
-              const isSchedCurrent = step === 'scheduled'
-              const pendingCount = scheduledSessions.filter(s => !s.triggered).length
-              return (
-                <button
-                  key="scheduled"
-                  className={`nav-item ${isSchedCurrent ? 'active' : ''}`}
-                  onClick={() => {
-                    setStep('scheduled')
-                    if (!schedRole && role) setSchedRole(role)
-                    if (!schedCompany && company) setSchedCompany(company)
-                    if (!schedResumeId && selectedResumeId) setSchedResumeId(selectedResumeId)
-                  }}
-                  style={{ marginTop: '4px', position: 'relative' }}
-                >
-                  <span className="nav-icon">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256">
-                      <path d="M208,32H184V24a8,8,0,0,0-16,0v8H88V24a8,8,0,0,0-16,0v8H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32Zm0,176H48V48H72v8a8,8,0,0,0,16,0V48h80v8a8,8,0,0,0,16,0V48h24V208ZM136,120a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h32A8,8,0,0,1,136,120Zm48,0a8,8,0,0,1-8,8H160a8,8,0,0,1,0-16h16A8,8,0,0,1,184,120Zm-48,40a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h32A8,8,0,0,1,136,160Zm48,0a8,8,0,0,1-8,8H160a8,8,0,0,1,0-16h16A8,8,0,0,1,184,160Z"/>
-                    </svg>
-                  </span>
-                  <span className="nav-text">Create Session</span>
-                  {pendingCount > 0 && (
-                    <span style={{
-                      position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)',
-                      background: 'rgba(139,92,246,0.9)', color: '#fff', fontSize: '9px',
-                      fontWeight: 800, borderRadius: '6px', padding: '1px 5px', lineHeight: '14px',
-                      minWidth: '14px', textAlign: 'center'
-                    }}>{pendingCount}</span>
-                  )}
-                  {isSchedCurrent && <div className="nav-active-glow" />}
-                </button>
-              )
-            })()
-            }
+            {/* -- Create Session — always accessible, separate from wizard flow -- */}
             {/* This closing bracket is the end of the Create Session special nav render */}
             {/* The original nav items map is split above — the extra closing below is removed */}
-            {false && null /* sentinel */}
           </nav>
 
-          {/* ── Minimal Uiverse Update Button ── */}
+          {/* -- Minimal Uiverse Update Button -- */}
           <MinimalUpdateButton
             updateStatus={updateStatus}
             updateInfo={updateInfo}
@@ -1336,15 +1189,30 @@ export default function SetupPage({
             </div>
 
             <div className="sidebar-stat-grid">
-              <div className="stat-pill-modern">
-                <div className="spm-label">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="#8B5CF6" viewBox="0 0 256 256">
-                    <path d="M224,48H32A16,16,0,0,0,16,64V192a16,16,0,0,0,16,16H224a16,16,0,0,0,16-16V64A16,16,0,0,0,224,48Zm0,144H32V64H224V192ZM64,128a8,8,0,0,1,8-8H96a8,8,0,0,1,0,16H72A8,8,0,0,1,64,128Zm48,0a8,8,0,0,1,8-8h64a8,8,0,0,1,0,16H120A8,8,0,0,1,112,128Z" />
-                  </svg>
-                  <span>Sessions</span>
+              {unlimitedDaysLeft > 0 ? (
+                <div className="stat-pill-modern" style={{ background: 'linear-gradient(135deg, rgba(234,179,8,0.15), rgba(202,138,4,0.1))', border: '1px solid rgba(234,179,8,0.3)' }}>
+                  <div className="spm-label" style={{ color: '#fef08a' }}>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="#eab308" viewBox="0 0 256 256">
+                      <path d="M215.79,118.17a8,8,0,0,0-5-5.66L153.18,90.9l14.66-73.33a8,8,0,0,0-13.69-7l-112,120a8,8,0,0,0,3,13l57.63,21.61L88.16,238.43a8,8,0,0,0,13.69,7l112-120A8,8,0,0,0,215.79,118.17ZM109.37,214l10.47-52.38a8,8,0,0,0-5-9.06L62,132.71l84.62-90.66L136.16,94.43a8,8,0,0,0,5,9.06l52.8,19.8Z" />
+                    </svg>
+                    <span>Unlimited</span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '2px' }}>
+                    <span className="spm-value" style={{ color: '#fef08a', fontSize: '15px' }}>{unlimitedDaysLeft} Days</span>
+                    <span style={{ fontSize: '9px', color: '#a1a1aa' }}>({sessionsBalance} credits paused)</span>
+                  </div>
                 </div>
-                <span className="spm-value">{sessionsBalance}</span>
-              </div>
+              ) : (
+                <div className="stat-pill-modern">
+                  <div className="spm-label">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="#8B5CF6" viewBox="0 0 256 256">
+                      <path d="M224,48H32A16,16,0,0,0,16,64V192a16,16,0,0,0,16,16H224a16,16,0,0,0,16-16V64A16,16,0,0,0,224,48Zm0,144H32V64H224V192ZM64,128a8,8,0,0,1,8-8H96a8,8,0,0,1,0,16H72A8,8,0,0,1,64,128Zm48,0a8,8,0,0,1,8-8h64a8,8,0,0,1,0,16H120A8,8,0,0,1,112,128Z" />
+                    </svg>
+                    <span>Sessions</span>
+                  </div>
+                  <span className="spm-value">{sessionsBalance}</span>
+                </div>
+              )}
               <div className="stat-pill-modern">
                 <div className="spm-label">
                   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="#8B5CF6" viewBox="0 0 256 256">
@@ -1366,7 +1234,7 @@ export default function SetupPage({
                 {step === 2 && 'Resume Library'}
                 {step === 'knowledge_base' && 'Interview Content'}
                 {step === 3 && 'Final Check'}
-                {step === 'scheduled' && 'Scheduled Sessions'}
+                {(step as any) === 'ai_source' && 'AI Source'}
               </h1>
               <TeleprompterText
                 text={
@@ -1376,8 +1244,8 @@ export default function SetupPage({
                       ? 'Upload, manage, and select your target resume for this session.'
                       : step === 'knowledge_base'
                         ? 'Upload company documents, preparation notes, and cheat sheets.'
-                        : step === 'scheduled'
-                          ? 'Schedule your upcoming interviews. Overlay auto-launches at the set time — credits pre-verified.'
+                        : (step as any) === 'ai_source'
+                          ? 'Select Zyro AI Gateway or link your own account to provide GPT-5 & Sonnet 5 (based on your subscription).'
                           : 'Verify your interview configuration before launching the assistant.'
                 }
               />
@@ -1751,7 +1619,7 @@ export default function SetupPage({
             {step === 2 && (
               <div className="setup-step fade-in">
                 <div className="step-body">
-                  {/* ── Mode Selection Header: Segmented Glass Switcher ── */}
+                  {/* -- Mode Selection Header: Segmented Glass Switcher -- */}
                   <div style={{
                     display: 'flex',
                     background: 'rgba(255, 255, 255, 0.03)',
@@ -1816,7 +1684,7 @@ export default function SetupPage({
                     </button>
                   </div>
 
-                  {/* ── Mode A: Upload PDF ── */}
+                  {/* -- Mode A: Upload PDF -- */}
                   {resumeInputMode === 'upload' && (
                     <div style={{ animation: 'fadeIn 0.2s ease' }}>
                       <button className="add-resume-btn-large" onClick={handlePickResume}>
@@ -1868,7 +1736,7 @@ export default function SetupPage({
                     </div>
                   )}
 
-                  {/* ── Mode B: Paste Plain Text ── */}
+                  {/* -- Mode B: Paste Plain Text -- */}
                   {resumeInputMode === 'text' && (
                     <div
                       style={{
@@ -1957,7 +1825,7 @@ export default function SetupPage({
                     </div>
                   )}
 
-                  {/* ── Resume Library List ── */}
+                  {/* -- Resume Library List -- */}
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
                     <span style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8' }}>
                       Saved Resumes ({resumes.length})
@@ -2009,12 +1877,12 @@ export default function SetupPage({
             {step === 'knowledge_base' && (
               <div className="setup-step fade-in">
                 {showKbAddForm ? (
-                  /* ── Form View: Glassmorphic Material Creation Form ── */
+                  /* -- Form View: Glassmorphic Material Creation Form -- */
                   <div className="kb-form-glass">
                     <div className="kb-form-header">
                       <div className="kb-form-header-left">
                         <div className="kb-form-header-icon">
-                          📚
+                          ??
                         </div>
                         <div>
                           <h3 className="kb-form-header-title">Add Preparation Material</h3>
@@ -2123,7 +1991,7 @@ export default function SetupPage({
                     </div>
                   </div>
                 ) : (
-                  /* ── Dashboard View: Modern Glassmorphism Material Cards Grid ── */
+                  /* -- Dashboard View: Modern Glassmorphism Material Cards Grid -- */
                   <div className="material-dashboard">
                     <div className="material-dashboard-header">
                       <span className="material-dashboard-title">Real-time Content Matching</span>
@@ -2273,7 +2141,7 @@ export default function SetupPage({
                       {resumes.find((r) => r.id === selectedResumeId)?.name || 'Default Resume'}
                     </div>
                     <div className="fc-card-sub">
-                      {selectedResumeId ? '✓ Attached & Indexed' : 'No Resume Selected'}
+                      {selectedResumeId ? '? Attached & Indexed' : 'No Resume Selected'}
                     </div>
                   </div>
 
@@ -2298,7 +2166,7 @@ export default function SetupPage({
                       <span>AI Mode</span>
                     </div>
                     <div className="fc-card-title">
-                      {autoAnswer ? '⚡ Auto-Answer Active' : '🎯 Manual Trigger'}
+                      {autoAnswer ? '⚡ Auto-Answer Active' : '👆 Manual Trigger'}
                     </div>
                     <div className="fc-card-sub">
                       {autoAnswer ? 'Instant automatic responses' : 'Press hotkey for answers'}
@@ -2309,13 +2177,13 @@ export default function SetupPage({
                 {/* Lower Section: Global Hotkeys Control Panel */}
                 <div className="final-check-shortcuts-panel">
                   <div className="fc-shortcuts-header">
-                    <span>⚡ Overlay Shortcuts & Controls</span>
+                    <span>⌨️ Overlay Shortcuts & Controls</span>
                     <span style={{ fontSize: '9.5px', color: '#64748b' }}>Active During Live Interview</span>
                   </div>
 
                   <div className="fc-shortcuts-grid-2col">
                     <ShortcutTeleprompterCard
-                      icon="👁️"
+                      icon="👻"
                       title="Disappear Mode"
                       keyLabel="Ctrl+B"
                       keyColor="purple"
@@ -2336,7 +2204,7 @@ export default function SetupPage({
                       desc="Real-time dual audio capture — listens to interviewer questions from system audio or microphone and automatically transcribes"
                     />
                     <ShortcutTeleprompterCard
-                      icon="🔍"
+                      icon="📸"
                       title="Screen OCR Scan"
                       keyLabel="Ctrl+S"
                       keyColor="amber"
@@ -2350,11 +2218,11 @@ export default function SetupPage({
                       desc="Hands-free intelligent AI engine — automatically detects completed questions and generates context-aware answers without manual keypresses"
                     />
                     <ShortcutTeleprompterCard
-                      icon="↕️"
+                      icon="🔍"
                       title="Scroll & Zoom"
                       keyLabel={
                         <div style={{ display: 'flex', gap: '3px' }}>
-                          <span className="fc-sc-key slate">↑↓</span>
+                          <span className="fc-sc-key slate">⇅</span>
                           <span className="fc-sc-key slate">Ctrl±</span>
                         </div>
                       }
@@ -2367,674 +2235,1004 @@ export default function SetupPage({
                 {error && <div className="error-modern">{error}</div>}
               </div>
             )}
-            {step === 'scheduled' && (
+
+            {(step as any) === 'ai_source' && (
               <div className="setup-step fade-in">
-                <div className="sched-page-container">
-                  {/* Schedule Creator Card */}
-                  <div className="sched-creator-card">
-                    <div className="sched-card-header">
-                      <div className="sched-card-title-group">
-                        <div className="sched-card-icon-wrap">
-                          <svg width="18" height="18" fill="currentColor" viewBox="0 0 256 256">
-                            <path d="M208,32H184V24a8,8,0,0,0-16,0v8H88V24a8,8,0,0,0-16,0v8H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32Zm0,176H48V48H72v8a8,8,0,0,0,16,0V48h80v8a8,8,0,0,0,16,0V48h24V208ZM136,120a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h32A8,8,0,0,1,136,120Zm48,0a8,8,0,0,1-8,8H160a8,8,0,0,1,0-16h16A8,8,0,0,1,184,120Zm-48,40a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h32A8,8,0,0,1,136,160Zm48,0a8,8,0,0,1-8,8H160a8,8,0,0,1,0-16h16A8,8,0,0,1,184,160Z"/>
+                <div className="step-body ai-source-page">
+                {/* -- 2. Mode Selection: Dual Interactive Modern Cards -- */}
+                <div className="ai-modes-grid">
+                  {/* Option 1: Zyro AI Gateway */}
+                  <div
+                    className={`ai-mode-card ${aiSource === 'gateway' ? 'selected-gateway' : ''}`}
+                    onClick={() => {
+                      setAiSource('gateway')
+                      localStorage.setItem('zyro_ai_source', 'gateway')
+                    }}
+                  >
+                    <div className="ai-mode-pop-badge rec">
+                      <span className="ai-pop-dot" />
+                      Recommended
+                    </div>
+
+                    <div className="ai-mode-top">
+                      <div className="ai-mode-header-left">
+                        <div className="ai-mode-icon-wrap" style={{ background: 'rgba(139,92,246,0.15)', borderColor: 'rgba(167,139,250,0.3)' }}>
+                          <img src={zyroLogo} alt="Zyro Gateway" />
+                        </div>
+                        <div className="ai-mode-info-col">
+                          <div className="ai-mode-title-row">
+                            <span className="ai-mode-name">Zyro AI Gateway</span>
+                          </div>
+                          <p className="ai-mode-subtext">Fast cloud cluster · Instant streaming</p>
+                        </div>
+                      </div>
+                      <div className="ai-mode-radio">
+                        {aiSource === 'gateway' && (
+                          <svg width="9" height="9" viewBox="0 0 256 256" fill="white">
+                            <path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z" />
+                          </svg>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="ai-mode-models-preview">
+                      <div className="ai-stacked-avatars">
+                        <div className="ai-stacked-avatar-item" style={{ background: 'linear-gradient(135deg,#06b6d4,#3b82f6)', color: '#fff', fontSize: '7px', fontWeight: 800 }} title="GLM 5.3">
+                          GLM
+                        </div>
+                        <div className="ai-stacked-avatar-item" title="GPT 5.5">
+                          <img src={openaiLogo} alt="OpenAI" />
+                        </div>
+                        <div className="ai-stacked-avatar-item" title="Claude Opus 4.8">
+                          <img src={claudeLogo} alt="Claude" />
+                        </div>
+                        <div className="ai-stacked-avatar-item" title="Gemini 3.8 Flash">
+                          <img src={geminiLogo} alt="Gemini" />
+                        </div>
+                      </div>
+                      <span className="ai-models-tag-text">GLM 5.3 · GPT 5.5 · Opus 4.8 · Gemini 3.8</span>
+                    </div>
+                  </div>
+
+                  {/* Option 2: Connect Personal Accounts */}
+                  <div
+                    className={`ai-mode-card ${aiSource === 'own_account' ? 'selected-own' : ''}`}
+                    style={{ 
+                      transition: 'all 0.3s ease',
+                      position: 'relative'
+                    }}
+                    onClick={() => {
+                      if (!hasByokAccess) {
+                        setShowByokPaywall(true)
+                        return
+                      }
+                      setAiSource('own_account')
+                      localStorage.setItem('zyro_ai_source', 'own_account')
+                    }}
+                  >
+                    <div className="ai-mode-pop-badge direct">
+                      <span className="ai-pop-dot" />
+                      Direct
+                    </div>
+
+                    {/* Locked overlay — centered lock icon + blur */}
+                    {!hasByokAccess && (
+                      <div style={{
+                        position: 'absolute', inset: 0, zIndex: 2,
+                        backdropFilter: 'blur(3px)',
+                        WebkitBackdropFilter: 'blur(3px)',
+                        background: 'rgba(10, 6, 20, 0.45)',
+                        borderRadius: 'inherit',
+                        display: 'flex', flexDirection: 'column',
+                        alignItems: 'center', justifyContent: 'center',
+                        gap: '6px',
+                        cursor: 'pointer',
+                        transition: 'all 0.3s ease'
+                      }}>
+                        <div style={{
+                          width: '36px', height: '36px',
+                          borderRadius: '50%',
+                          background: 'rgba(139,92,246,0.18)',
+                          border: '1.5px solid rgba(139,92,246,0.45)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          boxShadow: '0 0 16px rgba(139,92,246,0.25)'
+                        }}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c4b5fd" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                           </svg>
                         </div>
-                        <div>
-                          <div className="sched-card-title">Schedule an Interview</div>
-                          <div className="sched-card-subtitle">Set up your target role, date & time, and attached resume</div>
+                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#c4b5fd', letterSpacing: '0.5px' }}>Tap to Unlock</span>
+                      </div>
+                    )}
+
+                    <div className="ai-mode-top" style={{ opacity: !hasByokAccess ? 0.4 : 1 }}>
+                      <div className="ai-mode-header-left">
+                        <div className="ai-mode-icon-wrap" style={{ background: 'rgba(16,185,129,0.12)', borderColor: 'rgba(52,211,153,0.3)' }}>
+                          <div style={{ display: 'flex', alignItems: 'center' }}>
+                            <img src={openaiLogo} alt="OpenAI" style={{ width: 12, height: 12, marginRight: -3 }} />
+                            <img src={claudeLogo} alt="Claude" style={{ width: 12, height: 12 }} />
+                          </div>
+                        </div>
+                        <div className="ai-mode-info-col">
+                          <div className="ai-mode-title-row">
+                            <span className="ai-mode-name">Use Own Accounts</span>
+                          </div>
+                          <p className="ai-mode-subtext">Connect ChatGPT, Claude, Gemini or GLM</p>
                         </div>
                       </div>
-                    </div>
-
-                    <div className="field-group-modern">
-                      <label>Session Label / Title *</label>
-                      <div className="input-with-icon">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256" className="icon">
-                          <path d="M239.06,120.69,135.31,16.94a16,16,0,0,0-11.31-4.69H40A16,16,0,0,0,24,28.25V112a16,16,0,0,0,4.69,11.31L132.44,227.06a16,16,0,0,0,22.63,0l84-84A16,16,0,0,0,239.06,120.69ZM143.75,215.75,40,112V28.25H123.75l103.75,103.75ZM84,68A16,16,0,1,1,68,52,16,16,0,0,1,84,68Z"/>
-                        </svg>
-                        <input
-                          placeholder="e.g. Google L5 Frontend Round 1"
-                          value={schedLabel}
-                          onChange={(e) => setSchedLabel(e.target.value)}
-                        />
+                      <div className="ai-mode-radio">
+                        {!hasByokAccess ? null : aiSource === 'own_account' && (
+                          <svg width="9" height="9" viewBox="0 0 256 256" fill="white">
+                            <path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z" />
+                          </svg>
+                        )}
                       </div>
                     </div>
 
-                    {/* Separate Custom Modern Date & Time Grid */}
-                    <div className="grid-2">
-                      {/* Modern Custom Date Dropdown Picker */}
-                      <div className="field-group-modern" ref={schedDateDropdownRef} style={{ position: 'relative' }}>
-                        <label>Target Date *</label>
-                        <div
-                          className={`custom-select-trigger ${isSchedDateDropdownOpen ? 'active' : ''}`}
-                          onClick={() => {
-                            setIsSchedDateDropdownOpen(!isSchedDateDropdownOpen)
-                            setIsSchedTimeDropdownOpen(false)
-                            setIsSchedResumeDropdownOpen(false)
-                            if (schedDate) {
-                              const [y, m] = schedDate.split('-').map(Number)
-                              if (y && m) setCalendarViewDate(new Date(y, m - 1, 1))
-                            }
+                    <div className="ai-mode-models-preview" style={{ opacity: !hasByokAccess ? 0.4 : 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', width: '100%', overflow: 'hidden' }}>
+                        <span className="ai-own-status-item" style={{ color: chatgptStatus === 'connected' ? '#4ade80' : '#94a3b8' }}>
+                          <span style={{ width: 5, height: 5, borderRadius: '50%', background: chatgptStatus === 'connected' ? '#22c55e' : '#64748b' }} />
+                          ChatGPT: {chatgptStatus === 'connected' ? 'Connected' : 'Not Linked'}
+                        </span>
+                        <span style={{ color: 'rgba(255,255,255,0.15)', fontSize: '9px' }}>·</span>
+                        <span className="ai-own-status-item" style={{ color: claudeStatus === 'connected' ? '#4ade80' : '#94a3b8' }}>
+                          <span style={{ width: 5, height: 5, borderRadius: '50%', background: claudeStatus === 'connected' ? '#22c55e' : '#64748b' }} />
+                          Claude: {claudeStatus === 'connected' ? 'Connected' : 'Not Linked'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* -- 3. Detail View: Gateway Active Showcase -- */}
+                {aiSource === 'gateway' && (
+                  <div className="ai-gateway-showcase">
+                    <div className="ai-gateway-meta-bar">
+                      <div className="ai-gw-meta-left">
+                        <span className="ai-gw-indicator-radar" />
+                        <span className="ai-gw-meta-title">Gateway Cluster Active</span>
+                      </div>
+                      <div className="ai-gw-latency-chip">
+                        <svg width="10" height="10" fill="currentColor" viewBox="0 0 256 256">
+                          <path d="M232,104H136V24a8,8,0,0,0-13.66-5.66l-96,96a8,8,0,0,0,5.66,13.66H128v80a8,8,0,0,0,13.66,5.66l96-96A8,8,0,0,0,232,104Z" />
+                        </svg>
+                        <span>~380ms Latency · Auto-Routing</span>
+                      </div>
+                    </div>
+
+                    <div style={{ fontSize: '10px', color: '#94a3b8', lineHeight: 1.35 }}>
+                      Live interview questions & screen code are dynamically routed across 4 flagship models:
+                    </div>
+
+                    <div className="ai-gw-models-grid">
+                      {/* 1. GLM 5.3 */}
+                      <div className="ai-gw-model-card glm">
+                        <div className="ai-gw-model-header">
+                          <div className="ai-gw-model-left">
+                            <div className="ai-gw-model-icon-box glm">
+                              GLM
+                            </div>
+                            <span className="ai-gw-model-name">GLM 5.3</span>
+                          </div>
+                          <span className="ai-gw-model-pill cyan">Logic & Speed</span>
+                        </div>
+                        <p className="ai-gw-model-desc">
+                          Ultra-fast reasoning engine for rapid logic evaluation & question decomposition.
+                        </p>
+                      </div>
+
+                      {/* 2. GPT 5.5 */}
+                      <div className="ai-gw-model-card gpt">
+                        <div className="ai-gw-model-header">
+                          <div className="ai-gw-model-left">
+                            <div className="ai-gw-model-icon-box gpt">
+                              <img src={openaiLogo} alt="OpenAI" className="ai-gw-model-img" />
+                            </div>
+                            <span className="ai-gw-model-name">GPT 5.5</span>
+                          </div>
+                          <span className="ai-gw-model-pill emerald">DSA & Design</span>
+                        </div>
+                        <p className="ai-gw-model-desc">
+                          Deep algorithmic synthesis, data structures & system architecture generation.
+                        </p>
+                      </div>
+
+                      {/* 3. Claude Opus 4.8 */}
+                      <div className="ai-gw-model-card claude">
+                        <div className="ai-gw-model-header">
+                          <div className="ai-gw-model-left">
+                            <div className="ai-gw-model-icon-box claude">
+                              <img src={claudeLogo} alt="Claude" className="ai-gw-model-img" />
+                            </div>
+                            <span className="ai-gw-model-name">Claude Opus 4.8</span>
+                          </div>
+                          <span className="ai-gw-model-pill amber">Precision</span>
+                        </div>
+                        <p className="ai-gw-model-desc">
+                          Top-tier coding accuracy, rigorous edge-case analysis & clean production code.
+                        </p>
+                      </div>
+
+                      {/* 4. Gemini 3.8 Flash */}
+                      <div className="ai-gw-model-card gemini">
+                        <div className="ai-gw-model-header">
+                          <div className="ai-gw-model-left">
+                            <div className="ai-gw-model-icon-box gemini">
+                              <img src={geminiLogo} alt="Gemini" className="ai-gw-model-img" />
+                            </div>
+                            <span className="ai-gw-model-name">Gemini 3.8 Flash</span>
+                          </div>
+                          <span className="ai-gw-model-pill blue">Vision & Audio</span>
+                        </div>
+                        <p className="ai-gw-model-desc">
+                          Sub-400ms real-time vision OCR screen reading & conversational audio.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="ai-gw-footer-banner">
+                      <div className="ai-gw-footer-item">
+                        <svg width="11" height="11" fill="#a78bfa" viewBox="0 0 256 256">
+                          <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm45.66,85.66-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32Z" />
+                        </svg>
+                        <span>Auto-routes between GLM 5.3, GPT 5.5, Opus 4.8 & Gemini 3.8</span>
+                      </div>
+                      <span style={{ fontSize: '8.5px', color: '#6ee7b7', fontWeight: 600 }}>0 Setup Required</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* -- 4. Detail View: Own Account Provider Cards -- */}
+                {aiSource === 'own_account' && (
+                  <div className="ai-providers-container">
+                    {/* ChatGPT Card */}
+                    <div className={`ai-provider-card chatgpt ${chatgptStatus === 'connected' ? 'connected' : ''}`}>
+                      <div
+                        className="ai-provider-header"
+                        onClick={() => setChatgptExpanded((v) => !v)}
+                      >
+                        <div className="ai-provider-logo-box chatgpt">
+                          <img src={openaiLogo} alt="OpenAI" className="ai-provider-brand-img" />
+                        </div>
+                        <div className="ai-provider-details">
+                          <div className="ai-provider-title-row">
+                            <span className="ai-provider-name">ChatGPT</span>
+                            <span className="ai-provider-model-tag">GPT-5 · GPT-4o</span>
+                            <span className={`ai-status-pill-badge ${chatgptStatus}`}>
+                              {chatgptStatus === 'connected' ? (
+                                <>
+                                  <svg width="12" height="12" fill="currentColor" viewBox="0 0 256 256">
+                                    <path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z" />
+                                  </svg>
+                                  Session Active
+                                </>
+                              ) : chatgptStatus === 'checking' ? (
+                                <>
+                                  <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                                  Validating...
+                                </>
+                              ) : chatgptStatus === 'expired' ? (
+                                <>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#ef4444' }} />
+                                  Session expired
+                                </>
+                              ) : (
+                                <>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#64748b' }} />
+                                  Not Linked
+                                </>
+                              )}
+                            </span>
+                          </div>
+                          <p className="ai-provider-sub">Provides ChatGPT responses — works with free &amp; Plus accounts.</p>
+                        </div>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          fill="#94a3b8"
+                          viewBox="0 0 256 256"
+                          style={{
+                            transform: chatgptExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                            transition: 'transform 0.25s',
+                            flexShrink: 0
                           }}
                         >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-                            <div style={{
-                              width: '28px',
-                              height: '28px',
-                              borderRadius: '8px',
-                              background: 'rgba(139, 92, 246, 0.15)',
-                              border: '1px solid rgba(139, 92, 246, 0.3)',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              fontSize: '14px',
-                              flexShrink: 0
-                            }}>
-                              📅
-                            </div>
-                            <span style={{
-                              color: schedDate ? '#f8fafc' : '#64748b',
-                              fontWeight: 600,
-                              fontSize: '13.5px',
-                              letterSpacing: '0.2px',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap'
-                            }}>
-                              {schedDate
-                                ? new Date(`${schedDate}T00:00:00`).toLocaleDateString(undefined, {
-                                    weekday: 'short',
-                                    month: 'short',
-                                    day: 'numeric',
-                                    year: 'numeric'
-                                  })
-                                : 'Select target date...'}
-                            </span>
-                          </div>
-
-                          <div style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            color: isSchedDateDropdownOpen ? '#c4b5fd' : '#64748b',
-                            transform: isSchedDateDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-                            transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s ease',
-                            flexShrink: 0
-                          }}>
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
-                              <path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80a8,8,0,0,1,11.32-11.32L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z" />
-                            </svg>
-                          </div>
-                        </div>
-
-                        {/* Calendar Popup */}
-                        {isSchedDateDropdownOpen && (() => {
-                          const calYear = calendarViewDate.getFullYear()
-                          const calMonth = calendarViewDate.getMonth()
-                          const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
-                          const totalDays = new Date(calYear, calMonth + 1, 0).getDate()
-                          const firstDayIdx = new Date(calYear, calMonth, 1).getDay()
-                          const todayStr = getLocalDateString(0)
-
-                          return (
-                            <div className="custom-calendar-popup">
-                              <div className="cal-header">
-                                <button
-                                  type="button"
-                                  className="cal-nav-btn"
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    setCalendarViewDate(new Date(calYear, calMonth - 1, 1))
-                                  }}
-                                >
-                                  ‹
-                                </button>
-                                <span className="cal-title">
-                                  {monthNames[calMonth]} {calYear}
-                                </span>
-                                <button
-                                  type="button"
-                                  className="cal-nav-btn"
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    setCalendarViewDate(new Date(calYear, calMonth + 1, 1))
-                                  }}
-                                >
-                                  ›
-                                </button>
-                              </div>
-
-                              <div className="cal-weekdays">
-                                {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((dayName) => (
-                                  <span key={dayName}>{dayName}</span>
-                                ))}
-                              </div>
-
-                              <div className="cal-days-grid">
-                                {Array.from({ length: firstDayIdx }).map((_, idx) => (
-                                  <div key={`empty-${idx}`} className="cal-day-cell empty" />
-                                ))}
-                                {Array.from({ length: totalDays }).map((_, idx) => {
-                                  const dayNum = idx + 1
-                                  const dateStr = `${calYear}-${String(calMonth + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`
-                                  const isSelected = schedDate === dateStr
-                                  const isToday = todayStr === dateStr
-                                  const cellMidnight = new Date(calYear, calMonth, dayNum, 23, 59, 59).getTime()
-                                  const isPast = cellMidnight < new Date().setHours(0, 0, 0, 0)
-
-                                  return (
-                                    <div
-                                      key={dateStr}
-                                      className={`cal-day-cell ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''} ${isPast ? 'disabled' : ''}`}
-                                      onClick={() => {
-                                        if (isPast) return
-                                        setSchedDate(dateStr)
-                                        setIsSchedDateDropdownOpen(false)
-                                      }}
-                                    >
-                                      {dayNum}
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            </div>
-                          )
-                        })()}
+                          <path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80a8,8,0,0,1,11.32-11.32L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z" />
+                        </svg>
                       </div>
 
-                      {/* Modern Custom Time Dropdown Picker */}
-                      <div className="field-group-modern" ref={schedTimeDropdownRef} style={{ position: 'relative' }}>
-                        <label>Target Time *</label>
-                        {(() => {
-                          const [hStr = '12', mStr = '00'] = (schedTime || '12:00').split(':')
-                          const hNum = parseInt(hStr, 10) || 0
-                          const mNum = parseInt(mStr, 10) || 0
-                          const isPM = hNum >= 12
-                          const h12 = hNum % 12 || 12
-                          const displayTime = `${String(h12).padStart(2, '0')}:${String(mNum).padStart(2, '0')} ${isPM ? 'PM' : 'AM'}`
+                      {chatgptExpanded && (
+                        <div className="ai-provider-body">
+                          <div className="ai-provider-steps-box">
+                            <div className="ai-provider-step-line">
+                              <span className="ai-step-num">1</span>
+                              <span>Click <strong>Login with ChatGPT</strong> below to open the secure native login browser window.</span>
+                            </div>
+                            <div className="ai-provider-step-line">
+                              <span className="ai-step-num">2</span>
+                              <span>Sign into your OpenAI account (free or Plus account supported).</span>
+                            </div>
+                            <div className="ai-provider-step-line">
+                              <span className="ai-step-num">3</span>
+                              <span>Zyro securely encrypts your session tokens locally. No passwords or credentials are ever stored remotely.</span>
+                            </div>
+                          </div>
 
-                          const updateTime = (newH12: number, newM: number, newIsPM: boolean) => {
-                            let h24 = newH12 % 12
-                            if (newIsPM) h24 += 12
-                            setSchedTime(`${String(h24).padStart(2, '0')}:${String(newM).padStart(2, '0')}`)
-                          }
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <a
+                              href="#"
+                              onClick={(e) => {
+                                e.preventDefault()
+                                window.api.openExternal('https://chatgpt.com')
+                              }}
+                              className="ai-external-link"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 256 256">
+                                <path d="M224,104a8,8,0,0,1-16,0V79.32l-82.34,82.34a8,8,0,0,1-11.32-11.32L196.68,68H168a8,8,0,0,1,0-16h48a8,8,0,0,1,8,8Zm-40,24a8,8,0,0,0-8,8v72H48V80h72a8,8,0,0,0,0-16H48A16,16,0,0,0,32,80V208a16,16,0,0,0,16,16H176a16,16,0,0,0,16-16V136A8,8,0,0,0,184,128Z" />
+                              </svg>
+                              <span>Open chatgpt.com</span>
+                            </a>
+                            <span style={{ fontSize: '11px', color: '#64748b' }}>Session validity: ~30 days</span>
+                          </div>
 
-                          return (
-                            <>
-                              <div
-                                className={`custom-select-trigger ${isSchedTimeDropdownOpen ? 'active' : ''}`}
-                                onClick={() => {
-                                  setIsSchedTimeDropdownOpen(!isSchedTimeDropdownOpen)
-                                  setIsSchedDateDropdownOpen(false)
-                                  setIsSchedResumeDropdownOpen(false)
-                                }}
-                              >
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-                                  <div style={{
-                                    width: '28px',
-                                    height: '28px',
-                                    borderRadius: '8px',
-                                    background: 'rgba(139, 92, 246, 0.15)',
-                                    border: '1px solid rgba(139, 92, 246, 0.3)',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    fontSize: '14px',
-                                    flexShrink: 0
-                                  }}>
-                                    🕒
-                                  </div>
-                                  <span style={{
-                                    color: schedTime ? '#f8fafc' : '#64748b',
-                                    fontWeight: 600,
-                                    fontSize: '13.5px',
-                                    letterSpacing: '0.2px',
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                    whiteSpace: 'nowrap'
-                                  }}>
-                                    {schedTime ? displayTime : 'Select target time...'}
-                                  </span>
-                                </div>
-
-                                <div style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  color: isSchedTimeDropdownOpen ? '#c4b5fd' : '#64748b',
-                                  transform: isSchedTimeDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-                                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s ease',
-                                  flexShrink: 0
-                                }}>
-                                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
-                                    <path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80a8,8,0,0,1,11.32-11.32L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z" />
+                          <div className="ai-provider-actions">
+                            <button
+                              type="button"
+                              disabled={providerLoading === 'chatgpt'}
+                              onClick={async () => {
+                                setProviderLoading('chatgpt')
+                                setChatgptStatus('checking')
+                                try {
+                                  const res = await window.api.openProviderLogin('chatgpt')
+                                  setChatgptStatus(res.connected ? 'connected' : 'disconnected')
+                                } catch {
+                                  setChatgptStatus('disconnected')
+                                } finally {
+                                  setProviderLoading(null)
+                                }
+                              }}
+                              className={`ai-connect-btn chatgpt ${chatgptStatus === 'connected' ? 'reconnect' : ''}`}
+                            >
+                              {providerLoading === 'chatgpt' ? (
+                                <>
+                                  <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                                  <span>Connecting to ChatGPT...</span>
+                                </>
+                              ) : chatgptStatus === 'connected' ? (
+                                <>
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256">
+                                    <path d="M224,128a96,96,0,0,1-96,96,95.53,95.53,0,0,1-67.88-28.12,8,8,0,0,1,11.32-11.32A79.58,79.58,0,0,0,128,208a80,80,0,1,0-77.94-98.39,8,8,0,0,1-15.65-3.22A96,96,0,1,1,224,128ZM48,128a8,8,0,0,0-8-8H16a8,8,0,0,0,0,16H40A8,8,0,0,0,48,128Z" />
                                   </svg>
-                                </div>
-                              </div>
-
-                              {/* Time Picker Popup Menu */}
-                              {isSchedTimeDropdownOpen && (
-                                <div className="custom-time-popup">
-                                  <div className="time-picker-cols">
-                                    {/* Hours Column */}
-                                    <div className="time-col-wrap">
-                                      <div className="time-col-label">Hour</div>
-                                      <div className="time-col-scroll">
-                                        {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((hour) => {
-                                          const isSelected = h12 === hour
-                                          return (
-                                            <button
-                                              key={`h-${hour}`}
-                                              type="button"
-                                              className={`time-item-btn ${isSelected ? 'selected' : ''}`}
-                                              onClick={() => updateTime(hour, mNum, isPM)}
-                                            >
-                                              {String(hour).padStart(2, '0')}
-                                            </button>
-                                          )
-                                        })}
-                                      </div>
-                                    </div>
-
-                                    {/* Minutes Column */}
-                                    <div className="time-col-wrap">
-                                      <div className="time-col-label">Minute</div>
-                                      <div className="time-col-scroll">
-                                        {[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55].map((min) => {
-                                          const isSelected = mNum === min
-                                          return (
-                                            <button
-                                              key={`m-${min}`}
-                                              type="button"
-                                              className={`time-item-btn ${isSelected ? 'selected' : ''}`}
-                                              onClick={() => updateTime(h12, min, isPM)}
-                                            >
-                                              :{String(min).padStart(2, '0')}
-                                            </button>
-                                          )
-                                        })}
-                                      </div>
-                                    </div>
-
-                                    {/* AM/PM Column */}
-                                    <div className="time-ampm-wrap">
-                                      <button
-                                        type="button"
-                                        className={`time-ampm-btn ${!isPM ? 'selected' : ''}`}
-                                        onClick={() => updateTime(h12, mNum, false)}
-                                      >
-                                        AM
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className={`time-ampm-btn ${isPM ? 'selected' : ''}`}
-                                        onClick={() => updateTime(h12, mNum, true)}
-                                      >
-                                        PM
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
+                                  <span>Reconnect / Refresh Session</span>
+                                </>
+                              ) : (
+                                <>
+                                  <img src={openaiLogo} alt="OpenAI" style={{ width: 16, height: 16, objectFit: 'contain' }} />
+                                  <span>Login with ChatGPT</span>
+                                </>
                               )}
-                            </>
-                          )
-                        })()}
-                      </div>
-                    </div>
+                            </button>
 
-                    {/* Live Date/Time Preview Pill */}
-                    {(() => {
-                      if (!schedDate || !schedTime) return null
-                      const schedTimeMs = new Date(`${schedDate}T${schedTime}`).getTime()
-                      if (isNaN(schedTimeMs)) return null
-                      const diffMs = schedTimeMs - Date.now()
-                      const isPassed = diffMs <= 0
-                      const hours = Math.max(0, Math.floor(diffMs / 3600000))
-                      const mins = Math.max(0, Math.floor((diffMs % 3600000) / 60000))
-                      const formattedDate = new Date(schedTimeMs).toLocaleDateString(undefined, {
-                        weekday: 'short',
-                        month: 'short',
-                        day: 'numeric'
-                      })
-                      const formattedTime = new Date(schedTimeMs).toLocaleTimeString(undefined, {
-                        hour: '2-digit',
-                        minute: '2-digit'
-                      })
-
-                      return (
-                        <div className="sched-preview-pill">
-                          <div className="sched-preview-pill-left">
-                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" style={{ color: '#a78bfa' }}>
-                              <circle cx="12" cy="12" r="10" />
-                              <path d="M12 6v6l4 2" />
-                            </svg>
-                            <span>
-                              {formattedDate} at {formattedTime}
-                            </span>
-                          </div>
-                          <div className={`sched-preview-pill-countdown ${isPassed ? 'passed' : ''}`}>
-                            {isPassed
-                              ? '⚠️ Time already passed'
-                              : `Starts in ${hours > 0 ? `${hours}h ` : ''}${mins}m`}
-                          </div>
-                        </div>
-                      )
-                    })()}
-
-                    <div className="grid-2">
-                      <div className="field-group-modern">
-                        <label>Applying for Role *</label>
-                        <div className="input-with-icon">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256" className="icon">
-                            <path d="M216,56H176V48a24,24,0,0,0-24-24H104A24,24,0,0,0,80,48v8H40A16,16,0,0,0,24,72V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V72A16,16,0,0,0,216,56ZM96,48a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96ZM216,200H40V72H216V200Z" />
-                          </svg>
-                          <input
-                            placeholder="e.g. Senior Frontend Developer"
-                            value={schedRole}
-                            onChange={(e) => setSchedRole(e.target.value)}
-                          />
-                        </div>
-                      </div>
-
-                      <div className="field-group-modern">
-                        <label>Company (Optional)</label>
-                        <div className="input-with-icon">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256" className="icon">
-                            <path d="M240,208H224V96a16,16,0,0,0-16-16H144V48a16,16,0,0,0-24.88-13.32L39.12,82.91A16,16,0,0,0,32,96V208H16a8,8,0,0,0,0,16H240a8,8,0,0,0,0-16ZM208,96V208H144V96ZM48,96l80-48V208H48Z" />
-                          </svg>
-                          <input
-                            placeholder="e.g. Google, Amazon, Meta"
-                            value={schedCompany}
-                            onChange={(e) => setSchedCompany(e.target.value)}
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Custom Modern Resume Dropdown */}
-                    <div className="field-group-modern" ref={schedResumeDropdownRef} style={{ position: 'relative' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span>Target Resume *</span>
-                        <span style={{ fontSize: '11px', color: '#a78bfa', fontWeight: 600, background: 'rgba(167,139,250,0.12)', padding: '2px 8px', borderRadius: '6px', border: '1px solid rgba(167,139,250,0.2)' }}>
-                          {resumes.find(r => r.id === schedResumeId)?.name ? '✓ Attached' : `${resumes.length} available`}
-                        </span>
-                      </label>
-
-                      <div
-                        className={`custom-select-trigger ${isSchedResumeDropdownOpen ? 'active' : ''}`}
-                        onClick={() => setIsSchedResumeDropdownOpen(!isSchedResumeDropdownOpen)}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-                          <div style={{
-                            width: '28px',
-                            height: '28px',
-                            borderRadius: '8px',
-                            background: 'rgba(139, 92, 246, 0.15)',
-                            border: '1px solid rgba(139, 92, 246, 0.3)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            fontSize: '14px',
-                            flexShrink: 0
-                          }}>
-                            📄
-                          </div>
-                          <span style={{
-                            color: schedResumeId ? '#f8fafc' : '#64748b',
-                            fontWeight: 600,
-                            fontSize: '13.5px',
-                            letterSpacing: '0.2px',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap'
-                          }}>
-                            {resumes.find(r => r.id === schedResumeId)?.name || 'Select target resume for this interview...'}
-                          </span>
-                        </div>
-
-                        <div style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          color: isSchedResumeDropdownOpen ? '#c4b5fd' : '#64748b',
-                          transform: isSchedResumeDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-                          transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s ease',
-                          flexShrink: 0
-                        }}>
-                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
-                            <path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80a8,8,0,0,1,11.32-11.32L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z" />
-                          </svg>
-                        </div>
-                      </div>
-
-                      {isSchedResumeDropdownOpen && (
-                        <div className="custom-select-menu" style={{ maxHeight: '240px', overflowY: 'auto' }}>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                            {resumes.length === 0 ? (
-                              <div style={{ padding: '12px', textAlign: 'center', color: '#64748b', fontSize: '12.5px' }}>
-                                No resumes found. Please upload one in the Resume Library tab.
-                              </div>
-                            ) : (
-                              resumes.map((r) => {
-                                const isSelected = schedResumeId === r.id
-                                return (
-                                  <div
-                                    key={r.id}
-                                    className={`custom-select-option ${isSelected ? 'selected' : ''}`}
-                                    onClick={() => {
-                                      setSchedResumeId(r.id)
-                                      setIsSchedResumeDropdownOpen(false)
-                                    }}
-                                    style={{ padding: '10px 12px' }}
-                                  >
-                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-                                        <span style={{ fontSize: '16px', flexShrink: 0 }}>📄</span>
-                                        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                                          <span style={{
-                                            fontSize: '13px',
-                                            fontWeight: isSelected ? 700 : 500,
-                                            color: isSelected ? '#fff' : '#cbd5e1',
-                                            overflow: 'hidden',
-                                            textOverflow: 'ellipsis',
-                                            whiteSpace: 'nowrap'
-                                          }}>
-                                            {r.name}
-                                          </span>
-                                          <span style={{ fontSize: '10px', color: isSelected ? '#c4b5fd' : '#64748b' }}>
-                                            {(r.text?.length || 0)} characters • Ready
-                                          </span>
-                                        </div>
-                                      </div>
-                                      {isSelected && (
-                                        <span style={{ color: '#34d399', fontSize: '14px', fontWeight: 800, marginLeft: '8px' }}>✓</span>
-                                      )}
-                                    </div>
-                                  </div>
-                                )
-                              })
+                            {chatgptStatus === 'connected' && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await window.api.disconnectProvider('chatgpt')
+                                  setChatgptStatus('disconnected')
+                                }}
+                                className="ai-disconnect-btn"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" fill="currentColor" viewBox="0 0 256 256">
+                                  <path d="M216,48H176V40a24,24,0,0,0-24-24H104A24,24,0,0,0,80,40v8H40a8,8,0,0,0,0,16h8V208a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V64h8a8,8,0,0,0,0-16ZM96,40a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96Zm96,168H64V64H192ZM112,104v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Zm48,0v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Z" />
+                                </svg>
+                                <span>Disconnect</span>
+                              </button>
                             )}
                           </div>
                         </div>
                       )}
                     </div>
 
-                    <div className="sched-info-notice">
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="12" cy="12" r="10"/>
-                        <line x1="12" y1="16" x2="12" y2="12"/>
-                        <line x1="12" y1="8" x2="12.01" y2="8"/>
-                      </svg>
-                      <div>
-                        <strong>1 Credit Pre-Verification:</strong> 1 credit is temporarily held at scheduling. Actual credit deduction happens dynamically at the end of the session based on exact minutes used (1 credit = 1 hour).
-                      </div>
-                    </div>
-
-                    {schedError && (
-                      <div className="error-modern" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                        {schedError}
-                      </div>
-                    )}
-
-                    {schedSuccess && (
-                      <div style={{
-                        color: '#34d399',
-                        fontSize: '13px',
-                        fontWeight: 700,
-                        background: 'rgba(52, 211, 153, 0.12)',
-                        border: '1px solid rgba(52, 211, 153, 0.3)',
-                        padding: '12px 16px',
-                        borderRadius: '10px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px'
-                      }}>
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M20 6L9 17l-5-5"/>
-                        </svg>
-                        {schedSuccess}
-                      </div>
-                    )}
-
-                    <button 
-                      className="primary-action-btn shimmer-btn" 
-                      onClick={handleCreateScheduledSession}
-                      disabled={schedCreating || (sessionsBalance < 1 && trialRemainingSeconds <= 0)}
-                      style={{ width: '100%', padding: '14px', marginTop: '2px' }}
-                    >
-                      <div className="btn-shine" />
-                      <span className="btn-content" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '14px', fontWeight: 700 }}>
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M5 12h14M12 5l7 7-7 7"/>
-                        </svg>
-                        {schedCreating ? 'Verifying & Scheduling...' : 'Schedule Auto-Launch Session'}
-                      </span>
-                    </button>
-                  </div>
-
-                  {/* Scheduled Queue Section */}
-                  <div className="sched-queue-section">
-                    <div className="sched-queue-header">
-                      <div className="sched-queue-title">
-                        <svg width="18" height="18" fill="currentColor" viewBox="0 0 256 256" style={{ color: '#a78bfa' }}>
-                          <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm64-88a8,8,0,0,1-8,8H128a8,8,0,0,1-8-8V72a8,8,0,0,1,16,0v48h48A8,8,0,0,1,192,128Z"/>
-                        </svg>
-                        <span>Scheduled Queue</span>
-                        {scheduledSessions.filter(s => !s.triggered).length > 0 && (
-                          <span className="sched-queue-badge">
-                            {scheduledSessions.filter(s => !s.triggered).length} upcoming
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {scheduledSessions.filter(s => !s.triggered).length === 0 ? (
-                      <div className="sched-empty-card">
-                        <div className="sched-empty-icon">
-                          <svg width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                            <line x1="16" y1="2" x2="16" y2="6"/>
-                            <line x1="8" y1="2" x2="8" y2="6"/>
-                            <line x1="3" y1="10" x2="21" y2="10"/>
-                          </svg>
+                    {/* Claude Card */}
+                    <div className={`ai-provider-card claude ${claudeStatus === 'connected' ? 'connected' : ''}`}>
+                      <div
+                        className="ai-provider-header"
+                        onClick={() => setClaudeExpanded((v) => !v)}
+                      >
+                        <div className="ai-provider-logo-box claude">
+                          <img src={claudeLogo} alt="Claude" className="ai-provider-brand-img" />
                         </div>
-                        <div className="sched-empty-title">No upcoming sessions scheduled</div>
-                        <div className="sched-empty-desc">
-                          Pick a date and time above to schedule an interview. The overlay will automatically launch when the time arrives.
+                        <div className="ai-provider-details">
+                          <div className="ai-provider-title-row">
+                            <span className="ai-provider-name">Claude</span>
+                            <span className="ai-provider-model-tag">Sonnet 5 · Sonnet 3.5</span>
+                            <span className={`ai-status-pill-badge ${claudeStatus}`}>
+                              {claudeStatus === 'connected' ? (
+                                <>
+                                  <svg width="12" height="12" fill="currentColor" viewBox="0 0 256 256">
+                                    <path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z" />
+                                  </svg>
+                                  Session Active
+                                </>
+                              ) : claudeStatus === 'checking' ? (
+                                <>
+                                  <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                                  Validating...
+                                </>
+                              ) : claudeStatus === 'expired' ? (
+                                <>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#ef4444' }} />
+                                  Session expired
+                                </>
+                              ) : (
+                                <>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#64748b' }} />
+                                  Not Linked
+                                </>
+                              )}
+                            </span>
+                          </div>
+                          <p className="ai-provider-sub">Provides Claude responses — works with free &amp; Pro accounts.</p>
                         </div>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          fill="#94a3b8"
+                          viewBox="0 0 256 256"
+                          style={{
+                            transform: claudeExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                            transition: 'transform 0.25s',
+                            flexShrink: 0
+                          }}
+                        >
+                          <path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80a8,8,0,0,1,11.32-11.32L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z" />
+                        </svg>
                       </div>
-                    ) : (
-                      scheduledSessions.filter(s => !s.triggered).map(session => {
-                        const remaining = session.scheduledAt - Date.now()
-                        const hours = Math.max(0, Math.floor(remaining / 3600000))
-                        const mins = Math.max(0, Math.floor((remaining % 3600000) / 60000))
-                        const secs = Math.max(0, Math.floor((remaining % 60000) / 1000))
-                        const isImminent = remaining > 0 && remaining < 300000 // < 5 mins
-                        const timeString = remaining > 0
-                          ? `${hours > 0 ? `${hours}h ` : ''}${mins}m ${secs.toString().padStart(2, '0')}s`
-                          : 'Starting momentarily...'
-                        const dateObj = new Date(session.scheduledAt)
-                        const formattedDate = dateObj.toLocaleDateString(undefined, {
-                          weekday: 'short',
-                          month: 'short',
-                          day: 'numeric'
-                        })
-                        const formattedTime = dateObj.toLocaleTimeString(undefined, {
-                          hour: '2-digit',
-                          minute: '2-digit'
-                        })
-                        const resume = resumes.find(r => r.id === session.resumeId)
 
-                        return (
-                          <div key={session.id} className="sched-item-card">
-                            <div className="sched-item-left">
-                              <div className="sched-item-title-row">
-                                <span className="sched-item-title">{session.label}</span>
-                                <span className="sched-item-pill">{session.role}</span>
-                                {session.company && (
-                                  <span className="sched-item-pill" style={{ color: '#a78bfa', borderColor: 'rgba(167,139,250,0.25)' }}>
-                                    @{session.company}
-                                  </span>
-                                )}
-                              </div>
-
-                              <div className="sched-item-meta">
-                                <div className="sched-item-meta-item">
-                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                                    <line x1="16" y1="2" x2="16" y2="6"/>
-                                    <line x1="8" y1="2" x2="8" y2="6"/>
-                                    <line x1="3" y1="10" x2="21" y2="10"/>
-                                  </svg>
-                                  <span>{formattedDate} at {formattedTime}</span>
-                                </div>
-
-                                {resume && (
-                                  <div className="sched-item-meta-item">
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                                      <polyline points="14 2 14 8 20 8"/>
-                                    </svg>
-                                    <span>{resume.name}</span>
-                                  </div>
-                                )}
-
-                                <div className={`sched-countdown-chip ${isImminent ? 'imminent' : ''}`}>
-                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                    <circle cx="12" cy="12" r="10"/>
-                                    <polyline points="12 6 12 12 16 14"/>
-                                  </svg>
-                                  <span>Starts in {timeString}</span>
-                                </div>
-                              </div>
+                      {claudeExpanded && (
+                        <div className="ai-provider-body">
+                          <div className="ai-provider-steps-box">
+                            <div className="ai-provider-step-line">
+                              <span className="ai-step-num">1</span>
+                              <span>Click <strong>Login with Claude</strong> to launch Anthropic authentication.</span>
                             </div>
-
-                            <div className="sched-item-actions">
-                              <button
-                                className="sched-btn-launch"
-                                onClick={() => handleLaunchNowScheduledSession(session)}
-                                title="Start interview immediately with this session's configuration"
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                  <polygon points="5 3 19 12 5 21 5 3"/>
-                                </svg>
-                                Launch Now
-                              </button>
-                              <button
-                                className="sched-btn-cancel"
-                                onClick={() => handleCancelScheduledSession(session.id, session.hasHold)}
-                                title="Cancel this scheduled session and release hold"
-                              >
-                                Cancel
-                              </button>
+                            <div className="ai-provider-step-line">
+                              <span className="ai-step-num">2</span>
+                              <span>Authenticate with your Anthropic account (free or Pro account supported).</span>
+                            </div>
+                            <div className="ai-provider-step-line">
+                              <span className="ai-step-num">3</span>
+                              <span>Cookies remain strictly confined to your local desktop client and auto-refresh.</span>
                             </div>
                           </div>
-                        )
-                      })
-                    )}
+
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <a
+                              href="#"
+                              onClick={(e) => {
+                                e.preventDefault()
+                                window.api.openExternal('https://claude.ai')
+                              }}
+                              className="ai-external-link"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 256 256">
+                                <path d="M224,104a8,8,0,0,1-16,0V79.32l-82.34,82.34a8,8,0,0,1-11.32-11.32L196.68,68H168a8,8,0,0,1,0-16h48a8,8,0,0,1,8,8Zm-40,24a8,8,0,0,0-8,8v72H48V80h72a8,8,0,0,0,0-16H48A16,16,0,0,0,32,80V208a16,16,0,0,0,16,16H176a16,16,0,0,0,16-16V136A8,8,0,0,0,184,128Z" />
+                              </svg>
+                              <span>Open claude.ai</span>
+                            </a>
+                            <span style={{ fontSize: '11px', color: '#64748b' }}>Session validity: ~30 days</span>
+                          </div>
+
+                          <div className="ai-provider-actions">
+                            <button
+                              type="button"
+                              disabled={providerLoading === 'claude'}
+                              onClick={async () => {
+                                setProviderLoading('claude')
+                                setClaudeStatus('checking')
+                                try {
+                                  const res = await window.api.openProviderLogin('claude')
+                                  setClaudeStatus(res.connected ? 'connected' : 'disconnected')
+                                } catch {
+                                  setClaudeStatus('disconnected')
+                                } finally {
+                                  setProviderLoading(null)
+                                }
+                              }}
+                              className={`ai-connect-btn claude ${claudeStatus === 'connected' ? 'reconnect' : ''}`}
+                            >
+                              {providerLoading === 'claude' ? (
+                                <>
+                                  <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                                  <span>Connecting to Claude...</span>
+                                </>
+                              ) : claudeStatus === 'connected' ? (
+                                <>
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256">
+                                    <path d="M224,128a96,96,0,0,1-96,96,95.53,95.53,0,0,1-67.88-28.12,8,8,0,0,1,11.32-11.32A79.58,79.58,0,0,0,128,208a80,80,0,1,0-77.94-98.39,8,8,0,0,1-15.65-3.22A96,96,0,1,1,224,128ZM48,128a8,8,0,0,0-8-8H16a8,8,0,0,0,0,16H40A8,8,0,0,0,48,128Z" />
+                                  </svg>
+                                  <span>Reconnect / Refresh Session</span>
+                                </>
+                              ) : (
+                                <>
+                                  <img src={claudeLogo} alt="Claude" style={{ width: 16, height: 16, objectFit: 'contain' }} />
+                                  <span>Login with Claude</span>
+                                </>
+                              )}
+                            </button>
+
+                            {claudeStatus === 'connected' && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await window.api.disconnectProvider('claude')
+                                  setClaudeStatus('disconnected')
+                                }}
+                                className="ai-disconnect-btn"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" fill="currentColor" viewBox="0 0 256 256">
+                                  <path d="M216,48H176V40a24,24,0,0,0-24-24H104A24,24,0,0,0,80,40v8H40a8,8,0,0,0,0,16h8V208a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V64h8a8,8,0,0,0,0-16ZM96,40a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96Zm96,168H64V64H192ZM112,104v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Zm48,0v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Z" />
+                                </svg>
+                                <span>Disconnect</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Gemini Card */}
+                    <div className={`ai-provider-card gemini ${geminiStatus === 'connected' ? 'connected' : ''}`}>
+                      <div
+                        className="ai-provider-header"
+                        onClick={() => setGeminiExpanded((v) => !v)}
+                      >
+                        <div className="ai-provider-logo-box gemini">
+                          {/* Google Gemini "G" mark */}
+                          <svg width="22" height="22" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M24 4C12.954 4 4 12.954 4 24s8.954 20 20 20 20-8.954 20-20S35.046 4 24 4z" fill="url(#gGradient)"/>
+                            <defs>
+                              <linearGradient id="gGradient" x1="4" y1="4" x2="44" y2="44" gradientUnits="userSpaceOnUse">
+                                <stop stopColor="#4285F4"/>
+                                <stop offset="0.33" stopColor="#34A853"/>
+                                <stop offset="0.66" stopColor="#FBBC04"/>
+                                <stop offset="1" stopColor="#EA4335"/>
+                              </linearGradient>
+                            </defs>
+                            <text x="50%" y="54%" dominantBaseline="middle" textAnchor="middle" fill="white" fontSize="20" fontWeight="700" fontFamily="Google Sans, Roboto, sans-serif">G</text>
+                          </svg>
+                        </div>
+                        <div className="ai-provider-details">
+                          <div className="ai-provider-title-row">
+                            <span className="ai-provider-name">Gemini</span>
+                            <span className="ai-provider-model-tag">2.0 Flash · 1.5 Pro</span>
+                            <span className={`ai-status-pill-badge ${geminiStatus}`}>
+                              {geminiStatus === 'connected' ? (
+                                <>
+                                  <svg width="12" height="12" fill="currentColor" viewBox="0 0 256 256">
+                                    <path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z" />
+                                  </svg>
+                                  Session Active
+                                </>
+                              ) : geminiStatus === 'checking' ? (
+                                <>
+                                  <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                                  Validating...
+                                </>
+                              ) : geminiStatus === 'expired' ? (
+                                <>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#ef4444' }} />
+                                  Session expired
+                                </>
+                              ) : (
+                                <>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#64748b' }} />
+                                  Not Linked
+                                </>
+                              )}
+                            </span>
+                          </div>
+                          <p className="ai-provider-sub">Provides Gemini responses — works with standard Google accounts.</p>
+                        </div>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          fill="#94a3b8"
+                          viewBox="0 0 256 256"
+                          style={{
+                            transform: geminiExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                            transition: 'transform 0.25s',
+                            flexShrink: 0
+                          }}
+                        >
+                          <path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80a8,8,0,0,1,11.32-11.32L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z" />
+                        </svg>
+                      </div>
+
+                      {geminiExpanded && (
+                        <div className="ai-provider-body">
+                          <div className="ai-provider-steps-box">
+                            <div className="ai-provider-step-line">
+                              <span className="ai-step-num">1</span>
+                              <span>Click <strong>Login with Gemini</strong> to launch Google authentication.</span>
+                            </div>
+                            <div className="ai-provider-step-line">
+                              <span className="ai-step-num">2</span>
+                              <span>Sign in with your Google account (works with free Google accounts).</span>
+                            </div>
+                            <div className="ai-provider-step-line">
+                              <span className="ai-step-num">3</span>
+                              <span>Cookies remain strictly confined to your local desktop client and auto-refresh.</span>
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <a
+                              href="#"
+                              onClick={(e) => {
+                                e.preventDefault()
+                                window.api.openExternal('https://gemini.google.com')
+                              }}
+                              className="ai-external-link"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 256 256">
+                                <path d="M224,104a8,8,0,0,1-16,0V79.32l-82.34,82.34a8,8,0,0,1-11.32-11.32L196.68,68H168a8,8,0,0,1,0-16h48a8,8,0,0,1,8,8Zm-40,24a8,8,0,0,0-8,8v72H48V80h72a8,8,0,0,0,0-16H48A16,16,0,0,0,32,80V208a16,16,0,0,0,16,16H176a16,16,0,0,0,16-16V136A8,8,0,0,0,184,128Z" />
+                              </svg>
+                              <span>Open gemini.google.com</span>
+                            </a>
+                            <span style={{ fontSize: '11px', color: '#64748b' }}>Session validity: ~1–7 days (Google refreshes frequently)</span>
+                          </div>
+
+                          <div className="ai-provider-actions">
+                            <button
+                              type="button"
+                              disabled={providerLoading === 'gemini'}
+                              onClick={async () => {
+                                setProviderLoading('gemini')
+                                setGeminiStatus('checking')
+                                try {
+                                  const res = await window.api.openProviderLogin('gemini')
+                                  setGeminiStatus(res.connected ? 'connected' : 'disconnected')
+                                } catch {
+                                  setGeminiStatus('disconnected')
+                                } finally {
+                                  setProviderLoading(null)
+                                }
+                              }}
+                              className={`ai-connect-btn gemini ${geminiStatus === 'connected' ? 'reconnect' : ''}`}
+                            >
+                              {providerLoading === 'gemini' ? (
+                                <>
+                                  <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                                  <span>Connecting to Gemini...</span>
+                                </>
+                              ) : geminiStatus === 'connected' ? (
+                                <>
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256">
+                                    <path d="M224,128a96,96,0,0,1-96,96,95.53,95.53,0,0,1-67.88-28.12,8,8,0,0,1,11.32-11.32A79.58,79.58,0,0,0,128,208a80,80,0,1,0-77.94-98.39,8,8,0,0,1-15.65-3.22A96,96,0,1,1,224,128ZM48,128a8,8,0,0,0-8-8H16a8,8,0,0,0,0,16H40A8,8,0,0,0,48,128Z" />
+                                  </svg>
+                                  <span>Reconnect / Refresh Session</span>
+                                </>
+                              ) : (
+                                <>
+                                  <svg width="14" height="14" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M24 4C12.954 4 4 12.954 4 24s8.954 20 20 20 20-8.954 20-20S35.046 4 24 4z" fill="#4285F4"/>
+                                    <text x="50%" y="54%" dominantBaseline="middle" textAnchor="middle" fill="white" fontSize="20" fontWeight="700" fontFamily="sans-serif">G</text>
+                                  </svg>
+                                  <span>Login with Gemini</span>
+                                </>
+                              )}
+                            </button>
+
+                            {geminiStatus === 'connected' && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await window.api.disconnectProvider('gemini')
+                                  setGeminiStatus('disconnected')
+                                }}
+                                className="ai-disconnect-btn"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" fill="currentColor" viewBox="0 0 256 256">
+                                  <path d="M216,48H176V40a24,24,0,0,0-24-24H104A24,24,0,0,0,80,40v8H40a8,8,0,0,0,0,16h8V208a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V64h8a8,8,0,0,0,0-16ZM96,40a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96Zm96,168H64V64H192ZM112,104v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Zm48,0v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Z" />
+                                </svg>
+                                <span>Disconnect</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* GLM (Z.ai) Card */}
+                    <div className={`ai-provider-card glm ${glmStatus === 'connected' ? 'connected' : ''}`}>
+                      <div
+                        className="ai-provider-header"
+                        onClick={() => setGlmExpanded((v) => !v)}
+                      >
+                        <div className="ai-provider-logo-box glm">
+                          {/* Z.ai mark */}
+                          <svg width="22" height="22" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <rect x="4" y="4" width="40" height="40" rx="11" fill="url(#glmGradient)"/>
+                            <defs>
+                              <linearGradient id="glmGradient" x1="4" y1="4" x2="44" y2="44" gradientUnits="userSpaceOnUse">
+                                <stop stopColor="#4F7CFF"/>
+                                <stop offset="1" stopColor="#9A5CFF"/>
+                              </linearGradient>
+                            </defs>
+                            <text x="50%" y="54%" dominantBaseline="middle" textAnchor="middle" fill="white" fontSize="18" fontWeight="700" fontFamily="Inter, Roboto, sans-serif">Z</text>
+                          </svg>
+                        </div>
+                        <div className="ai-provider-details">
+                          <div className="ai-provider-title-row">
+                            <span className="ai-provider-name">GLM</span>
+                            <span className="ai-provider-model-tag">GLM-4.6 · 4.6V</span>
+                            <span className={`ai-status-pill-badge ${glmStatus}`}>
+                              {glmStatus === 'connected' ? (
+                                <>
+                                  <svg width="12" height="12" fill="currentColor" viewBox="0 0 256 256">
+                                    <path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z" />
+                                  </svg>
+                                  Session Active
+                                </>
+                              ) : glmStatus === 'checking' ? (
+                                <>
+                                  <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                                  Validating...
+                                </>
+                              ) : glmStatus === 'expired' ? (
+                                <>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#ef4444' }} />
+                                  Session expired
+                                </>
+                              ) : (
+                                <>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#64748b' }} />
+                                  Not Linked
+                                </>
+                              )}
+                            </span>
+                          </div>
+                          <p className="ai-provider-sub">Provides GLM responses — works with free &amp; paid Z.ai accounts.</p>
+                        </div>
+                        {/* @@GLMCARD2@@ */}
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          fill="#94a3b8"
+                          viewBox="0 0 256 256"
+                          style={{
+                            transform: glmExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                            transition: 'transform 0.25s',
+                            flexShrink: 0
+                          }}
+                        >
+                          <path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80a8,8,0,0,1,11.32-11.32L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z" />
+                        </svg>
+                      </div>
+
+                      {glmExpanded && (
+                        <div className="ai-provider-body">
+                          <div className="ai-provider-steps-box">
+                            <div className="ai-provider-step-line">
+                              <span className="ai-step-num">1</span>
+                              <span>Click <strong>Login with GLM</strong> to open Z.ai authentication.</span>
+                            </div>
+                            <div className="ai-provider-step-line">
+                              <span className="ai-step-num">2</span>
+                              <span>Sign in with your Z.ai account (email or Google) at chat.z.ai.</span>
+                            </div>
+                            <div className="ai-provider-step-line">
+                              <span className="ai-step-num">3</span>
+                              <span>Cookies remain strictly confined to your local desktop client and auto-refresh.</span>
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <a
+                              href="#"
+                              onClick={(e) => {
+                                e.preventDefault()
+                                window.api.openExternal('https://chat.z.ai/')
+                              }}
+                              className="ai-external-link"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 256 256">
+                                <path d="M224,104a8,8,0,0,1-16,0V79.32l-82.34,82.34a8,8,0,0,1-11.32-11.32L196.68,68H168a8,8,0,0,1,0-16h48a8,8,0,0,1,8,8Zm-40,24a8,8,0,0,0-8,8v72H48V80h72a8,8,0,0,0,0-16H48A16,16,0,0,0,32,80V208a16,16,0,0,0,16,16H176a16,16,0,0,0,16-16V136A8,8,0,0,0,184,128Z" />
+                              </svg>
+                              <span>Open chat.z.ai</span>
+                            </a>
+                            <span style={{ fontSize: '11px', color: '#64748b' }}>Session validity: ~7–30 days</span>
+                          </div>
+                          {/* @@GLMCARD3@@ */}
+                          <div className="ai-provider-actions">
+                            <button
+                              type="button"
+                              disabled={providerLoading === 'glm'}
+                              onClick={async () => {
+                                setProviderLoading('glm')
+                                setGlmStatus('checking')
+                                try {
+                                  const res = await window.api.openProviderLogin('glm')
+                                  setGlmStatus(res.connected ? 'connected' : 'disconnected')
+                                } catch {
+                                  setGlmStatus('disconnected')
+                                } finally {
+                                  setProviderLoading(null)
+                                }
+                              }}
+                              className={`ai-connect-btn glm ${glmStatus === 'connected' ? 'reconnect' : ''}`}
+                            >
+                              {providerLoading === 'glm' ? (
+                                <>
+                                  <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                                  <span>Connecting to GLM...</span>
+                                </>
+                              ) : glmStatus === 'connected' ? (
+                                <>
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 256 256">
+                                    <path d="M224,128a96,96,0,0,1-96,96,95.53,95.53,0,0,1-67.88-28.12,8,8,0,0,1,11.32-11.32A79.58,79.58,0,0,0,128,208a80,80,0,1,0-77.94-98.39,8,8,0,0,1-15.65-3.22A96,96,0,1,1,224,128ZM48,128a8,8,0,0,0-8-8H16a8,8,0,0,0,0,16H40A8,8,0,0,0,48,128Z" />
+                                  </svg>
+                                  <span>Reconnect / Refresh Session</span>
+                                </>
+                              ) : (
+                                <>
+                                  <svg width="14" height="14" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <rect x="4" y="4" width="40" height="40" rx="11" fill="#5B7CFA"/>
+                                    <text x="50%" y="54%" dominantBaseline="middle" textAnchor="middle" fill="white" fontSize="18" fontWeight="700" fontFamily="sans-serif">Z</text>
+                                  </svg>
+                                  <span>Login with GLM</span>
+                                </>
+                              )}
+                            </button>
+                            {/* @@GLMCARD4@@ */}
+                            {glmStatus === 'connected' && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await window.api.disconnectProvider('glm')
+                                  setGlmStatus('disconnected')
+                                }}
+                                className="ai-disconnect-btn"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" fill="currentColor" viewBox="0 0 256 256">
+                                  <path d="M216,48H176V40a24,24,0,0,0-24-24H104A24,24,0,0,0,80,40v8H40a8,8,0,0,0,0,16h8V208a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V64h8a8,8,0,0,0,0-16ZM96,40a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96Zm96,168H64V64H192ZM112,104v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Zm48,0v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Z" />
+                                </svg>
+                                <span>Disconnect</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+
+                    {/* Security & Token Lifespan Info */}
+                    <div className="ai-security-callout">
+                      <div className="ai-security-icon-wrap">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256">
+                          <path d="M208,80H176V56a48,48,0,0,0-96,0V80H48A16,16,0,0,0,32,96V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V96A16,16,0,0,0,208,80ZM96,56a32,32,0,0,1,64,0V80H96ZM208,208H48V96H208V208Zm-80-64a16,16,0,0,0-16,16v16a16,16,0,0,0,32,0V160A16,16,0,0,0,128,144Z" />
+                        </svg>
+                      </div>
+                      <div className="ai-security-content">
+                        <div className="ai-security-title">Local Vault Security & Cookie Lifespan</div>
+                        <p className="ai-security-text">
+                          • <strong>~30-Day Auto Persistence:</strong> Web sessions remain active for roughly a month. Zyro auto-detects if a session requires re-authentication.<br />
+                          • <strong>Zero Remote Storage:</strong> Session cookies are encrypted strictly in your local OS storage, never shared with Zyro servers.<br />
+                          • <strong>Pre-Interview Check:</strong> Zyro verifies session readiness before starting an interview to ensure smooth, uninterrupted assistance.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                </div>
+              </div>
+            )}
+
+            {ownAccountSessionWarning && (
+              <div className="ai-warning-modal-backdrop">
+                <div className="ai-warning-modal-card">
+                  <div className="ai-warning-modal-header">
+                    <div className="ai-warning-icon-box">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="currentColor" viewBox="0 0 256 256">
+                        <path d="M236.8,188.09,149.35,36.22h0a24.76,24.76,0,0,0-42.7,0L19.2,188.09a23.51,23.51,0,0,0,0,23.72A24.35,24.35,0,0,0,40.55,224h174.9a24.35,24.35,0,0,0,21.33-12.19A23.51,23.51,0,0,0,236.8,188.09ZM120,104a8,8,0,0,1,16,0v40a8,8,0,0,1-16,0Zm8,88a12,12,0,1,1,12-12A12,12,0,0,1,128,192Z" />
+                      </svg>
+                    </div>
+                    <div>
+                      <div className="ai-warning-title">Own Account Disconnected</div>
+                      <span style={{ fontSize: '11px', color: '#94a3b8' }}>Session verification required</span>
+                    </div>
+                  </div>
+                  <p className="ai-warning-body-text">{ownAccountSessionWarning}</p>
+                  <div className="ai-warning-info-pill">
+                    <svg width="14" height="14" fill="#a78bfa" viewBox="0 0 256 256">
+                      <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm64-88a8,8,0,0,1-8,8H128a8,8,0,0,1-8-8V72a8,8,0,0,1,16,0v48h48A8,8,0,0,1,192,128Z" />
+                    </svg>
+                    <span>Sessions stay valid for ~30 days. Reconnect or switch to Zyro Gateway.</span>
+                  </div>
+                  <div className="ai-warning-actions">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOwnAccountSessionWarning(null)
+                        setStep('ai_source' as any)
+                      }}
+                      className="ai-warning-btn-primary"
+                    >
+                      Go to AI Source Setup
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setOwnAccountSessionWarning(null)}
+                      className="ai-warning-btn-dismiss"
+                    >
+                      Dismiss
+                    </button>
                   </div>
                 </div>
               </div>
             )}
-            
+
+            {showByokPaywall && (
+              <div className="paywall-overlay fade-in" onClick={() => setShowByokPaywall(false)}>
+                <div className="paywall-card glass-modal" style={{ maxWidth: '450px' }} onClick={e => e.stopPropagation()}>
+                  <button className="paywall-close" onClick={() => setShowByokPaywall(false)}>×</button>
+
+                  <div className="paywall-badge-pill" style={{ background: 'rgba(139,92,246,0.15)', color: '#c4b5fd', border: '1px solid rgba(139,92,246,0.3)' }}>
+                    <span className="paywall-dot" style={{ background: '#a78bfa', boxShadow: '0 0 8px #a78bfa' }} />
+                    <span>Premium Feature</span>
+                  </div>
+
+                  <h3 className="paywall-title">Unlock Own Accounts</h3>
+                  <p className="paywall-sub" style={{ fontSize: '13px', lineHeight: '1.5' }}>
+                    Connect your own ChatGPT, Claude, Gemini, or GLM to bypass Zyro limits completely.
+                  </p>
+
+                  <div className="paywall-features-grid" style={{ marginBottom: '20px' }}>
+                    <div className="paywall-feat">🚀 Zero rate limits from Zyro</div>
+                    <div className="paywall-feat">🧠 Works with Free &amp; Paid accounts</div>
+                    <div className="paywall-feat">⚡ Works with or without credits</div>
+                    <div className="paywall-feat">🔒 100% Direct &amp; Private connection</div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+                    <div style={{ padding: '12px', borderRadius: '12px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', transition: 'all 0.2s ease' }}>
+                      <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '4px', fontWeight: 600 }}>1 Month Pass</div>
+                      <div style={{ fontSize: '20px', color: '#fff', fontWeight: 700, fontFamily: 'monospace' }}>₹100</div>
+                      <div style={{ fontSize: '10px', color: '#64748b', marginTop: '4px' }}>No commitment</div>
+                    </div>
+
+                    <div style={{ padding: '12px', borderRadius: '12px', background: 'linear-gradient(135deg, rgba(139,92,246,0.15), rgba(99,102,241,0.1))', border: '1.5px solid rgba(139,92,246,0.5)', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', transition: 'all 0.2s ease', position: 'relative' }}>
+                      <div style={{ position: 'absolute', top: '-8px', background: 'linear-gradient(90deg, #8b5cf6, #3b82f6)', padding: '2px 8px', borderRadius: '8px', fontSize: '9px', fontWeight: 800, color: '#fff', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Recommended</div>
+                      <div style={{ fontSize: '12px', color: '#c4b5fd', marginBottom: '4px', fontWeight: 600 }}>Monthly Auto-Renew</div>
+                      <div style={{ fontSize: '20px', color: '#fff', fontWeight: 700, fontFamily: 'monospace' }}>₹100<span style={{ fontSize: '12px', color: '#94a3b8' }}>/mo</span></div>
+                      <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '4px' }}>Cancel anytime</div>
+                    </div>
+                  </div>
+
+                  <button
+                    className="paywall-action-btn"
+                    style={{ background: 'linear-gradient(90deg, #8b5cf6, #3b82f6)' }}
+                    onClick={() => {
+                      window.api.openExternal('https://www.zyro-ai.in/dashboard/billing?plan=byok')
+                    }}
+                  >
+                    <span>Proceed to Pay</span>
+                    <svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z"/></svg>
+                  </button>
+                  <div style={{ textAlign: 'center', marginTop: '12px', fontSize: '11px', color: '#64748b' }}>
+                    Already paid? <span style={{ color: '#8b5cf6', cursor: 'pointer', textDecoration: 'underline' }} onClick={() => setShowByokPaywall(false)}>Refresh Status</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {showPaywall && (
               <div className="paywall-overlay fade-in">
                 <div className="paywall-card glass-modal">
@@ -3050,9 +3248,9 @@ export default function SetupPage({
 
                   <div className="paywall-features-grid">
                     <div className="paywall-feat">⚡ Real-time AI</div>
-                    <div className="paywall-feat">🔒 100% Stealth</div>
-                    <div className="paywall-feat">📁 Local RAG</div>
-                    <div className="paywall-feat">🗣️ Hindi & English</div>
+                    <div className="paywall-feat">👻 100% Stealth</div>
+                    <div className="paywall-feat">📚 Local RAG</div>
+                    <div className="paywall-feat">🌐 Hindi & English</div>
                   </div>
 
                   <button
@@ -3083,7 +3281,8 @@ export default function SetupPage({
                   onClick={() => {
                     if (step === 2) setStep(1)
                     else if (step === 'knowledge_base') setStep(2)
-                    else if (step === 3) setStep('knowledge_base')
+                    else if ((step as any) === 'ai_source') setStep('knowledge_base')
+                    else if (step === 3) setStep('ai_source' as any)
                   }}
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256">
@@ -3107,6 +3306,8 @@ export default function SetupPage({
                   } else if (step === 2) {
                     setStep('knowledge_base')
                   } else if (step === 'knowledge_base') {
+                    setStep('ai_source' as any)
+                  } else if ((step as any) === 'ai_source') {
                     setStep(3)
                   } else if (step === 3) {
                     handleStartInterview()
@@ -3118,6 +3319,7 @@ export default function SetupPage({
                   {step === 1 && 'Next'}
                   {step === 2 && 'Next'}
                   {step === 'knowledge_base' && 'Next'}
+                  {(step as any) === 'ai_source' && 'Next'}
                   {step === 3 && 'Start Interview'}
                 </span>
                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 256 256">

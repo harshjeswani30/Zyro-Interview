@@ -62,7 +62,7 @@ contextBridge.exposeInMainWorld('adminDb', {
   deleteAuthUser: (userId: string) => ipcRenderer.invoke('admin:delete-auth-user', userId),
   listTickets: () => ipcRenderer.invoke('admin:list-tickets'),
   deleteTicket: (ticketId: string) => ipcRenderer.invoke('admin:delete-ticket', ticketId),
-  updateUserBalance: (opts: { userId: string; field: string; value: number }) => ipcRenderer.invoke('admin:update-user-balance', opts),
+  updateUserBalance: (opts: { userId: string; field: string; value: number | string }) => ipcRenderer.invoke('admin:update-user-balance', opts),
   sendUserNotification: (opts: { userId: string; title: string; message: string; type?: string; metadata?: Record<string, unknown> }) =>
     ipcRenderer.invoke('admin:send-user-notification', opts),
   listNotifications: (userId?: string) => ipcRenderer.invoke('admin:list-notifications', userId)

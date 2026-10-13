@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "items": [
+    {
+      "title": "trace interview waiting state and provider fallback",
+      "status": "done"
+    },
+    {
+      "title": "reproduce the stuck state with targeted tests",
+      "status": "done"
+    },
+    {
+      "title": "implement a robust fix and regression coverage",
+      "status": "done"
+    },
+    {
+      "title": "run the full relevant test suite and summarize findings",
+      "status": "done"
+    }
+  ],
+  "updated_at": "2026-10-01T01:01:03.000Z",
+  "session_id": "01a0f3a6-dc92-770e-b19e-9bb7987f6d7c"
+}

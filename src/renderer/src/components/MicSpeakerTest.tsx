@@ -26,11 +26,20 @@ interface MicSpeakerTestProps {
 const BAR_COUNT = 24
 const PROMPT_PHRASE = 'Hello Zyro, checking my audio for the interview'
 const CHECK_DURATION_MS = 3200
+// Normalised analyser average (0..1) a frame must clear to count as speech. Idle
+// room tone reads well below this; speaking the prompt sits comfortably above it.
+const SPEECH_LEVEL_THRESHOLD = 0.08
+// How many voiced frames across the ~3.2s window prove the user actually spoke
+// (rAF ≈ 60fps, so this is well under a second of real speech — a stray tap or
+// cough cannot reach it, a spoken phrase clears it easily).
+const MIN_VOICED_FRAMES = 12
 
 export default function MicSpeakerTest({ onProceed }: MicSpeakerTestProps): React.ReactElement {
   // Mic state
   const [isCheckingMic, setIsCheckingMic] = useState(false)
   const [micTested, setMicTested] = useState(false)
+  // Set when a check ran the full window but never heard the user speak.
+  const [micFailed, setMicFailed] = useState(false)
   const [micLevel, setMicLevel] = useState(0)
   const [checkProgress, setCheckProgress] = useState(0)
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
@@ -58,6 +67,10 @@ export default function MicSpeakerTest({ onProceed }: MicSpeakerTestProps): Reac
   const checkTimerRef = useRef<NodeJS.Timeout | null>(null)
   const progressTimerRef = useRef<NodeJS.Timeout | null>(null)
   const micDropdownRef = useRef<HTMLDivElement | null>(null)
+  // Number of analyser frames during the check whose level cleared the speech
+  // threshold. The test only passes if the user actually spoke — enough frames,
+  // not one stray click.
+  const voicedFramesRef = useRef(0)
 
   // Click outside to close mic dropdown
   useEffect(() => {
@@ -124,7 +137,9 @@ export default function MicSpeakerTest({ onProceed }: MicSpeakerTestProps): Reac
     stopMicStream()
     setIsCheckingMic(true)
     setMicTested(false)
+    setMicFailed(false)
     setCheckProgress(0)
+    voicedFramesRef.current = 0
 
     try {
       const constraints: MediaStreamConstraints = {
@@ -165,6 +180,10 @@ export default function MicSpeakerTest({ onProceed }: MicSpeakerTestProps): Reac
         setMicLevel(avg)
         setMicBars(bars)
 
+        // Count frames that clear the speech floor. Idle room noise sits well under
+        // this; actually saying the prompt phrase pushes past it for many frames.
+        if (avg > SPEECH_LEVEL_THRESHOLD) voicedFramesRef.current += 1
+
         animFrameRef.current = requestAnimationFrame(tick)
       }
 
@@ -179,18 +198,23 @@ export default function MicSpeakerTest({ onProceed }: MicSpeakerTestProps): Reac
         setCheckProgress(pct)
       }, 50)
 
-      // Complete verification after 3.2 seconds
+      // Complete verification after 3.2 seconds — but only PASS if the user actually
+      // spoke during the window. A silent check now fails and asks them to try again,
+      // instead of waving through a mic that was never proven to work.
       if (checkTimerRef.current) clearTimeout(checkTimerRef.current)
       checkTimerRef.current = setTimeout(() => {
         if (progressTimerRef.current) clearInterval(progressTimerRef.current)
+        const heardVoice = voicedFramesRef.current >= MIN_VOICED_FRAMES
         stopMicStream()
         setIsCheckingMic(false)
-        setMicTested(true)
-        setCheckProgress(100)
+        setMicTested(heardVoice)
+        setMicFailed(!heardVoice)
+        setCheckProgress(heardVoice ? 100 : 0)
       }, CHECK_DURATION_MS)
     } catch {
       setIsCheckingMic(false)
       setMicTested(false)
+      setMicFailed(false)
       setCheckProgress(0)
     }
   }, [selectedDeviceId, stopMicStream])
@@ -288,7 +312,7 @@ export default function MicSpeakerTest({ onProceed }: MicSpeakerTestProps): Reac
 
   useEffect(() => {
     if (bothReady && countdown === null && !isPaused) {
-      setCountdown(5)
+      setCountdown(3)
     }
   }, [bothReady, countdown, isPaused])
 
@@ -570,6 +594,7 @@ export default function MicSpeakerTest({ onProceed }: MicSpeakerTestProps): Reac
                                 setSelectedDeviceId(dev.deviceId)
                                 setIsMicDropdownOpen(false)
                                 setMicTested(false)
+                                setMicFailed(false)
                                 stopMicStream()
                               }}
                             >
@@ -722,11 +747,23 @@ export default function MicSpeakerTest({ onProceed }: MicSpeakerTestProps): Reac
                       textTransform: 'uppercase',
                       letterSpacing: '0.07em',
                       fontFamily: "'JetBrains Mono', monospace",
-                      color: isCheckingMic ? '#e879f9' : micTested ? '#4ade80' : '#c084fc',
+                      color: isCheckingMic
+                        ? '#e879f9'
+                        : micTested
+                          ? '#4ade80'
+                          : micFailed
+                            ? '#f87171'
+                            : '#c084fc',
                       marginBottom: 2
                     }}
                   >
-                    {isCheckingMic ? 'Speak aloud now (3s):' : micTested ? 'Voice confirmed ✓' : 'Say phrase aloud on Check:'}
+                    {isCheckingMic
+                      ? 'Speak aloud now (3s):'
+                      : micTested
+                        ? 'Voice confirmed ✓'
+                        : micFailed
+                          ? "Didn't hear you — click Check and speak:"
+                          : 'Say phrase aloud on Check:'}
                   </div>
                   <div
                     style={{
@@ -761,6 +798,8 @@ export default function MicSpeakerTest({ onProceed }: MicSpeakerTestProps): Reac
                       <span style={{ color: '#e879f9', display: 'flex', alignItems: 'center', gap: 4 }}>
                         <Zap size={11} /> Listening...
                       </span>
+                    ) : micFailed ? (
+                      <span style={{ color: '#f87171', fontWeight: 600 }}>No voice detected — try again</span>
                     ) : (
                       'Click Check & speak'
                     )}
@@ -812,7 +851,7 @@ export default function MicSpeakerTest({ onProceed }: MicSpeakerTestProps): Reac
                     ) : (
                       <>
                         <Mic size={12} />
-                        Check
+                        {micFailed ? 'Retry' : 'Check'}
                       </>
                     )}
                   </button>
@@ -1365,7 +1404,7 @@ export default function MicSpeakerTest({ onProceed }: MicSpeakerTestProps): Reac
                 position: 'absolute',
                 inset: 0,
                 borderRadius: '50%',
-                transform: `rotate(${((5 - (countdown || 0)) / 5) * 360}deg)`,
+                transform: `rotate(${((3 - (countdown || 0)) / 3) * 360}deg)`,
                 transition: 'transform 1s linear',
                 pointerEvents: 'none'
               }}
@@ -1428,7 +1467,8 @@ export default function MicSpeakerTest({ onProceed }: MicSpeakerTestProps): Reac
             Ready • Starting Interview
           </div>
 
-          {/* Action Buttons */}
+          {/* Action Buttons — only Pause during the countdown. No Launch Now / back:
+              the run starts on its own when the reel hits zero. */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <button
               onClick={() => setIsPaused(true)}
@@ -1452,27 +1492,6 @@ export default function MicSpeakerTest({ onProceed }: MicSpeakerTestProps): Reac
               }}
             >
               Pause
-            </button>
-
-            <button
-              onClick={onProceed}
-              style={{
-                background: 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)',
-                border: 'none',
-                borderRadius: 8,
-                padding: '7px 20px',
-                color: '#fff',
-                fontSize: 12,
-                fontWeight: 600,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                boxShadow: '0 0 20px rgba(139, 92, 246, 0.5)'
-              }}
-            >
-              Launch Now
-              <ArrowRight size={13} />
             </button>
           </div>
         </div>

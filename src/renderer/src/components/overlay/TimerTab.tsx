@@ -15,7 +15,7 @@ function TimerTabBase({ label, band, progress }: TimerTabProps): React.ReactElem
     const clamped = Number.isFinite(progress) ? Math.min(1, Math.max(0, progress)) : 0
 
     return (
-        <div className="ttab no-drag" title="Session balance">
+        <div className="ttab no-drag">
             <span className="pip" />
             <span className="num">{label}</span>
             <span className="lbl">

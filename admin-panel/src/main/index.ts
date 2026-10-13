@@ -57,7 +57,10 @@ ipcMain.handle('admin:set-session', async (_event, token: unknown) => {
   const url = process.env.SUPABASE_URL
   if (!url) throw new Error('SUPABASE_URL not set')
   const userRes = await fetch(`${url}/auth/v1/user`, {
-    headers: { Authorization: `Bearer ${token}` }
+    headers: { 
+      Authorization: `Bearer ${token}`,
+      apikey: process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+    }
   })
   if (!userRes.ok) {
     throw new Error('Session token rejected')
@@ -136,7 +139,7 @@ ipcMain.handle('admin:list-profiles', async () => {
   const { data, error } = await supabase
     .from('profiles')
     .select(
-      'id, email, full_name, sessions_balance, phone_sessions_balance, trial_seconds_used, is_admin, created_at, updated_at'
+      'id, email, full_name, sessions_balance, phone_sessions_balance, trial_seconds_used, is_admin, created_at, updated_at, unlimited_expires_at, byok_expires_at'
     )
     .order('created_at', { ascending: false })
   if (error) throw new Error(error.message)
@@ -215,7 +218,7 @@ ipcMain.handle('admin:delete-ticket', async (_event, ticketId: string) => {
 // Update user balance (sessions or phone sessions)
 ipcMain.handle(
   'admin:update-user-balance',
-  async (_event, { userId, field, value }: { userId: string; field: string; value: number }) => {
+  async (_event, { userId, field, value }: { userId: string; field: string; value: number | string }) => {
     requireAdminSession()
     const supabase = getSupabase()
     const { error } = await supabase

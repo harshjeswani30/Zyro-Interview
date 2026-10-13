@@ -1,4 +1,4 @@
-import { ElectronAPI } from '@electron-toolkit/preload'
+﻿import { ElectronAPI } from '@electron-toolkit/preload'
 
 export interface UserProfile {
   id: string
@@ -84,6 +84,9 @@ interface Api {
     maxTokens?: number
     presencePenalty?: number
     frequencyPenalty?: number
+    aiSource?: 'gateway' | 'own_account'
+    ownProvider?: 'chatgpt' | 'claude' | 'gemini' | 'glm'
+    ownProviders?: ('chatgpt' | 'claude' | 'gemini' | 'glm')[]
   }) => Promise<string>
   onAnswerChunk?: (cb: (payload: AnswerChunk) => void) => () => void
   analyzeScreen: (data: { systemPrompt: string; model?: string }) => Promise<string>
@@ -97,6 +100,8 @@ interface Api {
     base64Image: string
     userPrompt?: string
     maxTokens?: number
+    aiSource?: 'gateway' | 'own_account'
+    ownProviders?: ('chatgpt' | 'claude' | 'gemini' | 'glm')[]
   }) => Promise<string>
   extractQuestionFromImage: (data: { base64Image: string }) => Promise<string>
   toggleCompact: (minimized: boolean) => void
@@ -186,8 +191,12 @@ interface Api {
   onOverlayToggle: (cb: (visible: boolean) => void) => () => void
   onScreenProtectionToggle: (cb: (enabled: boolean) => void) => () => void
   onSessionExpired: (cb: () => void) => () => void
+  // ── Own-Account Provider Auth ─────────────────────────────────────────────
+  openProviderLogin(provider: 'chatgpt' | 'claude' | 'gemini' | 'glm'): Promise<{ connected: boolean; error?: string }>
+  getProviderStatus(provider: 'chatgpt' | 'claude' | 'gemini' | 'glm'): Promise<{ connected: boolean }>
+  disconnectProvider(provider: 'chatgpt' | 'claude' | 'gemini' | 'glm'): Promise<{ ok: boolean }>
+  validateProviderSessions(): Promise<Record<'chatgpt' | 'claude' | 'gemini' | 'glm', 'valid' | 'expired' | 'disconnected'>>
 }
-
 declare global {
   interface Window {
     electron: ElectronAPI

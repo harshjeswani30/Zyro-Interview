@@ -95,7 +95,6 @@ function CodeBlock({ children }: { children?: React.ReactNode }): React.ReactEle
                 type="button"
                 className={`copy-btn code-copy-btn no-drag ${copied ? 'copied' : ''}`}
                 onClick={handleCopy}
-                title={copied ? 'Copied' : 'Copy code'}
                 aria-label={copied ? 'Code copied' : 'Copy code'}
             >
                 {copied ? <CheckGlyph /> : <CopyGlyph />}

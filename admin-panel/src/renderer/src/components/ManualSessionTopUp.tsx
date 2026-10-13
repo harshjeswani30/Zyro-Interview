@@ -120,7 +120,8 @@ export function ManualSessionTopUp(): React.ReactElement {
   const [historySearchTerm, setHistorySearchTerm] = useState('')
   const [selectedUser, setSelectedUser] = useState<UserProfile | null>(null)
   
-  // Top-Up Form State (Desktop Sessions Only)
+  // Top-Up Form State
+  const [topUpType, setTopUpType] = useState<'sessions' | 'byok'>('sessions')
   const [operationMode, setOperationMode] = useState<'add' | 'set' | 'subtract'>('add')
   const [quantity, setQuantity] = useState<number>(5)
   const [reason, setReason] = useState<string>('Payment Glitch / Missing Sessions')
@@ -300,33 +301,38 @@ export function ManualSessionTopUp(): React.ReactElement {
     if (isCustomMessageEdited) return
     const name = selectedUser?.full_name || 'Valued User'
 
-    if (reason === 'Payment Glitch / Missing Sessions') {
-      setNotificationTitle(`⚡ ${quantity} Desktop Interview Sessions Credited`)
-      setNotificationMessage(
-        `We noticed your recent payment was delayed due to a technical glitch. We have manually credited ${quantity} Desktop Interview sessions to your account. We apologize for the delay!`
-      )
-    } else if (reason === 'Support Email Resolution') {
-      setNotificationTitle(`📩 Support Request Resolved - ${quantity} Sessions Added`)
-      setNotificationMessage(
-        `Hi ${name}! Following up on your support email, we have added ${quantity} Desktop Interview sessions to your account balance. Happy practicing!`
-      )
-    } else if (reason === 'UPI / Direct Payment') {
-      setNotificationTitle(`💳 Payment Verified - ${quantity} Sessions Added`)
-      setNotificationMessage(
-        `Your direct payment has been verified. We have credited ${quantity} Desktop sessions to your account. Thank you!`
-      )
-    } else if (reason === 'Beta Tester Reward') {
-      setNotificationTitle(`🎁 VIP Bonus: ${quantity} Sessions Credited!`)
-      setNotificationMessage(
-        `As a special token of appreciation from Zyro AI, you have received ${quantity} bonus sessions! Enjoy practicing.`
-      )
+    if (topUpType === 'byok') {
+      setNotificationTitle(`🌟 1 Month Own Account Access Granted!`)
+      setNotificationMessage(`Hi ${name}! We have manually credited 1 Month of Own Account (BYOK) access to your account. You can now use your own API keys for unlimited practicing.`)
     } else {
-      setNotificationTitle(`⚡ ${quantity} Sessions Credited to Your Account`)
-      setNotificationMessage(
-        `Your session balance has been updated. You now have ${calculatedNewBalance} total Desktop sessions available.`
-      )
+      if (reason === 'Payment Glitch / Missing Sessions') {
+        setNotificationTitle(`⚡ ${quantity} Desktop Interview Sessions Credited`)
+        setNotificationMessage(
+          `We noticed your recent payment was delayed due to a technical glitch. We have manually credited ${quantity} Desktop Interview sessions to your account. We apologize for the delay!`
+        )
+      } else if (reason === 'Support Email Resolution') {
+        setNotificationTitle(`📩 Support Request Resolved - ${quantity} Sessions Added`)
+        setNotificationMessage(
+          `Hi ${name}! Following up on your support email, we have added ${quantity} Desktop Interview sessions to your account balance. Happy practicing!`
+        )
+      } else if (reason === 'UPI / Direct Payment') {
+        setNotificationTitle(`💳 Payment Verified - ${quantity} Sessions Added`)
+        setNotificationMessage(
+          `Your direct payment has been verified. We have credited ${quantity} Desktop sessions to your account. Thank you!`
+        )
+      } else if (reason === 'Beta Tester Reward') {
+        setNotificationTitle(`🎁 VIP Bonus: ${quantity} Sessions Credited!`)
+        setNotificationMessage(
+          `As a special token of appreciation from Zyro AI, you have received ${quantity} bonus sessions! Enjoy practicing.`
+        )
+      } else {
+        setNotificationTitle(`⚡ ${quantity} Sessions Credited to Your Account`)
+        setNotificationMessage(
+          `Your session balance has been updated. You now have ${calculatedNewBalance} total Desktop sessions available.`
+        )
+      }
     }
-  }, [reason, quantity, selectedUser, calculatedNewBalance, isCustomMessageEdited])
+  }, [reason, quantity, selectedUser, calculatedNewBalance, isCustomMessageEdited, topUpType])
 
   const handleApplySessions = async () => {
     if (!selectedUser) {
@@ -334,7 +340,7 @@ export function ManualSessionTopUp(): React.ReactElement {
       return
     }
 
-    if (quantity < 0) {
+    if (topUpType === 'sessions' && quantity < 0) {
       showToast('error', 'Quantity cannot be negative.')
       return
     }
@@ -342,13 +348,27 @@ export function ManualSessionTopUp(): React.ReactElement {
     setIsSubmitting(true)
     try {
       const finalReason = reason === 'Custom' ? (customReason || 'Manual Admin Credit') : reason
-      const updatePayload = {
-        userId: selectedUser.id,
-        field: 'sessions_balance',
-        value: calculatedNewBalance
+      
+      let updatePayload: { userId: string, field: string, value: any }
+      let byokDate: Date | null = null
+      
+      if (topUpType === 'sessions') {
+        updatePayload = {
+          userId: selectedUser.id,
+          field: 'sessions_balance',
+          value: calculatedNewBalance
+        }
+      } else {
+        byokDate = new Date()
+        byokDate.setDate(byokDate.getDate() + 30) // Grant 30 days
+        updatePayload = {
+          userId: selectedUser.id,
+          field: 'byok_expires_at',
+          value: byokDate.toISOString()
+        }
       }
 
-      // 1. Update Profile Balance in Supabase
+      // 1. Update Profile in Supabase
       if ((window as any).adminDb?.updateUserBalance) {
         await (window as any).adminDb.updateUserBalance(updatePayload)
       } else {
@@ -361,17 +381,17 @@ export function ManualSessionTopUp(): React.ReactElement {
         try {
           await (window as any).adminDb.sendUserNotification({
             userId: selectedUser.id,
-            title: notificationTitle || `⚡ ${delta >= 0 ? `+${delta}` : delta} Sessions Updated`,
-            message: notificationMessage || `Your session balance has been updated to ${calculatedNewBalance} sessions.`,
-            type: 'session_credit',
+            title: notificationTitle || (topUpType === 'sessions' ? `⚡ ${delta >= 0 ? `+${delta}` : delta} Sessions Updated` : `🌟 1 Month Own Account Access Granted`),
+            message: notificationMessage || (topUpType === 'sessions' ? `Your session balance has been updated to ${calculatedNewBalance} sessions.` : `Your Own Account Access is now active until ${byokDate?.toLocaleDateString()}.`),
+            type: topUpType === 'sessions' ? 'session_credit' : 'subscription_update',
             metadata: {
-              delta,
-              sessionType: 'sessions_balance',
+              delta: topUpType === 'sessions' ? delta : 30,
+              sessionType: topUpType === 'sessions' ? 'sessions_balance' : 'byok_expires_at',
               reason: finalReason,
               userEmail: selectedUser.email || selectedUser.phone,
               userName: selectedUser.full_name,
-              previousBalance: currentBalance,
-              newBalance: calculatedNewBalance,
+              previousBalance: topUpType === 'sessions' ? currentBalance : undefined,
+              newBalance: topUpType === 'sessions' ? calculatedNewBalance : undefined,
               timestamp: new Date().toISOString()
             }
           })
@@ -388,9 +408,9 @@ export function ManualSessionTopUp(): React.ReactElement {
         userId: selectedUser.id,
         userEmail: selectedUser.email || selectedUser.phone || 'Unknown User',
         userName: selectedUser.full_name || 'User',
-        delta,
-        newBalance: calculatedNewBalance,
-        reason: finalReason,
+        delta: topUpType === 'sessions' ? delta : 30,
+        newBalance: topUpType === 'sessions' ? calculatedNewBalance : undefined,
+        reason: topUpType === 'sessions' ? finalReason : `BYOK Access (1 Month): ${finalReason}`,
         title: notificationTitle,
         notified: notificationSent
       }
@@ -400,21 +420,27 @@ export function ManualSessionTopUp(): React.ReactElement {
       setUsers(prev =>
         prev.map(u =>
           u.id === selectedUser.id
-            ? { ...u, sessions_balance: calculatedNewBalance }
+            ? (topUpType === 'sessions' 
+               ? { ...u, sessions_balance: calculatedNewBalance } 
+               : { ...u, byok_expires_at: byokDate!.toISOString() })
             : u
         )
       )
       setSelectedUser(prev =>
-        prev ? { ...prev, sessions_balance: calculatedNewBalance } : null
+        prev ? (topUpType === 'sessions' 
+                ? { ...prev, sessions_balance: calculatedNewBalance }
+                : { ...prev, byok_expires_at: byokDate!.toISOString() }) : null
       )
 
       showToast(
         'success',
-        `Successfully credited ${delta >= 0 ? `+${delta}` : delta} Desktop sessions to ${selectedUser.full_name || selectedUser.email || 'user'}! ${notificationSent ? '🔔 User notified in dashboard.' : ''}`
+        topUpType === 'sessions'
+          ? `Successfully credited ${delta >= 0 ? `+${delta}` : delta} Desktop sessions to ${selectedUser.full_name || selectedUser.email || 'user'}! ${notificationSent ? '🔔 User notified in dashboard.' : ''}`
+          : `Successfully granted 1 Month Own Account Access to ${selectedUser.full_name || selectedUser.email || 'user'}! ${notificationSent ? '🔔 User notified in dashboard.' : ''}`
       )
     } catch (err: any) {
       console.error('Failed to update user sessions:', err)
-      showToast('error', err.message || 'Failed to update session balance.')
+      showToast('error', err.message || 'Failed to update user.')
     } finally {
       setIsSubmitting(false)
     }
@@ -797,33 +823,40 @@ export function ManualSessionTopUp(): React.ReactElement {
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px', background: 'rgba(139, 92, 246, 0.22)', border: '1px solid rgba(139, 92, 246, 0.4)', padding: '5px 10px', borderRadius: '7px', flexShrink: 0 }}>
-                    <Zap size={12} className="text-purple-400" />
-                    <span style={{ fontSize: '12px', fontWeight: 800, color: 'white' }}>{selectedUser.sessions_balance} Sessions</span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'flex-end', flexShrink: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', background: 'rgba(139, 92, 246, 0.22)', border: '1px solid rgba(139, 92, 246, 0.4)', padding: '5px 10px', borderRadius: '7px' }}>
+                      <Zap size={12} className="text-purple-400" />
+                      <span style={{ fontSize: '12px', fontWeight: 800, color: 'white' }}>{selectedUser.sessions_balance} Sessions</span>
+                    </div>
+                    {selectedUser.byok_expires_at && new Date(selectedUser.byok_expires_at) > new Date() && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '5px', background: 'rgba(52, 211, 153, 0.22)', border: '1px solid rgba(52, 211, 153, 0.4)', padding: '3px 8px', borderRadius: '5px' }}>
+                        <Sparkles size={10} className="text-emerald-400" />
+                        <span style={{ fontSize: '10px', fontWeight: 800, color: '#34d399' }}>Active BYOK</span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
-                {/* 2nd ROW: Operations */}
+                {/* 1.5 ROW: Top Up Type */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
                   <label style={{ fontSize: '10.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    Operation Mode
+                    Top-Up Type
                   </label>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '6px', width: '100%' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', width: '100%' }}>
                     {[
-                      { id: 'add', label: '➕ Add (+)', color: '#34d399' },
-                      { id: 'set', label: '✏️ Set Exact (=)', color: '#60a5fa' },
-                      { id: 'subtract', label: '➖ Deduct (-)', color: '#f87171' }
-                    ].map(op => (
+                      { id: 'sessions', label: '⚡ Desktop Sessions', color: '#a855f7' },
+                      { id: 'byok', label: '🌟 1 Month Own Account', color: '#34d399' }
+                    ].map(type => (
                       <button
-                        key={op.id}
+                        key={type.id}
                         type="button"
-                        onClick={() => setOperationMode(op.id as any)}
+                        onClick={() => setTopUpType(type.id as any)}
                         style={{
                           padding: '8px 6px',
                           borderRadius: '8px',
-                          background: operationMode === op.id ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.02)',
-                          border: operationMode === op.id ? `1px solid ${op.color}` : '1px solid rgba(255,255,255,0.06)',
-                          color: operationMode === op.id ? op.color : '#94a3b8',
+                          background: topUpType === type.id ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.02)',
+                          border: topUpType === type.id ? `1px solid ${type.color}` : '1px solid rgba(255,255,255,0.06)',
+                          color: topUpType === type.id ? type.color : '#94a3b8',
                           fontSize: '11.5px',
                           fontWeight: 700,
                           cursor: 'pointer',
@@ -831,78 +864,120 @@ export function ManualSessionTopUp(): React.ReactElement {
                           transition: 'all 0.15s'
                         }}
                       >
-                        {op.label}
+                        {type.label}
                       </button>
                     ))}
                   </div>
                 </div>
 
-                {/* 3rd ROW: Quantity Field & Presets */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <label style={{ fontSize: '10.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Session Quantity
-                    </label>
-                    <span style={{ fontSize: '10px', color: '#64748b' }}>Custom or quick presets</span>
-                  </div>
+                {topUpType === 'sessions' && (
+                  <>
+                    {/* 2nd ROW: Operations */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                      <label style={{ fontSize: '10.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                        Operation Mode
+                      </label>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '6px', width: '100%' }}>
+                        {[
+                          { id: 'add', label: '➕ Add (+)', color: '#34d399' },
+                          { id: 'set', label: '✏️ Set Exact (=)', color: '#60a5fa' },
+                          { id: 'subtract', label: '➖ Deduct (-)', color: '#f87171' }
+                        ].map(op => (
+                          <button
+                            key={op.id}
+                            type="button"
+                            onClick={() => setOperationMode(op.id as any)}
+                            style={{
+                              padding: '8px 6px',
+                              borderRadius: '8px',
+                              background: operationMode === op.id ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.02)',
+                              border: operationMode === op.id ? `1px solid ${op.color}` : '1px solid rgba(255,255,255,0.06)',
+                              color: operationMode === op.id ? op.color : '#94a3b8',
+                              fontSize: '11.5px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                              textAlign: 'center',
+                              transition: 'all 0.15s'
+                            }}
+                          >
+                            {op.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
 
-                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center', width: '100%' }}>
-                    <input
-                      type="number"
-                      min="0"
-                      max="10000"
-                      value={quantity}
-                      onChange={e => {
-                        setQuantity(Math.max(0, parseInt(e.target.value) || 0))
-                        setIsCustomMessageEdited(false)
-                      }}
-                      style={{
-                        width: '68px',
-                        height: '34px',
-                        background: 'rgba(255,255,255,0.05)',
-                        border: '1px solid rgba(255,255,255,0.12)',
-                        borderRadius: '8px',
-                        padding: '4px 6px',
-                        color: 'white',
-                        fontSize: '14px',
-                        fontWeight: 700,
-                        fontFamily: 'JetBrains Mono, monospace',
-                        outline: 'none',
-                        textAlign: 'center',
-                        flexShrink: 0
-                      }}
-                    />
+                {topUpType === 'sessions' && (
+                  <>
+                    {/* 3rd ROW: Quantity Field & Presets */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <label style={{ fontSize: '10.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                          Session Quantity
+                        </label>
+                        <span style={{ fontSize: '10px', color: '#64748b' }}>Custom or quick presets</span>
+                      </div>
 
-                    {/* Presets */}
-                    <div style={{ display: 'flex', flexWrap: 'nowrap', gap: '5px', flex: 1, minWidth: 0 }}>
-                      {[1, 5, 10, 20, 50, 100].map(n => (
-                        <button
-                          key={n}
-                          type="button"
-                          onClick={() => {
-                            setQuantity(n)
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', width: '100%' }}>
+                        <input
+                          type="number"
+                          min="0"
+                          max="10000"
+                          value={quantity}
+                          onChange={e => {
+                            setQuantity(Math.max(0, parseInt(e.target.value) || 0))
                             setIsCustomMessageEdited(false)
                           }}
                           style={{
-                            flex: 1,
-                            padding: '6px 0',
-                            borderRadius: '6px',
-                            background: quantity === n ? 'rgba(168, 85, 247, 0.35)' : 'rgba(255,255,255,0.04)',
-                            border: quantity === n ? '1px solid #a855f7' : '1px solid rgba(255,255,255,0.06)',
-                            color: quantity === n ? '#ffffff' : '#94a3b8',
-                            fontSize: '11px',
+                            width: '68px',
+                            height: '34px',
+                            background: 'rgba(255,255,255,0.05)',
+                            border: '1px solid rgba(255,255,255,0.12)',
+                            borderRadius: '8px',
+                            padding: '4px 6px',
+                            color: 'white',
+                            fontSize: '14px',
                             fontWeight: 700,
-                            cursor: 'pointer',
+                            fontFamily: 'JetBrains Mono, monospace',
+                            outline: 'none',
                             textAlign: 'center',
-                            transition: 'all 0.15s'
+                            flexShrink: 0
                           }}
-                        >
-                          +{n}
-                        </button>
-                      ))}
+                        />
+
+                        {/* Presets */}
+                        <div style={{ display: 'flex', flexWrap: 'nowrap', gap: '5px', flex: 1, minWidth: 0 }}>
+                          {[1, 5, 10, 20, 50, 100].map(n => (
+                            <button
+                              key={n}
+                              type="button"
+                              onClick={() => {
+                                setQuantity(n)
+                                setIsCustomMessageEdited(false)
+                              }}
+                              style={{
+                                flex: 1,
+                                padding: '6px 0',
+                                borderRadius: '6px',
+                                background: quantity === n ? 'rgba(168, 85, 247, 0.35)' : 'rgba(255,255,255,0.04)',
+                                border: quantity === n ? '1px solid #a855f7' : '1px solid rgba(255,255,255,0.06)',
+                                color: quantity === n ? '#ffffff' : '#94a3b8',
+                                fontSize: '11px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                textAlign: 'center',
+                                transition: 'all 0.15s'
+                              }}
+                            >
+                              +{n}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
+                  </>
+                )}
 
                 {/* 4th ROW: Modern Custom Reason Dropdown */}
                 <div style={{ position: 'relative', width: '100%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '5px' }} ref={reasonDropdownRef}>
@@ -1201,35 +1276,37 @@ export function ManualSessionTopUp(): React.ReactElement {
 
                 {/* 6th ROW: Bottom Calculation Bar & Action CTA */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%', boxSizing: 'border-box', paddingTop: '2px' }}>
-                  <div
-                    style={{
-                      background: 'rgba(0, 0, 0, 0.35)',
-                      border: '1px solid rgba(255, 255, 255, 0.08)',
-                      borderRadius: '8px',
-                      padding: '7px 12px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      fontSize: '11.5px',
-                      width: '100%',
-                      boxSizing: 'border-box'
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <span style={{ color: '#94a3b8' }}>Current: <strong style={{ color: 'white' }}>{currentBalance}</strong></span>
-                      <ArrowRight size={11} className="text-gray-500" />
-                      <span style={{ color: delta >= 0 ? '#34d399' : '#f87171', fontWeight: 800 }}>
-                        {delta >= 0 ? `+${delta}` : delta}
-                      </span>
-                      <ArrowRight size={11} className="text-gray-500" />
+                  {topUpType === 'sessions' && (
+                    <div
+                      style={{
+                        background: 'rgba(0, 0, 0, 0.35)',
+                        border: '1px solid rgba(255, 255, 255, 0.08)',
+                        borderRadius: '8px',
+                        padding: '7px 12px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        fontSize: '11.5px',
+                        width: '100%',
+                        boxSizing: 'border-box'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span style={{ color: '#94a3b8' }}>Current: <strong style={{ color: 'white' }}>{currentBalance}</strong></span>
+                        <ArrowRight size={11} className="text-gray-500" />
+                        <span style={{ color: delta >= 0 ? '#34d399' : '#f87171', fontWeight: 800 }}>
+                          {delta >= 0 ? `+${delta}` : delta}
+                        </span>
+                        <ArrowRight size={11} className="text-gray-500" />
+                      </div>
+                      <div>
+                        <span style={{ color: '#94a3b8' }}>New Total: </span>
+                        <span style={{ fontSize: '12.5px', fontWeight: 800, color: '#a78bfa' }}>
+                          {calculatedNewBalance} Sessions
+                        </span>
+                      </div>
                     </div>
-                    <div>
-                      <span style={{ color: '#94a3b8' }}>New Total: </span>
-                      <span style={{ fontSize: '12.5px', fontWeight: 800, color: '#a78bfa' }}>
-                        {calculatedNewBalance} Sessions
-                      </span>
-                    </div>
-                  </div>
+                  )}
 
                   <button
                     type="button"
@@ -1263,8 +1340,8 @@ export function ManualSessionTopUp(): React.ReactElement {
                       {isSubmitting
                         ? 'Applying...'
                         : notifyUser
-                          ? 'Apply & Notify User'
-                          : 'Apply'}
+                          ? (topUpType === 'sessions' ? `Apply & Notify User` : `Grant 1 Month BYOK & Notify`)
+                          : (topUpType === 'sessions' ? `Apply` : `Grant 1 Month BYOK`)}
                     </span>
                   </button>
                 </div>

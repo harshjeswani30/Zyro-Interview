@@ -12,6 +12,8 @@ interface UserProfile {
   email?: string
   sessions_balance?: number
   trial_seconds_used?: number
+  unlimited_expires_at?: string
+  byok_expires_at?: string
   [key: string]: unknown
 }
 

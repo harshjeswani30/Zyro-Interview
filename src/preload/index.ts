@@ -104,6 +104,9 @@ const api = {
     maxTokens?: number
     presencePenalty?: number
     frequencyPenalty?: number
+    aiSource?: 'gateway' | 'own_account'
+    ownProvider?: 'chatgpt' | 'claude' | 'gemini' | 'glm'
+    ownProviders?: ('chatgpt' | 'claude' | 'gemini' | 'glm')[]
   }): Promise<string> => ipcRenderer.invoke('generate-answer-stream', data),
 
   onAnswerChunk: (cb: (payload: AnswerChunk) => void): (() => void) => {
@@ -124,6 +127,8 @@ const api = {
     base64Image: string
     userPrompt?: string
     maxTokens?: number
+    aiSource?: 'gateway' | 'own_account'
+    ownProviders?: ('chatgpt' | 'claude' | 'gemini' | 'glm')[]
   }): Promise<string> => ipcRenderer.invoke('analyze-screen-stream', data),
   extractQuestionFromImage: (data: { base64Image: string }): Promise<string> =>
     ipcRenderer.invoke('extract-question-from-image', data),
@@ -175,6 +180,15 @@ const api = {
   toggleScreenProtection: (enabled?: boolean) =>
     ipcRenderer.send('toggle-screen-protection', enabled),
   openExternal: (url: string) => ipcRenderer.send('open-external', url),
+  // ── Own-Account Provider Auth ────────────────────────────────────────────────
+  openProviderLogin: (provider) =>
+    ipcRenderer.invoke('open-provider-login', provider),
+  getProviderStatus: (provider) =>
+    ipcRenderer.invoke('get-provider-status', provider),
+  disconnectProvider: (provider) =>
+    ipcRenderer.invoke('disconnect-provider', provider),
+  validateProviderSessions: () =>
+    ipcRenderer.invoke('validate-provider-sessions'),
   resizeMainWindow: (width: number, height: number): Promise<void> =>
     ipcRenderer.invoke('resize-main-window', { width, height }),
 

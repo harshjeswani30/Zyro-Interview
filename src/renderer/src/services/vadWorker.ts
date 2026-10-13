@@ -48,6 +48,20 @@ let voicedSamples = 0
 let onsetRunSamples = 0
 /** Guards against re-emitting segment_boundary for the same pause. */
 let boundaryEmittedAt: number | null = null
+/**
+ * Start of the current low-energy run while speechActive is still true. A speaker
+ * can stop directly into the dead band (between END and START) without producing a
+ * clean below-END chunk. Without this clock the worker would remain "Listening..."
+ * forever and never emit the finalize that starts the answer.
+ */
+let quietRunStartSample: number | null = null
+/**
+ * When the current run of dead-band audio (RMS between SPEECH_END_RMS and
+ * SPEECH_START_RMS) began after speech has already stopped. Dead-band audio is
+ * treated as "still talking" only for LONG_PAUSE_SEC; after that it is ambient
+ * floor and the turn must be allowed to close.
+ */
+let deadbandStartSample: number | null = null
 
 function computeRMS(buffer: Float32Array): number {
     let sum = 0
@@ -64,6 +78,8 @@ function resetUtterance(): void {
     voicedSamples = 0
     onsetRunSamples = 0
     boundaryEmittedAt = null
+    quietRunStartSample = null
+    deadbandStartSample = null
 }
 
 self.onmessage = (e: MessageEvent) => {
@@ -89,8 +105,15 @@ self.onmessage = (e: MessageEvent) => {
 
     if (type === 'audio') {
         const chunk: Float32Array = data
+        const enabled = e.data.enabled !== false
         const rms = computeRMS(chunk)
         samplesSeen += chunk.length
+
+        // Manual mode may keep the audio graph alive while Listen is off. Count every
+        // chunk to preserve the shared absolute sample clock, but do not open an
+        // utterance or accumulate voiced samples until the caller explicitly enables
+        // detection again.
+        if (!enabled) return
 
         // ── Onset: two consecutive loud chunks (~170ms) before we call it speech.
         // The main thread pre-rolls ~300ms of audio before this offset, so the
@@ -102,6 +125,8 @@ self.onmessage = (e: MessageEvent) => {
                     speechActive = true
                     pauseStartSample = null
                     boundaryEmittedAt = null
+                    quietRunStartSample = null
+                    deadbandStartSample = null
                     const atSample = samplesSeen - onsetRunSamples
                     if (utteranceStartSample === null) {
                         utteranceStartSample = atSample
@@ -118,29 +143,65 @@ self.onmessage = (e: MessageEvent) => {
                 // between SPEECH_END_RMS and SPEECH_START_RMS. While an utterance is
                 // already open this is still the person talking -- a soft consonant, a
                 // trailing word, the quiet half of a clause -- so it must keep the
-                // utterance alive.
-                //
-                // It did not, and that was the bug: the same in-band level counted as
-                // SPEECH while speechActive was true (the else branch below adds it to
-                // voicedSamples) but as SILENCE once speechActive had flipped false, so
-                // a quietly-spoken stretch let `silence` run to LONG_PAUSE_SEC and the
-                // answer fired mid-question. Treating it as speech in both places is
-                // what makes the detector consistent with itself.
+                // utterance alive, but only for a bounded grace period.
                 if (rms >= SPEECH_END_RMS && utteranceStartSample !== null) {
-                    pauseStartSample = null
-                    boundaryEmittedAt = null
-                    voicedSamples += chunk.length
+                    if (deadbandStartSample === null) {
+                        deadbandStartSample = pauseStartSample ?? samplesSeen - chunk.length
+                    }
+                    const deadbandDur = (samplesSeen - deadbandStartSample) / sampleRate
+                    if (deadbandDur < LONG_PAUSE_SEC) {
+                        // A short dead-band dip is continuation, not a final boundary.
+                        pauseStartSample = null
+                        boundaryEmittedAt = null
+                        voicedSamples += chunk.length
+                    } else {
+                        // The worker has already waited a full pause in low-energy audio.
+                        // Keep the original start so the finalization check below fires now.
+                        if (pauseStartSample === null) pauseStartSample = deadbandStartSample
+                    }
+                } else if (utteranceStartSample !== null && pauseStartSample === null) {
+                    // A short dead-band run followed by clean silence used to clear
+                    // pauseStartSample and then leave it null forever: every later silent
+                    // chunk skipped the finalization check, so the chip stayed Waiting.
+                    // Start a fresh pause at the first genuinely silent chunk, or include
+                    // the preceding dead-band run when one was tracked.
+                    pauseStartSample = deadbandStartSample ?? samplesSeen - chunk.length
+                    deadbandStartSample = null
                 }
             }
         } else if (rms < SPEECH_END_RMS) {
-            // ── Offset: recorded at the first quiet chunk so the boundary lands on
-            // the real end of the word, not COMMIT_PAUSE_SEC later.
+            // ── Offset: record the beginning of the low-energy run so the boundary
+            // lands on the real end of the word, not COMMIT_PAUSE_SEC later. This also
+            // closes the direct-dead-band case: a desktop capture can fall from speech
+            // straight into the 0.01–0.018 RMS range without ever crossing END.
             speechActive = false
-            pauseStartSample = samplesSeen - chunk.length
+            pauseStartSample = quietRunStartSample ?? samplesSeen - chunk.length
+            quietRunStartSample = null
+            deadbandStartSample = null
             self.postMessage({ type: 'status', data: 'Waiting...' })
             self.postMessage({ type: 'speech_active', data: false })
         } else {
-            voicedSamples += chunk.length
+            // RMS is above the end threshold but below the onset threshold. Keep a
+            // bounded clock while active; if it lasts as long as a normal pause, treat
+            // it as the end of the turn rather than waiting forever for a quieter chunk.
+            if (rms < SPEECH_START_RMS) {
+                if (quietRunStartSample === null) quietRunStartSample = samplesSeen - chunk.length
+                const quietDur = (samplesSeen - quietRunStartSample) / sampleRate
+                if (quietDur >= LONG_PAUSE_SEC) {
+                    speechActive = false
+                    pauseStartSample = quietRunStartSample
+                    deadbandStartSample = quietRunStartSample
+                    quietRunStartSample = null
+                    self.postMessage({ type: 'status', data: 'Waiting...' })
+                    self.postMessage({ type: 'speech_active', data: false })
+                } else {
+                    voicedSamples += chunk.length
+                }
+            } else {
+                quietRunStartSample = null
+                deadbandStartSample = null
+                voicedSamples += chunk.length
+            }
         }
 
         if (pauseStartSample === null || utteranceStartSample === null) return

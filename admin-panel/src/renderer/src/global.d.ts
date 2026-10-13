@@ -18,7 +18,7 @@ declare global {
       deleteAuthUser: (userId: string) => Promise<{ success: boolean }>
       listTickets: () => Promise<any[]>
       deleteTicket: (ticketId: string) => Promise<{ success: boolean }>
-      updateUserBalance: (opts: { userId: string; field: string; value: number }) => Promise<{ success: boolean }>
+      updateUserBalance: (opts: { userId: string; field: string; value: number | string }) => Promise<{ success: boolean }>
       sendUserNotification: (opts: { userId: string; title: string; message: string; type?: string; metadata?: Record<string, unknown> }) => Promise<any>
       listNotifications: (userId?: string) => Promise<any[]>
     }

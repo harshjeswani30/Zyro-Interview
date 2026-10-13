@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap');
+﻿@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap');
 
 @font-face {
   font-family: 'Striper';
@@ -2291,35 +2291,35 @@ html.overlay-mode .overlay-root {
 }
 
 .resize-handle-adv.handle-ne {
-  top: -1.5px;
-  right: -1.5px;
-  width: calc(18px * var(--hdr-scale, 1));
-  height: calc(18px * var(--hdr-scale, 1));
-  cursor: ne-resize;
+  top: 0;
+  right: 0;
+  width: calc(28px * var(--hdr-scale, 1));
+  height: calc(28px * var(--hdr-scale, 1));
+  cursor: nesw-resize !important;
 }
 
 .resize-handle-adv.handle-nw {
-  top: -1.5px;
-  left: -1.5px;
-  width: calc(18px * var(--hdr-scale, 1));
-  height: calc(18px * var(--hdr-scale, 1));
-  cursor: nw-resize;
+  top: 0;
+  left: 0;
+  width: calc(28px * var(--hdr-scale, 1));
+  height: calc(28px * var(--hdr-scale, 1));
+  cursor: nwse-resize !important;
 }
 
 .resize-handle-adv.handle-se {
-  bottom: calc(4px * var(--hdr-scale, 1));
-  right: calc(4px * var(--hdr-scale, 1));
-  width: calc(24px * var(--hdr-scale, 1));
-  height: calc(24px * var(--hdr-scale, 1));
-  cursor: se-resize;
+  bottom: 0;
+  right: 0;
+  width: calc(28px * var(--hdr-scale, 1));
+  height: calc(28px * var(--hdr-scale, 1));
+  cursor: nwse-resize !important;
 }
 
 .resize-handle-adv.handle-sw {
-  bottom: calc(4px * var(--hdr-scale, 1));
-  left: calc(4px * var(--hdr-scale, 1));
-  width: calc(24px * var(--hdr-scale, 1));
-  height: calc(24px * var(--hdr-scale, 1));
-  cursor: sw-resize;
+  bottom: 0;
+  left: 0;
+  width: calc(28px * var(--hdr-scale, 1));
+  height: calc(28px * var(--hdr-scale, 1));
+  cursor: nesw-resize !important;
 }
 
 .resize-handle-indicator {
@@ -2335,30 +2335,31 @@ html.overlay-mode .overlay-root {
 }
 
 .resize-handle-adv.handle-ne .resize-handle-indicator {
-  border-top: 1.5px solid #ff3b3b;
-  border-right: 1.5px solid #ff3b3b;
-  border-top-right-radius: var(--h-radius-lg, 18px);
+  border-top: 2px solid #ff3b3b;
+  border-right: 2px solid #ff3b3b;
+  border-top-right-radius: calc(24px * var(--hdr-scale, 1));
 }
 
 .resize-handle-adv.handle-nw .resize-handle-indicator {
-  border-top: 1.5px solid #ff3b3b;
-  border-left: 1.5px solid #ff3b3b;
-  border-top-left-radius: var(--h-radius-lg, 18px);
+  border-top: 2px solid #ff3b3b;
+  border-left: 2px solid #ff3b3b;
+  border-top-left-radius: calc(24px * var(--hdr-scale, 1));
 }
 
 .resize-handle-adv.handle-se .resize-handle-indicator {
-  border-bottom: 1.5px solid #ff3b3b;
-  border-right: 1.5px solid #ff3b3b;
+  border-bottom: 2px solid #ff3b3b;
+  border-right: 2px solid #ff3b3b;
   border-bottom-right-radius: 24px;
 }
 
 .resize-handle-adv.handle-sw .resize-handle-indicator {
-  border-bottom: 1.5px solid #ff3b3b;
-  border-left: 1.5px solid #ff3b3b;
+  border-bottom: 2px solid #ff3b3b;
+  border-left: 2px solid #ff3b3b;
   border-bottom-left-radius: 24px;
 }
 
-.resize-handle-adv:hover .resize-handle-indicator {
+.resize-handle-adv:hover .resize-handle-indicator,
+.resize-handle-adv:active .resize-handle-indicator {
   opacity: 1 !important;
   filter: none !important;
 }

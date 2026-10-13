@@ -1,15 +1,26 @@
-import React from 'react'
+﻿import React from 'react'
 import { useResize } from '../hooks/useResize'
 
 const Handle: React.FC<{ dir: string }> = ({ dir }) => {
     const { onPointerDown } = useResize(dir)
+    const cursor = dir === 'nw' || dir === 'se' ? 'nwse-resize' : 'nesw-resize'
 
     return (
         <div
             onPointerDown={onPointerDown}
+            onPointerEnter={() => {
+                ;(window as any).__isInteractingWithOverlay = true
+                window.api?.setIgnoreMouseEvents(false)
+            }}
+            onPointerLeave={() => {
+                if (!(window as any).__isResizingOverlay) {
+                    ;(window as any).__isInteractingWithOverlay = false
+                }
+            }}
+            style={{ cursor }}
             className={`resize-handle-adv handle-${dir} no-drag`}
         >
-            <span className="resize-handle-indicator" />
+            <span className="resize-handle-indicator" style={{ cursor }} />
         </div>
     )
 }

@@ -76,7 +76,12 @@ export function buildLiveUrl(opts: LiveTranscriberOptions): string {
         smart_format: 'true',
         punctuate: 'true'
     })
-    const base = `${opts.endpoint}?${params.toString()}`
+    // Keep the helper's historical default for callers/tests, while the live overlay
+    // always supplies the authenticated gateway proxy. No provider key is ever added
+    // here; a direct Deepgram URL is only useful to callers that authenticate through
+    // another transport, whereas the shipped app uses `wsToken` on its proxy URL.
+    const endpoint = opts.endpoint || 'wss://api.deepgram.com/v1/listen'
+    const base = `${endpoint}?${params.toString()}`
     return opts.wsToken ? `${base}&token=${encodeURIComponent(opts.wsToken)}` : base
 }
 

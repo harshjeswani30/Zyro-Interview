@@ -1,4 +1,4 @@
-// aiService.ts - Logic moved to main process via IPC
+﻿// aiService.ts - Logic moved to main process via IPC
 import { classifyIntent, IntentResult } from './pipeline/intentClassifier'
 import { planAnswer, AnswerPlan } from './pipeline/answerPlanner'
 import { enforceHumanLikeness, normalizeBulletFormatting } from './pipeline/humanLikeness'
@@ -458,16 +458,45 @@ async function requestAnswer(
   const requestId =
     stream.requestId ?? `ans-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 
+  // The last error the stream reported, so an own-account failure can surface its
+  // real reason instead of silently vanishing into a gateway retry.
+  let streamError = ''
   const unsubscribe = window.api.onAnswerChunk!((chunk) => {
     if (chunk.requestId !== requestId) return
     // `full` is the accumulated text, so the renderer never reassembles deltas.
     if (chunk.full) stream.onDelta(chunk.full)
-    if (chunk.error) console.warn('[AI Pipeline] stream error:', chunk.error)
+    if (chunk.error) { streamError = chunk.error; console.warn('[AI Pipeline] stream error:', chunk.error) }
   })
 
   try {
-    const streamed = await window.api.generateAnswerStream!({ ...payload, requestId })
+// Read AI source preference from localStorage (set in SetupPage AI Source tab)
+    const own = (() => { try { return localStorage.getItem('zyro_ai_source') === 'own_account' } catch { return false } })()
+    const connected = (k: string): boolean => { try { return localStorage.getItem(k) === 'true' } catch { return false } }
+    // Failover order (primary first): ChatGPT, then Claude. The main process uses the
+    // first account until its free limit is hit, then switches to the next linked one.
+    const ownProviders = own
+      ? [
+          ...(connected('zyro_chatgpt_connected') ? ['chatgpt' as const] : []),
+          ...(connected('zyro_claude_connected') ? ['claude' as const] : []),
+          ...(connected('zyro_gemini_connected') ? ['gemini' as const] : []),
+          ...(connected('zyro_glm_connected') ? ['glm' as const] : []),
+        ]
+      : []
+    const usingOwnAccount = ownProviders.length > 0
+    const streamed = await window.api.generateAnswerStream!({
+      ...payload,
+      requestId,
+      ...(usingOwnAccount ? { aiSource: 'own_account', ownProviders } : {})
+    })
     if (streamed && streamed.trim()) return streamed
+    // Own account: do NOT silently fall back to the Zyro gateway. The user picked
+    // their own subscription on purpose; masking a failure with a gateway answer
+    // hides that their session broke and defeats the point. Surface the reason.
+    if (usingOwnAccount) {
+      return streamError
+        ? `⚠️ ${streamError}`
+        : '⚠️ Your linked account returned no answer. Open Setup → AI Source to reconnect, or switch back to the Zyro gateway.'
+    }
     console.warn('[AI Pipeline] stream produced no text — retrying buffered')
     return window.api.generateAnswer(payload)
   } finally {
@@ -771,16 +800,39 @@ async function requestVisionAnswer(
   const requestId =
     stream.requestId ?? `scan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 
+  let streamError = ''
   const unsubscribe = window.api.onAnswerChunk!((chunk) => {
     if (chunk.requestId !== requestId) return
     // `full` is the accumulated text, so the renderer never reassembles deltas.
     if (chunk.full) stream.onDelta(chunk.full)
-    if (chunk.error) console.warn('[AI Vision] stream error:', chunk.error)
+    if (chunk.error) { streamError = chunk.error; console.warn('[AI Vision] stream error:', chunk.error) }
   })
 
   try {
-    const streamed = await window.api.analyzeScreenStream!({ requestId, systemPrompt, base64Image })
+    const own = (() => { try { return localStorage.getItem('zyro_ai_source') === 'own_account' } catch { return false } })()
+    const connected = (k: string): boolean => { try { return localStorage.getItem(k) === 'true' } catch { return false } }
+    const ownProviders = own
+      ? [
+          ...(connected('zyro_chatgpt_connected') ? ['chatgpt' as const] : []),
+          ...(connected('zyro_claude_connected') ? ['claude' as const] : []),
+          ...(connected('zyro_gemini_connected') ? ['gemini' as const] : []),
+          ...(connected('zyro_glm_connected') ? ['glm' as const] : []),
+        ]
+      : []
+    const usingOwnAccount = ownProviders.length > 0
+    const streamed = await window.api.analyzeScreenStream!({
+      requestId,
+      systemPrompt,
+      base64Image,
+      ...(usingOwnAccount ? { aiSource: 'own_account', ownProviders } : {})
+    })
     if (streamed && streamed.trim()) return streamed
+    // Own account: surface the failure instead of silently using the gateway.
+    if (usingOwnAccount) {
+      return streamError
+        ? `⚠️ ${streamError}`
+        : '⚠️ Your linked account could not read the screen. Open Setup → AI Source to reconnect, or switch back to the Zyro gateway.'
+    }
     console.warn('[AI Vision] stream produced no text — retrying buffered')
     return window.api.queryVision({ systemPrompt, base64Image })
   } finally {

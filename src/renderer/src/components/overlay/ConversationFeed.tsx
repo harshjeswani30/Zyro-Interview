@@ -1,4 +1,4 @@
-import React from 'react'
+﻿import React from 'react'
 import { IconAlert, IconArrowDown, IconChevronLeft, IconChevronRight, IconClickThrough, IconClock } from './icons'
 
 export interface ConversationFeedProps {
@@ -64,7 +64,6 @@ export function ConversationFeed({
                     {typeof opacity === 'number' && onOpacityChange && (
                         <div
                             className="opacity-bar no-drag"
-                            title={`Overlay Opacity: ${Math.round(opacity * 100)}%`}
                             onPointerDown={(e) => {
                                 e.stopPropagation()
                                 ;(window as any).__isInteractingWithOverlay = true
@@ -140,11 +139,6 @@ export function ConversationFeed({
                                 e.stopPropagation()
                                 onToggleClickThrough()
                             }}
-                            title={
-                                clickThrough
-                                    ? 'Click-Through: ON (Overlay in focus - buttons active)'
-                                    : 'Click-Through: OFF (Background focus - clicks pass through to background)'
-                            }
                             aria-label="Toggle click-through mode"
                             aria-pressed={clickThrough}
                         >
