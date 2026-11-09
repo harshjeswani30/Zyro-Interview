@@ -73,7 +73,7 @@ const HAN_RE = /[一-鿿]/
 // Unambiguous Hindi/Hinglish tokens. None of these is an English word, so a single
 // hit settles the language.
 export const HINDI_STRONG =
-  /\b(aap|aapka|aapke|aapko|hume|humein|mujhe|mera|mere|meri|kya|kyun|kyu|kaise|kaisa|kaisi|kab|kahan|konsa|kaunsa|kitna|kitne|batao|bataiye|bata|samjhao|karo|karein|karna|karte|karta|karti|kiya|kiye|karega|karenge|hota|hoti|hote|hai|hain|tha|thi|hoga|hogi|honge|mein|nahi|nahin|matlab|baare|bare|kabhi|accha|acha|theek|samajh|madad|chahiye|boliye|sunte|bilkul|zaroori|zyada)\b/i
+  /\b(aap|aapka|aapke|aapko|tum|tumhara|tumhari|tumhare|tumhe|tumko|hume|humein|mujhe|mera|mere|meri|kya|kyun|kyu|kaise|kese|kaisa|kaisi|kab|kahan|konsa|kaunsa|kitna|kitne|batao|bataiye|bata|bataoge|samjhao|samjhaoge|karo|karein|karna|karte|karta|karti|karoge|kroge|karegi|kiya|kiye|karega|karenge|hota|hoti|hote|hai|hain|tha|thi|hoga|hogi|honge|mein|nahi|nahin|matlab|baare|bare|kabhi|accha|acha|theek|samajh|madad|chahiye|boliye|sunte|bilkul|zaroori|zyada)\b/i
 
 // Short function words that are also plausible mis-hearings of English words
 // ("ki"/"key", "se"/"say", "ko"/"co"). One of these on its own is not evidence —

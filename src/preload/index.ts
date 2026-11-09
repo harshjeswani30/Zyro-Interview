@@ -144,7 +144,14 @@ const api = {
   minimizeWindow: (): void => ipcRenderer.send('minimize-window'),
   closeWindow: (): void => ipcRenderer.send('close-window'),
   installUpdate: (): Promise<boolean> => ipcRenderer.invoke('install-update'),
-  downloadUpdate: (): Promise<void> => ipcRenderer.invoke('download-update'),
+  downloadUpdate: (): Promise<{ started: boolean; alreadyReady?: boolean; error?: string }> =>
+    ipcRenderer.invoke('download-update'),
+  getUpdateState: (): Promise<{
+    status: 'idle' | 'available' | 'downloading' | 'ready'
+    info: { version: string } | null
+    progress: number
+    error: string | null
+  }> => ipcRenderer.invoke('get-update-state'),
   // ── Overlay window ────────────────────────────────────────
   getSession: (): Promise<unknown> => ipcRenderer.invoke('get-session'),
   getAiGatewayUrl: (): Promise<string> => ipcRenderer.invoke('get-ai-gateway-url'),

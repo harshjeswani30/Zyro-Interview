@@ -34,6 +34,14 @@ import { disposeChatGptBridge, probeChatGptSession } from './chatgptBrowserBridg
 import { disposeClaudeBridge } from './claudeBrowserBridge'
 import { disposeGeminiBridge, probeGeminiSession } from './geminiBrowserBridge'
 import { disposeGlmBridge, probeGlmSession } from './glmBrowserBridge'
+import {
+  createInitialUpdaterState,
+  onDownloadProgressState,
+  onUpdateAvailableState,
+  onUpdateDownloadedState,
+  onUpdateErrorState,
+  type AppUpdateState
+} from './updaterState'
 
 // ── Native Windows Stealth Engine (Ghostly Algorithm via Koffi FFI) ──
 const WDA_MONITOR = 1
@@ -146,8 +154,31 @@ if (process.defaultApp) {
 
 autoUpdater.logger = console
 autoUpdater.autoDownload = false  // Only download when user explicitly clicks — no surprise downloads
+// Disable blockmap differential downloads: NSIS repacks app.asar into one compressed stream,
+// so blockmap diffs still range-download ~80% of the installer and any local-vs-CI build mismatch
+// or redirect hiccup fails SHA-512 at 100% and restarts a full 0% download over again.
+autoUpdater.disableDifferentialDownload = true
 autoUpdater.allowPrerelease = false
 autoUpdater.channel = 'latest'
+
+let updaterState: AppUpdateState = createInitialUpdaterState()
+let downloadInFlight = false
+let installPromptOpen = false
+
+function destroyBackgroundWindows(): void {
+  disposeChatGptBridge()
+  disposeClaudeBridge()
+  disposeGeminiBridge()
+  disposeGlmBridge()
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    try {
+      overlayWindow.destroy()
+    } catch {
+      // ignore during shutdown
+    }
+    overlayWindow = null
+  }
+}
 
 // Custom fetch helper with a timeout using AbortController
 async function fetchWithTimeout(url: string, options: RequestInit & { timeout?: number }): Promise<Response> {
@@ -684,6 +715,13 @@ function createMainWindow(): void {
       }, 3000) // 3s delay — let app finish painting before checking
     }
   })
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
+    if (!overlayWindow || overlayWindow.isDestroyed()) {
+      destroyBackgroundWindows()
+    }
+  })
   mainWindow.webContents.setWindowOpenHandler((details) => {
     // H2: deny-by-default — only https to allowlisted hosts may reach the OS
     safeOpenExternal(details.url)
@@ -770,6 +808,13 @@ function createOverlayWindow(): void {
     }
   })
 
+  overlayWindow.on('closed', () => {
+    overlayWindow = null
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      destroyBackgroundWindows()
+    }
+  })
+
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     overlayWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#overlay`)
   } else {
@@ -847,8 +892,19 @@ function setupIPC(): void {
             const cookies = await session.fromPartition('persist:gemini-auth').cookies.get({ domain: '.google.com' })
             if (cookies.some(c => c.name.includes('1PSID'))) succeed()
           } else if (provider === 'chatgpt') {
-            const cookies = await session.fromPartition('persist:chatgpt-auth').cookies.get({})
-            if (cookies.some(c => c.domain?.includes('chatgpt.com') && (c.name.includes('next-auth.session-token') || c.name.includes('oai-did')))) succeed()
+            const isAuthPage = url.includes('/auth/login') || url.includes('auth.openai.com') || url.includes('auth0.openai.com')
+            if (!isAuthPage) {
+              const cookies = await session.fromPartition('persist:chatgpt-auth').cookies.get({})
+              const hasAuth = cookies.some(c => c.domain?.includes('chatgpt.com') && c.name.includes('next-auth.session-token'))
+              if (hasAuth) {
+                succeed()
+              } else {
+                const isUserLoggedIn = await authWin.webContents.executeJavaScript(
+                  `!!document.querySelector('#prompt-textarea, [data-testid="profile-button"], [data-testid="user-menu"], nav [data-testid*="user"]')`
+                ).catch(() => false)
+                if (isUserLoggedIn) succeed()
+              }
+            }
           } else if (provider === 'claude') {
             const cookies = await session.fromPartition('persist:claude-auth').cookies.get({ domain: 'claude.ai' })
             if (cookies.some(c => c.name.includes('sessionKey'))) succeed()
@@ -877,7 +933,7 @@ function setupIPC(): void {
         return { connected: cookies.some(c => c.name.includes('1PSID')) }
       } else if (provider === 'chatgpt') {
         const cookies = await session.fromPartition(part).cookies.get({})
-        const hasAuth = cookies.some(c => c.domain?.includes('chatgpt.com') && (c.name.includes('next-auth.session-token') || c.name.includes('oai-did')))
+        const hasAuth = cookies.some(c => c.domain?.includes('chatgpt.com') && c.name.includes('next-auth.session-token'))
         return { connected: hasAuth }
       } else if (provider === 'claude') {
         const cookies = await session.fromPartition(part).cookies.get({ domain: 'claude.ai' })
@@ -891,7 +947,12 @@ function setupIPC(): void {
       return { connected: false }
     } catch { return { connected: false } }
   })
-ipcMain.handle('disconnect-provider', async (_event, provider) => {
+
+  ipcMain.handle('disconnect-provider', async (_event, provider) => {
+    if (provider === 'chatgpt') disposeChatGptBridge()
+    else if (provider === 'claude') disposeClaudeBridge()
+    else if (provider === 'gemini') disposeGeminiBridge()
+    else if (provider === 'glm') disposeGlmBridge()
     const P: Record<string, string> = { chatgpt: 'persist:chatgpt-auth', claude: 'persist:claude-auth', gemini: 'persist:gemini-auth', glm: 'persist:glm-auth' }
     try { await session.fromPartition(P[provider] || '').clearStorageData() } catch {}
     return { ok: true }
@@ -920,7 +981,7 @@ ipcMain.handle('disconnect-provider', async (_event, provider) => {
     } catch {}
     try {
       const cookies = await session.fromPartition('persist:chatgpt-auth').cookies.get({})
-      if (cookies.some(c => c.domain?.includes('chatgpt.com') && (c.name.includes('next-auth.session-token') || c.name.includes('oai-did')))) {
+      if (cookies.some(c => c.domain?.includes('chatgpt.com') && c.name.includes('next-auth.session-token'))) {
         result.chatgpt = (await probeChatGptSession()) ? 'valid' : 'expired'
       }
     } catch {}
@@ -1038,6 +1099,7 @@ ipcMain.handle('disconnect-provider', async (_event, provider) => {
     // Fresh interview → fresh own-account chat (the previous interview's Claude/
     // ChatGPT conversation is abandoned; this one opens a brand-new thread).
     resetOwnAccountConversation()
+    probeChatGptSession().catch(() => {})
     const token = await ensureFreshSupabaseToken()
     if (!supabaseUserId || !token) throw new Error('Not logged in')
 
@@ -2506,36 +2568,77 @@ ipcMain.handle('disconnect-provider', async (_event, provider) => {
   ipcMain.on('minimize-window', (): void => mainWindow?.minimize())
   ipcMain.on('close-window', (): void => mainWindow?.close())
 
+  async function promptAndInstallUpdate(): Promise<boolean> {
+    if (installPromptOpen) return false
+    if (updaterState.status !== 'ready') return false
+    installPromptOpen = true
+    try {
+      // H7: quitting and installing is destructive — the renderer can trigger it,
+      // so the decision is confirmed by the user in a native dialog, not in page JS.
+      const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+      const versionLabel = updaterState.info?.version ? ` v${updaterState.info.version}` : ''
+      const options = {
+        type: 'question' as const,
+        buttons: ['Install & Relaunch', 'Later'],
+        defaultId: 0,
+        cancelId: 1,
+        title: 'Update Zyro AI',
+        message: `Zyro AI${versionLabel} has been downloaded.`,
+        detail: 'The app will close, install the update, and relaunch automatically. Finish anything you are doing first.'
+      }
+      const { response } = parent
+        ? await dialog.showMessageBox(parent, options)
+        : await dialog.showMessageBox(options)
+      if (response !== 0) {
+        console.log('[Updater] User deferred the update install')
+        return false
+      }
+      console.log('[Updater] User confirmed install — destroying background windows and installing...')
+      destroyBackgroundWindows()
+      // isSilent=true, isForceRunAfter=true → relaunches app after install
+      autoUpdater.quitAndInstall(true, true)
+      return true
+    } finally {
+      installPromptOpen = false
+    }
+  }
+
   ipcMain.handle('install-update', async (): Promise<boolean> => {
-    // H7: quitting and installing is destructive — the renderer can trigger it,
-    // so the decision is confirmed by the user in a native dialog, not in page JS.
-    const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
-    const options = {
-      type: 'question' as const,
-      buttons: ['Install & Relaunch', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Update Zyro AI',
-      message: 'A new version has been downloaded.',
-      detail: 'The app will close and relaunch with the new version. Finish anything you are doing first.'
-    }
-    const { response } = parent
-      ? await dialog.showMessageBox(parent, options)
-      : await dialog.showMessageBox(options)
-    if (response !== 0) {
-      console.log('[Updater] User deferred the update install')
-      return false
-    }
-    console.log('[Updater] User confirmed install — quitting and installing...')
-    // isSilent=true, isForceRunAfter=true → relaunches app after install
-    autoUpdater.quitAndInstall(true, true)
-    return true
+    return promptAndInstallUpdate()
   })
 
-  // Manual download trigger (kept for compatibility, normally auto-downloaded)
-  ipcMain.handle('download-update', async (): Promise<void> => {
+  ipcMain.handle('get-update-state', (): AppUpdateState => {
+    return { ...updaterState }
+  })
+
+  // Manual download trigger (with duplicate/already-ready guard)
+  ipcMain.handle('download-update', async (): Promise<{ started: boolean; alreadyReady?: boolean; error?: string }> => {
+    if (updaterState.status === 'ready') {
+      console.log('[Updater] Update already downloaded and ready — skipping download and prompting install')
+      if (updaterState.info) safeSend(mainWindow, 'update-ready', updaterState.info)
+      if (!overlayWindow || overlayWindow.isDestroyed()) {
+        void promptAndInstallUpdate()
+      }
+      return { started: false, alreadyReady: true }
+    }
+    if (downloadInFlight || updaterState.status === 'downloading') {
+      console.log('[Updater] Download already in progress — ignoring duplicate trigger')
+      return { started: false }
+    }
     console.log('[Updater] Manual download triggered')
-    await autoUpdater.downloadUpdate()
+    downloadInFlight = true
+    updaterState = { ...updaterState, status: 'downloading', progress: 0, error: null }
+    try {
+      await autoUpdater.downloadUpdate()
+      return { started: true }
+    } catch (err) {
+      downloadInFlight = false
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('[Updater] Manual download failed:', msg)
+      updaterState = onUpdateErrorState(updaterState, msg)
+      safeSend(mainWindow, 'update-error', msg)
+      return { started: false, error: msg }
+    }
   })
 
   // ── AutoUpdater event pipeline ─────────────────────────────
@@ -2545,9 +2648,13 @@ ipcMain.handle('disconnect-provider', async (_event, provider) => {
 
   autoUpdater.on('update-available', (info): void => {
     console.log('[Updater] Update available:', info.version)
-    // Notify renderer: shows a subtle banner with version info
-    safeSend(mainWindow, 'update-available', info)
-    // autoDownload=true means electron-updater starts downloading automatically
+    const transition = onUpdateAvailableState(updaterState, info as unknown as { version: string; [key: string]: unknown })
+    updaterState = transition.state
+    if (transition.shouldEmitReadyInstead) {
+      safeSend(mainWindow, 'update-ready', info)
+    } else if (transition.shouldEmitAvailable) {
+      safeSend(mainWindow, 'update-available', info)
+    }
   })
 
   autoUpdater.on('update-not-available', (info) => {
@@ -2555,23 +2662,31 @@ ipcMain.handle('disconnect-provider', async (_event, provider) => {
   })
 
   autoUpdater.on('download-progress', (progress): void => {
-    const pct = Math.floor(progress.percent)
-    console.log(`[Updater] Downloading... ${pct}% (${Math.floor(progress.bytesPerSecond / 1024)} KB/s)`)
+    updaterState = onDownloadProgressState(updaterState, progress.percent)
+    console.log(`[Updater] Downloading... ${updaterState.progress}% (${Math.floor(progress.bytesPerSecond / 1024)} KB/s)`)
     safeSend(mainWindow, 'update-progress', progress)
   })
 
   autoUpdater.on('update-downloaded', (info): void => {
+    downloadInFlight = false
     console.log('[Updater] Download complete. Version ready:', info.version)
-    // Notify renderer: shows "Install & Relaunch" button
+    updaterState = onUpdateDownloadedState(info as unknown as { version: string; [key: string]: unknown })
+    // Notify renderer: shows "Restart" / "Install" button
     safeSend(mainWindow, 'update-ready', info)
+    // Surface install dialog right away unless user is actively in a live interview
+    if (!overlayWindow || overlayWindow.isDestroyed()) {
+      void promptAndInstallUpdate()
+    }
   })
 
   autoUpdater.on('error', (err): void => {
-    console.error('[Updater] Error:', err?.message)
+    downloadInFlight = false
+    const msg = err?.message || 'Update failed'
+    console.error('[Updater] Error:', msg)
+    updaterState = onUpdateErrorState(updaterState, msg)
     // Only forward non-trivial errors (skip network timeouts on startup)
-    if (!err?.message?.includes('net::ERR_INTERNET_DISCONNECTED') &&
-        !err?.message?.includes('ENOTFOUND')) {
-      safeSend(mainWindow, 'update-error', err.message)
+    if (!msg.includes('net::ERR_INTERNET_DISCONNECTED') && !msg.includes('ENOTFOUND')) {
+      safeSend(mainWindow, 'update-error', msg)
     }
   })
 
@@ -2599,12 +2714,13 @@ app.whenReady().then(() => {
   })
 })
 
+app.on('before-quit', () => {
+  destroyBackgroundWindows()
+})
+
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
-  disposeChatGptBridge()
-  disposeClaudeBridge()
-  disposeGeminiBridge()
-  disposeGlmBridge()
+  destroyBackgroundWindows()
 })
 
 app.on('window-all-closed', () => {

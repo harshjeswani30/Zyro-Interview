@@ -1,4 +1,4 @@
-﻿// aiService.ts - Logic moved to main process via IPC
+// aiService.ts - Logic moved to main process via IPC
 import { classifyIntent, IntentResult } from './pipeline/intentClassifier'
 import { planAnswer, AnswerPlan } from './pipeline/answerPlanner'
 import { enforceHumanLikeness, normalizeBulletFormatting } from './pipeline/humanLikeness'
@@ -243,12 +243,12 @@ function getAnswerFormatContract(intent: string, answerPlan?: AnswerPlan): strin
 
     case 'behavioral':
     case 'project_deepdive':
-      skeleton = `- Point 1: The situation — one sentence of context: what was the problem and why it mattered.
-- Point 2: The constraint or difficulty — what made this hard, risky, or ambiguous.
-- Point 3: Your reasoning — WHY you chose this specific approach over alternatives.
-- Point 4: The concrete action you took — name the tool, technique, or process step explicitly.
-- Point 5: The measurable outcome — a number, a percentage, a deadline met, or quality improvement.
-- Point 6: The lesson or process change you now apply going forward.`
+      skeleton = `- Point 1: Direct personal approach or context — how I start, review guidelines, or understand the goal and requirements.
+- Point 2: The constraint, challenge, or edge case — what makes this tricky or what edge case needs care (ambiguity, class overlap, low contrast, tight SLA).
+- Point 3: Practical execution & tooling — the specific tools (e.g. CVAT, Label Studio, Git), taxonomy, or workflow steps I follow.
+- Point 4: Edge case handling & resolution — how I flag ambiguities, consult documentation or leads, and avoid guessing.
+- Point 5: Quality review & validation — how I verify correctness (spot-checking, calibration samples, or feedback loops).
+- Point 6: Outcome & delivery — delivering reliable, accurate results consistently on schedule.`
       break
 
     case 'system_design':
@@ -286,12 +286,13 @@ STRUCTURE RULES:
 7. Finish the final bullet completely. Never stop mid-sentence and never leave a dangling "-" at the end.
 
 PRECISION & DEPTH RULES (THIS IS WHAT SEPARATES A GOOD ANSWER FROM A GREAT ONE):
-- SHOW YOUR REASONING: Do not just state what you did — briefly state WHY you chose that approach. "I used Cohen's kappa because it corrects for chance agreement, unlike a raw accuracy score."
-- SPECIFIC OVER GENERIC: Never say "I improved quality" when you can say "I reduced label errors by 15% using gold-standard spot-checks.". Always prefer numbers, percentages, named tools.
-- TECHNICAL TERMS — ALWAYS EXPLAIN WHEN/WHY: If you name a metric, algorithm, or methodology (e.g. Cohen's kappa, stratified sampling, IOU threshold), in the SAME bullet explain when it applies and why you chose it over the obvious alternative.
-- GROUND CLAIMS IN EVIDENCE: If discussing a document, text, or specific example — reference the actual detail before making a claim. Never make an assertion that floats without backing.
-- AVOID VAGUE PROCESS LANGUAGE: "I created a systematic process" is weak. "I built a 12-point checklist with version control that reduced rework by 20%" is strong.
-- EXPERT COMPLETENESS — GO ONE LEVEL DEEPER: When the topic has well-known adjacent expert concepts, proactively include them even if not literally asked. Examples: PII/privacy → also mention least-privilege access, retention limits, quasi-identifiers, re-identification risk. Data annotation → also mention inter-rater reliability, edge-class stratification. Security → also mention threat modeling, blast radius. A recruiter or hiring manager expects to hear these; omitting them makes the answer sound junior.
+- SHOW YOUR REASONING: Do not just state what you did — briefly state WHY you chose that approach over alternatives (e.g. why a specific workflow step, tool, or data structure was chosen).
+- PRACTICAL SPECIFICITY OVER GENERIC FILLER: Name real tools, file formats, and practical workflows (e.g. CVAT, Label Studio, Git, JSON/XML, spot-checking) rather than vague claims like "I created a systematic process". When citing past outcomes, use realistic, grounded numbers (e.g. "conducted 10% spot-checks", "reduced rework by 15%").
+- ANTI-OVERMATH & PRACTICAL BALANCE (CRITICAL):
+  * NEVER turn practical, workflow, operational, or behavioral questions into academic mathematical lectures or unsolicited formula derivations.
+  * Only include mathematical formulas or statistical metrics (like formulas for precision/recall, loss functions, or statistical derivations) if the question EXPLICITLY asks for a calculation, mathematical formula, or metric definition.
+  * For operational and execution questions (e.g. image annotation, data labeling, QA review, dataset curation, triage): focus on the candidate's real-world human workflow — studying guidelines, setting up taxonomy, calibration sample batches, handling edge cases/occlusions, flagging ambiguities to the team, and quality spot-checks.
+- EXPERT DEPTH — LEVEL OF A SENIOR PRACTITIONER: Include relevant industry best practices without over-complicating. Examples: PII/privacy → mention access control and data retention limits. Annotation/Review → mention annotation guidelines, edge-case taxonomy, calibration samples, and dual-review spot checks. Security → mention threat surface and blast radius.
 - CRISP BEFORE COMPLETE: Lead with the direct answer in the first bullet — no warm-up, no "So basically...", no restating the question. Every subsequent bullet must add NEW depth, not repeat or paraphrase the first.
 
 SMART POINTING — order the bullets so the answer builds logically:
@@ -364,9 +365,12 @@ CODING RULES:
   const formatContract = isCoding ? '' : getAnswerFormatContract(intent, answerPlan)
 
   // 3. Voice & Identity
-  const voiceRule = answerPlan?.voicePerspective === 'neutral_explanation'
+  const candidateName = sessionContext.name?.trim() || 'the candidate'
+  const candidateRole = sessionContext.role?.trim() || 'the candidate'
+  const isPracticalWorkflow = isBehavioral || isIdentity || intent === 'followup'
+  const voiceRule = (answerPlan?.voicePerspective === 'neutral_explanation' && !isPracticalWorkflow)
     ? 'Explain technical concepts clearly, objectively, and directly without unnecessary personal narrative.'
-    : `Write the answer AS ${sessionContext.name} — the candidate sitting in this interview. Every "I" in the answer refers to ${sessionContext.name}. Never refer to yourself as an AI, a tool, or "Natively". The interviewer is reading this answer as words spoken by ${sessionContext.name}.`
+    : `Write the answer AS ${candidateName} — the human candidate sitting in this interview. Every "I" in the answer refers to ${candidateName}. Never refer to yourself as an AI, a tool, or "Zyro". The interviewer wants to hear how ${candidateName} personally executes the work.`
 
   // 4. Resume & Experience Context (ONLY for Identity, Behavioral, or when required)
   let profileSection = ''
@@ -378,7 +382,7 @@ ${isIdentity ? getIntroTemplate() : ''}
 ${sessionContext.resumeText?.substring(0, 2500) || ''}
 === END OF RESUME ===`
   } else if (answerPlan?.profileContextPolicy === 'allowed' || isSystemDesign) {
-    profileSection = `\n**CANDIDATE BACKGROUND**: ${sessionContext.name}, ${sessionContext.role} with expertise in modern scalable architectures.`
+    profileSection = `\n**CANDIDATE BACKGROUND**: ${candidateName}, ${candidateRole} with expertise in modern scalable architectures.`
   }
 
   // 5. Cheat Sheet Notes: served via localRagContext (on-device RAG, top-3 relevant chunks)
@@ -400,16 +404,16 @@ ${sessionContext.resumeText?.substring(0, 2500) || ''}
   // back toward English a sentence or two in.
   const languageDirective = buildLanguageDirective(responseLang)
 
-  return `You are a real-time AI interview copilot. Your only job is to generate the perfect spoken answer that ${sessionContext.name} will say out loud to the interviewer in a live interview.
+  return `You are a real-time AI interview copilot. Your only job is to generate the perfect spoken answer that ${candidateName} will say out loud to the interviewer in a live interview.
 ${languageDirective}
 CORE MISSION — READ THIS FIRST:
-Every word you output is the candidate's voice. The interviewer hears this answer as if ${sessionContext.name} is speaking it. Write for a human who is about to read it aloud, naturally and confidently.
+Every word you output is the candidate's voice. The interviewer hears this answer as if ${candidateName} is speaking it. Write for a human who is about to read it aloud, naturally and confidently.
 
-CRITICAL IDENTITY RULE:
-- You are a background tool — NEVER identify yourself as "Natively", "Zyro", or any AI product name in the answer. The candidate is not an AI.
-- If the interviewer asks about AI tools the candidate uses (e.g. "do you use ChatGPT / Copilot?"), answer honestly using the candidate's actual tools from their resume/context. That is a legitimate question about the candidate's workflow.
-- When the question is personal/behavioral (identity, introduction, behavioral): write entirely in first person as ${sessionContext.name}. Every "I" = ${sessionContext.name}, not an AI tool.
-- When the question is technical/factual: explain objectively, no personal narrative unless the question asks for it.
+CRITICAL IDENTITY RULE & HUMAN PERSPECTIVE:
+- You are a background tool — NEVER identify yourself as "Natively", "Zyro", or any AI product name in the answer. The candidate is a real human.
+- When the question is personal, behavioral, situational, or practical workflow (e.g. "how would you do X", "how do you approach Y", "tum ... kaise/kese karoge", "as a [role] how do you..."): ALWAYS answer in the first person ("I / me / my") as ${candidateName}. The interviewer is asking how ${candidateName} personally carries out the work. Describe your personal, hands-on human workflow, decisions, and problem-solving.
+- If the interviewer asks about AI tools the candidate uses (e.g. "do you use ChatGPT / Copilot?"), answer honestly using the candidate's actual tools from their resume/context as part of their personal workflow.
+- When the question is a purely theoretical definition or technical algorithm (e.g. "What is a B-Tree", "Explain Paxos"): explain the concept objectively and directly, without unnecessary personal narrative.
 
 IDENTITY & VOICE:
 - ${voiceRule}
@@ -930,7 +934,9 @@ Use bold lines as the only headings, everything else is a "- " bullet:
 - Then 2-3 bullets explaining WHY it is correct.
 - Do NOT discuss or explain the wrong options.`
 
-    let activePrompt = `You are a real-time AI interview assistant. You ARE the candidate — ${sessionContext.name}, a ${sessionContext.role}${sessionContext.company ? ` at ${sessionContext.company}` : ''}.
+    const visionCandidateName = sessionContext.name?.trim() || 'the candidate'
+    const visionCandidateRole = sessionContext.role?.trim() || 'candidate'
+    let activePrompt = `You are a real-time AI interview assistant. You ARE the candidate — ${visionCandidateName}, a ${visionCandidateRole}${sessionContext.company ? ` at ${sessionContext.company}` : ''}.
 
 TASK: Scan the screen and identify any interview question visible — this could be a coding problem, technical question, MCQ, behavioral question, HR/situational question, or any other type. Give exactly what the candidate should say out loud in response. Apply the correct answer structure for the question type detected.
 

@@ -244,6 +244,8 @@ interface UserProfile {
   sessions_balance?: number
   phone_sessions_balance?: number
   trial_seconds_used?: number
+  unlimited_expires_at?: string
+  byok_expires_at?: string
   [key: string]: unknown
 }
 
@@ -402,6 +404,7 @@ export default function SetupPage({
   const [updateInfo, setUpdateInfo] = useState<{ version: string } | null>(null)
   const [updateProgress, setUpdateProgress] = useState(0)
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'available' | 'downloading' | 'ready'>('idle')
+  const [updateError, setUpdateError] = useState<string | null>(null)
 
   const sessionsBalance = Number((userProfile?.sessions_balance ?? 0).toFixed(1))
   const trialUsed = userProfile?.trial_seconds_used ?? 0
@@ -516,26 +519,54 @@ export default function SetupPage({
 
   // -- Wire up auto-update events ------------------------------
   useEffect(() => {
+    let cancelled = false
+    let latestInfo: { version: string } | null = null
+
+    window.api.getUpdateState?.().then((state) => {
+      if (cancelled || !state) return
+      if (state.info) {
+        latestInfo = state.info
+        setUpdateInfo(state.info)
+      }
+      setUpdateProgress(state.progress ?? 0)
+      setUpdateStatus(state.status ?? 'idle')
+      setUpdateError(state.error ?? null)
+    }).catch(() => {})
+
     const unsubAvailable = window.api.onUpdateAvailable((info) => {
       const typed = info as { version: string }
+      latestInfo = typed
       setUpdateInfo(typed)
-      setUpdateStatus('available')
+      setUpdateError(null)
+      setUpdateStatus((prev) => (prev === 'ready' || prev === 'downloading' ? prev : 'available'))
     })
     const unsubProgress = window.api.onUpdateProgress((p) => {
       const typed = p as { percent: number }
-      setUpdateProgress(Math.floor(typed.percent))
-      setUpdateStatus('downloading')
+      setUpdateError(null)
+      setUpdateStatus((prev) => {
+        if (prev === 'ready') return 'ready'
+        setUpdateProgress(Math.floor(typed.percent))
+        return 'downloading'
+      })
     })
     const unsubReady = window.api.onUpdateReady((info) => {
       const typed = info as { version: string }
+      latestInfo = typed
       setUpdateInfo(typed)
+      setUpdateError(null)
       setUpdateProgress(100)
       setUpdateStatus('ready')
     })
-    const unsubError = window.api.onUpdateError(() => {
-      setUpdateStatus('idle')
+    const unsubError = window.api.onUpdateError((err) => {
+      setUpdateError(err || 'Update failed')
+      setUpdateProgress(0)
+      setUpdateStatus((prev) => {
+        if (prev === 'ready') return 'ready'
+        return latestInfo ? 'available' : 'idle'
+      })
     })
     return () => {
+      cancelled = true
       unsubAvailable()
       unsubProgress()
       unsubReady()
@@ -1148,9 +1179,27 @@ export default function SetupPage({
             updateStatus={updateStatus}
             updateInfo={updateInfo}
             updateProgress={updateProgress}
-            onDownload={() => {
+            updateError={updateError}
+            onDownload={async () => {
+              if (updateStatus !== 'available') return
+              setUpdateError(null)
+              setUpdateProgress(0)
               setUpdateStatus('downloading')
-              window.api.downloadUpdate()
+              try {
+                const res = await window.api.downloadUpdate()
+                if (res?.alreadyReady) {
+                  setUpdateProgress(100)
+                  setUpdateStatus('ready')
+                } else if (res?.error) {
+                  setUpdateError(res.error)
+                  setUpdateProgress(0)
+                  setUpdateStatus(updateInfo ? 'available' : 'idle')
+                }
+              } catch (err) {
+                setUpdateError(err instanceof Error ? err.message : 'Download failed')
+                setUpdateProgress(0)
+                setUpdateStatus(updateInfo ? 'available' : 'idle')
+              }
             }}
             onInstall={() => window.api.installUpdate()}
             onDismiss={() => setUpdateStatus('idle')}

@@ -29,10 +29,10 @@ const HINGLISH = {
   coding: /\b(code likho|code likhiye|code kar|program likho|program banao|function likho|function banao|implement karo|solve karo|likh kar dikhao)\b|\u0915\u094B\u0921 (\u0932\u093F\u0916\u094B|\u0932\u093F\u0916\u093F\u090F|\u0915\u0940\u091C\u093F\u090F)|\u092A\u094D\u0930\u094B\u0917\u094D\u0930\u093E\u092E (\u0932\u093F\u0916\u094B|\u092C\u0928\u093E\u0913)/i,
   systemDesign: /\b(design karo|design kaise|kaise scale|scale kaise|architecture kaisa|architecture batao)\b|\u0921\u093F\u091C\u093C\u093E\u0907\u0928 \u0915\u0948\u0938\u0947|\u0906\u0930\u094D\u0915\u093F\u091F\u0947\u0915\u094D\u091A\u0930/i,
   identity: /\b(apne baare mein batao|apne baare me batao|apne bare me batao|apna introduction|khud ke baare mein|apne aap ke baare mein|apni jaankari)\b|\u0905\u092A\u0928\u0947 \u092C\u093E\u0930\u0947 \u092E\u0947\u0902 (\u092C\u0924\u093E\u0907\u090F|\u092C\u0924\u093E\u0913|\u092C\u0924\u093E\u092F\u0947\u0902)|\u0905\u092A\u0928\u093E (\u092A\u0930\u093F\u091A\u092F|\u0907\u0902\u091F\u094D\u0930\u094B\u0921\u0915\u094D\u0936\u0928)/i,
-  behavioral: /\b(kaise handle karte|kaise handle karoge|kabhi aisa hua|koi aisa time|mushkil situation|problem aayi to|conflict hua|galti hui)\b|\u0915\u0948\u0938\u0947 (\u0939\u0948\u0902\u0921\u0932|\u0938\u0902\u092D\u093E\u0932\u0924\u0947)|\u092E\u0941\u0936\u094D\u0915\u093F\u0932 (\u0938\u094D\u0925\u093F\u0924\u093F|\u0938\u093F\u091A\u0941\u090F\u0936\u0928)/i,
+  behavioral: /\b(kaise handle|kese handle|kaise karoge|kese karoge|kaise kroge|kese kroge|kaise approach|kese approach|kaise manage|kese manage|kaise solve|kese solve|tum\b[\s\S]*?\b(kaise|kese)\b|aap\b[\s\S]*?\b(kaise|kese)\b|as a\b[\s\S]*?\b(kaise|kese)\b|kabhi aisa hua|koi aisa time|mushkil situation|problem aayi to|conflict hua|galti hui)\b|\u0915\u0948\u0938\u0947 (\u0939\u0948\u0902\u0921\u0932|\u0938\u0902\u092D\u093E\u0932\u0924\u0947|\u0915\u0930\u094B\u0917\u0947)|\u092E\u0941\u0936\u094D\u0915\u093F\u0932 (\u0938\u094D\u0925\u093F\u0924\u093F|\u0938\u093F\u091A\u0941\u090F\u0936\u0928)/i,
   project: /\b(project ke baare mein|project ke bare me|project mein kya kiya|apne project|tech stack kya|kaunsi technology use)\b|\u092A\u094D\u0930\u094B\u091C\u0947\u0915\u094D\u091F (\u0915\u0947 \u092C\u093E\u0930\u0947 \u092E\u0947\u0902|\u092E\u0947\u0902 \u0915\u094D\u092F\u093E)/i,
   definitional: /\b(kya hai|kya hota hai|kya hoti hai|kya hote hain|kya matlab|matlab kya|kise kehte hain|kya kehte hain|define karo|kya cheez hai)\b|\u0915\u094D\u092F\u093E (\u0939\u0948|\u0939\u094B\u0924\u093E \u0939\u0948|\u0939\u094B\u0924\u0940 \u0939\u0948|\u092E\u0924\u0932\u092C)/i,
-  technicalConcept: /\b(kaise kaam karta hai|kaise kaam karti hai|kaise kaam karta|kaise karte ho|kaise karte hain|kaise karoge|kaise banate hain|kab use karte|kyun use karte|kyun zaroori)\b|\u0915\u0948\u0938\u0947 (\u0915\u093E\u092E \u0915\u0930\u0924\u093E|\u0915\u093E\u092E \u0915\u0930\u0924\u0940|\u0915\u0930\u0924\u0947 \u0939\u0948\u0902|\u0915\u0930\u094B\u0917\u0947)|\u0915\u094D\u092F\u094B\u0902 (\u091C\u093C\u0930\u0942\u0930\u0940|\u0907\u0938\u094D\u0924\u0947\u092E\u093E\u0932)/i,
+  technicalConcept: /\b(kaise kaam karta hai|kaise kaam karti hai|kaise kaam karta|kaise banate hain|kab use karte|kyun use karte|kyun zaroori)\b|\u0915\u0948\u0938\u0947 (\u0915\u093E\u092E \u0915\u0930\u0924\u093E|\u0915\u093E\u092E \u0915\u0930\u0924\u0940|\u092C\u0928\u093E\u0924\u0947 \u0939\u0948\u0902)|\u0915\u094D\u092F\u093E\u0902 (\u091C\u093C\u0930\u0942\u0930\u0940|\u0907\u0938\u094D\u0924\u0947\u092E\u093E\u0932)/i,
   difference: /\b(antar kya|antar batao|farak kya|fark kya|difference kya|kya farak|kya fark|alag kaise|comparison batao)\b|(\u0905\u0902\u0924\u0930|\u092B\u093C\u0930\u094D\u0915|\u092B\u0930\u094D\u0915) \u0915\u094D\u092F\u093E/i,
   followup: /\b(aur batao|thoda aur|detail mein batao|detail me batao|elaborate karo|iske aage|aur kuch|example do|example batao)\b|(\u0914\u0930 \u092C\u0924\u093E\u0913|\u0925\u094B\u0921\u093C\u093E \u0914\u0930|\u0909\u0926\u093E\u0939\u0930\u0923 (\u0926\u094B|\u092C\u0924\u093E\u0913))/i
 }
@@ -70,8 +70,11 @@ export function classifyIntent(query: string): IntentResult {
     return { intent: 'identity', isCoding: false, isHindi, requiresExample: false }
   }
 
-  // 5. Behavioral
-  if (/\b(tell me about a time|how do you handle|describe a situation|conflict|disagreement|mistake|failed|challenge you faced)\b/i.test(lower) || HINGLISH.behavioral.test(query)) {
+  // 5. Behavioral & Situational ("How would you handle...", "How would you do X as a Y", "Tell me about a time...")
+  if (
+    /\b(tell me about a time|how do you handle|how would you|how do you approach|how do you do|as a\b.+\bhow\b|describe a situation|conflict|disagreement|mistake|failed|challenge you faced|what would you do)\b/i.test(lower) ||
+    HINGLISH.behavioral.test(query)
+  ) {
     return { intent: 'behavioral', isCoding: false, isHindi, requiresExample: false }
   }
 

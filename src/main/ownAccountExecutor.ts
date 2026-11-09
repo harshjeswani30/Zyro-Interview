@@ -300,7 +300,7 @@ export async function streamOwnAccount(opts: OwnAccountOptions): Promise<OwnAcco
     if (provider === 'gemini') return runGemini(attempt)
     if (provider === 'glm') return runGlm(attempt)
     return runClaude(session.fromPartition('persist:claude-auth'), attempt)
-  }, 12_000)
+  }, 25_000)
 }
 
 export interface OwnAccountVisionOptions {
@@ -347,7 +347,7 @@ async function runFailover(
       ? r.resetAt || Date.now() + DEFAULT_EXHAUST_COOLDOWN_MS
       : Date.now() + HARD_ERROR_COOLDOWN_MS
     errors.push(r.exhausted ? `${label(provider)} usage limit reached` : `${label(provider)}: ${r.error || 'unavailable'}`)
-    console.warn(`[OwnAccount] ${label(provider)} failed; trying the next linked account`)
+    console.warn(`[OwnAccount] ${label(provider)} failed (${r.error || 'unavailable'}); trying the next linked account`)
   }
   return {
     ok: false,

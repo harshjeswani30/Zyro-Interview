@@ -1,4 +1,4 @@
-﻿import { ElectronAPI } from '@electron-toolkit/preload'
+import { ElectronAPI } from '@electron-toolkit/preload'
 
 export interface UserProfile {
   id: string
@@ -120,7 +120,13 @@ interface Api {
   getDesktopSources: () => Promise<any[]>
   endInterview: () => void
   installUpdate: () => Promise<boolean>
-  downloadUpdate: () => Promise<void>
+  downloadUpdate: () => Promise<{ started: boolean; alreadyReady?: boolean; error?: string }>
+  getUpdateState: () => Promise<{
+    status: 'idle' | 'available' | 'downloading' | 'ready'
+    info: { version: string } | null
+    progress: number
+    error: string | null
+  }>
   setOverlayPosition: (x: number, y: number) => void
   setPosition: (x: number, y: number) => void
   setBounds: (bounds: { x: number; y: number; width: number; height: number }) => void

@@ -15,7 +15,7 @@
  * Fragile by nature: depends on ChatGPT's DOM. If OpenAI changes the composer /
  * send-button / message-role / stop-button markup, update the selectors below.
  */
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, session } from 'electron'
 import { isProviderUsageLimitMessage } from './providerResponse'
 
 export interface AskResult { ok: boolean; text: string; exhausted?: boolean; error?: string }
@@ -44,11 +44,18 @@ function createWindow(): BrowserWindow {
 /** Ensure the hidden window is loaded and the composer is present. Returns the
  *  window, or null if not logged in / composer never appeared (→ caller fails over). */
 async function ensureReady(signal?: AbortSignal): Promise<BrowserWindow | null> {
+  const cookies = await session.fromPartition('persist:chatgpt-auth').cookies.get({})
+  if (!cookies.some(c => c.domain?.includes('chatgpt.com') && c.name.includes('next-auth.session-token'))) {
+    console.warn('[ChatGPT Bridge] Not connected: no next-auth.session-token found')
+    return null
+  }
   if (!win || win.isDestroyed()) {
+    console.log('[ChatGPT Bridge] Creating hidden window...')
     win = createWindow()
     loading = win.loadURL(CHAT_URL).then(() => {}).catch(() => {})
     needsFreshChat = false
   } else if (needsFreshChat) {
+    console.log('[ChatGPT Bridge] Fresh chat requested, reloading CHAT_URL...')
     loading = win.loadURL(CHAT_URL).then(() => {}).catch(() => {})
     needsFreshChat = false
   }
@@ -60,37 +67,146 @@ async function ensureReady(signal?: AbortSignal): Promise<BrowserWindow | null> 
   while (Date.now() < deadline) {
     if (signal?.aborted) return null
     const onLogin = await w.webContents.executeJavaScript(`location.href.includes('/auth/login')`).catch(() => false)
-    if (onLogin === true) return null
-    const hasComposer = await w.webContents.executeJavaScript(`!!document.querySelector('#prompt-textarea,main form textarea,main form [contenteditable="true"]')`).catch(() => false)
-    if (hasComposer === true) return w
+    if (onLogin === true) {
+      console.warn('[ChatGPT Bridge] Redirected to /auth/login')
+      return null
+    }
+    // Dismiss any blocking dialogs/modals
+    await w.webContents.executeJavaScript(`(() => {
+      try {
+        document.querySelectorAll('div[role="dialog"] button, [data-testid="modal"] button, button[aria-label="Close" i]').forEach(btn => {
+          const txt = (btn.innerText || '').toLowerCase();
+          if (txt.includes('stay logged out') || txt.includes('close') || txt.includes('got it') || txt.includes('next') || txt.includes('done') || txt.includes('dismiss')) {
+            btn.click();
+          }
+        });
+      } catch(e) {}
+    })()`).catch(() => {})
+    const hasComposer = await w.webContents.executeJavaScript(
+      `!!document.querySelector('#prompt-textarea, div[contenteditable="true"][role="textbox"], main form textarea, main form [contenteditable="true"]')`
+    ).catch(() => false)
+    if (hasComposer === true) {
+      console.log('[ChatGPT Bridge] Composer found and ready')
+      return w
+    }
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 500)
+      const timer = setTimeout(resolve, 400)
       signal?.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true })
     })
   }
+  console.warn('[ChatGPT Bridge] Timeout waiting for composer')
   return null
 }
 
 // Injected page scripts. SUBMIT types the prompt into ChatGPT's composer (paste
-// event first — ProseMirror-friendly — with an execCommand fallback), sends it, and
-// confirms a new user message appeared. READ returns the current assistant text +
-// whether generation is still running.
+// event first — ProseMirror/Lexical friendly — with execCommand and DOM fallbacks),
+// clicks send, and confirms a new user message appeared. READ returns assistant text.
 const SUBMIT_JS = (prompt: string): string => `(async (P) => {
-  const q=s=>document.querySelector(s); const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-  const ed=q('#prompt-textarea')||q('main form [contenteditable="true"]')||q('main form textarea');
-  if(!ed) return {ok:false,reason:'composer'};
-  const before=document.querySelectorAll('[data-message-author-role="assistant"]').length;
-  const ub=document.querySelectorAll('[data-message-author-role="user"]').length;
-  ed.focus(); await sleep(60);
-  try{const dt=new DataTransfer();dt.setData('text/plain',P);ed.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));}catch(e){}
-  await sleep(200);
-  if(!(ed.innerText||ed.value||'').trim()){try{document.execCommand('insertText',false,P);}catch(e){}await sleep(150);}
-  const enter=()=>ed.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
-  let send=q('[data-testid="send-button"]')||q('#composer-submit-button')||q('button[aria-label*="Send" i]');
-  if(send&&!send.disabled)send.click(); else enter();
-  let ok=false; for(let i=0;i<10;i++){await sleep(400); if(document.querySelectorAll('[data-message-author-role="user"]').length>ub){ok=true;break;}}
-  if(!ok){ed.focus();enter();for(let i=0;i<8;i++){await sleep(400);if(document.querySelectorAll('[data-message-author-role="user"]').length>ub){ok=true;break;}}}
-  return {ok, index: before};
+  const q = s => document.querySelector(s);
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // 1. Dismiss any blocking dialogs/modals
+  try {
+    document.querySelectorAll('div[role="dialog"] button, [data-testid="modal"] button, button[aria-label="Close" i]').forEach(btn => {
+      const txt = (btn.innerText || '').toLowerCase();
+      if (txt.includes('stay logged out') || txt.includes('close') || txt.includes('got it') || txt.includes('next') || txt.includes('done') || txt.includes('dismiss')) {
+        btn.click();
+      }
+    });
+  } catch(e) {}
+
+  // 2. Locate composer
+  const ed = q('#prompt-textarea')
+    || q('div[contenteditable="true"][role="textbox"]')
+    || q('main form [contenteditable="true"]')
+    || q('main form textarea');
+  if (!ed) return { ok: false, reason: 'composer_not_found' };
+
+  const before = document.querySelectorAll('[data-message-author-role="assistant"]').length;
+  const ub = document.querySelectorAll('[data-message-author-role="user"]').length;
+
+  ed.focus();
+  try {
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(ed);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } catch(e) {}
+  await sleep(60);
+
+  // 3. Try native insertText (Lexical / ProseMirror friendly)
+  try { document.execCommand('insertText', false, P); } catch(e) {}
+  await sleep(100);
+
+  // 4. Try paste event via DataTransfer
+  if (!(ed.innerText || ed.textContent || '').trim()) {
+    try {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', P);
+      ed.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    } catch(e) {}
+    await sleep(150);
+  }
+
+  // 5. Direct paragraph insertion fallback with InputEvent
+  if (!(ed.innerText || ed.textContent || '').trim()) {
+    try {
+      ed.focus();
+      const p = document.createElement('p');
+      p.textContent = P;
+      ed.innerHTML = '';
+      ed.appendChild(p);
+      ed.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: P }));
+      ed.dispatchEvent(new Event('change', { bubbles: true }));
+    } catch(e) {}
+  }
+  await sleep(150);
+
+  // 6. Wait for send button to be enabled
+  const enter = () => ed.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+  let send = null;
+  for (let i = 0; i < 15; i++) {
+    send = q('[data-testid="send-button"]')
+      || q('button[data-testid*="send" i]')
+      || q('#composer-submit-button')
+      || q('button[aria-label*="Send" i]')
+      || q('main form button[type="submit"]')
+      || q('form button:not([disabled]):has(svg)');
+    if (send && !send.disabled) break;
+    await sleep(100);
+  }
+
+  if (send && !send.disabled) {
+    send.click();
+  } else {
+    enter();
+  }
+
+  // 7. Verify user message appears in DOM
+  let ok = false;
+  for (let i = 0; i < 15; i++) {
+    await sleep(350);
+    if (document.querySelectorAll('[data-message-author-role="user"]').length > ub) {
+      ok = true;
+      break;
+    }
+  }
+
+  if (!ok) {
+    ed.focus();
+    enter();
+    for (let i = 0; i < 10; i++) {
+      await sleep(350);
+      if (document.querySelectorAll('[data-message-author-role="user"]').length > ub) {
+        ok = true;
+        break;
+      }
+    }
+  }
+
+  return { ok, index: before };
 })(${JSON.stringify(prompt)})`
 
 const READ_JS = (index: number): string => `(function(i){
@@ -125,22 +241,93 @@ const READ_JS = (index: number): string => `(function(i){
 // Vision submit: paste the prompt text, then attach the screenshot by pasting it as
 // an image File (ChatGPT accepts a pasted image), wait for the upload preview, send.
 const SUBMIT_VISION_JS = (prompt: string, dataUrl: string): string => `(async (P, URL) => {
-  const q=s=>document.querySelector(s); const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-  const ed=q('#prompt-textarea')||q('main form [contenteditable="true"]')||q('main form textarea');
-  if(!ed) return {ok:false,reason:'composer'};
-  const before=document.querySelectorAll('[data-message-author-role="assistant"]').length;
-  const ub=document.querySelectorAll('[data-message-author-role="user"]').length;
-  ed.focus(); await sleep(60);
-  try{const dt=new DataTransfer();dt.setData('text/plain',P);ed.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));}catch(e){}
-  await sleep(200);
-  if(!(ed.innerText||ed.value||'').trim()){try{document.execCommand('insertText',false,P);}catch(e){}await sleep(150);}
-  try{const h=URL.split(',');const mime=(h[0].match(/data:(.*?);/)||[])[1]||'image/png';const bin=atob(h[1]);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);const file=new File([arr],'screen.png',{type:mime});const dt2=new DataTransfer();dt2.items.add(file);ed.focus();ed.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt2,bubbles:true,cancelable:true}));}catch(e){return {ok:false,reason:'img:'+e.message};}
-  for(let i=0;i<24;i++){await sleep(500); if(q("form img[src^='blob:'],form img[src^='data:'],main form img,[data-testid*='attachment'] img"))break;}
-  const enter=()=>ed.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
-  let send; for(let i=0;i<16;i++){send=q('[data-testid="send-button"]')||q('#composer-submit-button')||q('button[aria-label*="Send" i]'); if(send&&!send.disabled)break; await sleep(500);}
-  if(send&&!send.disabled)send.click(); else enter();
-  let ok=false; for(let i=0;i<12;i++){await sleep(400); if(document.querySelectorAll('[data-message-author-role="user"]').length>ub){ok=true;break;}}
-  return {ok, index: before};
+  const q = s => document.querySelector(s);
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // Dismiss modals
+  try {
+    document.querySelectorAll('div[role="dialog"] button, [data-testid="modal"] button, button[aria-label="Close" i]').forEach(btn => {
+      const txt = (btn.innerText || '').toLowerCase();
+      if (txt.includes('stay logged out') || txt.includes('close') || txt.includes('got it') || txt.includes('next') || txt.includes('done') || txt.includes('dismiss')) {
+        btn.click();
+      }
+    });
+  } catch(e) {}
+
+  const ed = q('#prompt-textarea')
+    || q('div[contenteditable="true"][role="textbox"]')
+    || q('main form [contenteditable="true"]')
+    || q('main form textarea');
+  if (!ed) return { ok: false, reason: 'composer_not_found' };
+
+  const before = document.querySelectorAll('[data-message-author-role="assistant"]').length;
+  const ub = document.querySelectorAll('[data-message-author-role="user"]').length;
+
+  ed.focus();
+  try {
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(ed);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } catch(e) {}
+  await sleep(60);
+
+  try { document.execCommand('insertText', false, P); } catch(e) {}
+  if (!(ed.innerText || ed.textContent || '').trim()) {
+    try {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', P);
+      ed.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    } catch(e) {}
+    await sleep(150);
+  }
+
+  try {
+    const h = URL.split(',');
+    const mime = (h[0].match(/data:(.*?);/) || [])[1] || 'image/png';
+    const bin = atob(h[1]);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    const file = new File([arr], 'screen.png', { type: mime });
+    const dt2 = new DataTransfer();
+    dt2.items.add(file);
+    ed.focus();
+    ed.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt2, bubbles: true, cancelable: true }));
+  } catch(e) {
+    return { ok: false, reason: 'img:' + e.message };
+  }
+
+  for (let i = 0; i < 24; i++) {
+    await sleep(500);
+    if (q("form img[src^='blob:'],form img[src^='data:'],main form img,[data-testid*='attachment'] img")) break;
+  }
+
+  const enter = () => ed.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+  let send = null;
+  for (let i = 0; i < 20; i++) {
+    send = q('[data-testid="send-button"]')
+      || q('button[data-testid*="send" i]')
+      || q('#composer-submit-button')
+      || q('button[aria-label*="Send" i]')
+      || q('main form button[type="submit"]');
+    if (send && !send.disabled) break;
+    await sleep(400);
+  }
+
+  if (send && !send.disabled) send.click(); else enter();
+
+  let ok = false;
+  for (let i = 0; i < 15; i++) {
+    await sleep(400);
+    if (document.querySelectorAll('[data-message-author-role="user"]').length > ub) {
+      ok = true;
+      break;
+    }
+  }
+
+  return { ok, index: before };
 })(${JSON.stringify(prompt)}, ${JSON.stringify(dataUrl)})`
 
 /** Poll the assistant message at `index`, streaming its text via onDelta until done. */
@@ -178,14 +365,27 @@ async function pollAnswer(w: BrowserWindow, index: number, opts: { onDelta: (t: 
 
 /** Ask the logged-in ChatGPT UI a question, streaming the reply via onDelta. */
 export async function askChatGpt(opts: AskOptions): Promise<AskResult> {
+  const t0 = Date.now()
+  console.log('[ChatGPT Bridge] askChatGpt called. Ensuring session ready...')
   const w = await ensureReady(opts.signal)
-  if (!w) return { ok: false, text: '', error: 'ChatGPT not connected or session expired. Reconnect in Setup → AI Source.' }
+  if (!w) {
+    console.warn('[ChatGPT Bridge] ensureReady failed or not logged in')
+    return { ok: false, text: '', error: 'ChatGPT not connected or session expired. Reconnect in Setup → AI Source.' }
+  }
   if (opts.signal?.aborted) return { ok: false, text: '', error: 'aborted' }
+  console.log(`[ChatGPT Bridge] Window ready in ${Date.now() - t0}ms. Submitting prompt...`)
 
-  let sub: { ok: boolean; reason?: string; index: number }
+  let sub: { ok: boolean; reason?: string; index: number; edTextLength?: number; sendFound?: boolean; sendDisabled?: boolean | null }
   try { sub = await w.webContents.executeJavaScript(SUBMIT_JS(opts.prompt)) }
-  catch (e) { return { ok: false, text: '', error: 'ChatGPT submit failed: ' + (e as Error).message } }
-  if (!sub || !sub.ok) return { ok: false, text: '', error: 'ChatGPT did not accept the message (UI not ready)' }
+  catch (e) {
+    console.error('[ChatGPT Bridge] executeJavaScript(SUBMIT_JS) crashed:', e)
+    return { ok: false, text: '', error: 'ChatGPT submit failed: ' + (e as Error).message }
+  }
+  console.log('[ChatGPT Bridge] Submit result:', sub)
+  if (!sub || !sub.ok) {
+    console.warn('[ChatGPT Bridge] Message submission not accepted by DOM:', sub)
+    return { ok: false, text: '', error: 'ChatGPT did not accept the message (UI not ready)' }
+  }
   return pollAnswer(w, sub.index, opts)
 }
 
@@ -203,7 +403,19 @@ export async function askChatGptVision(opts: AskOptions & { imageDataUrl: string
 
 /** Open a fresh temporary chat on the next question (interview boundary). */
 export function resetChatGptConversation(): void {
-  needsFreshChat = true
+  if (win && !win.isDestroyed()) {
+    win.webContents.executeJavaScript(`(() => {
+      try {
+        const newBtn = document.querySelector('[data-testid="create-new-chat-button"], a[href="/"], button[aria-label*="New chat" i]');
+        if (newBtn) newBtn.click();
+        else location.href = 'https://chatgpt.com/';
+      } catch(e) {}
+    })()`).catch(() => {
+      needsFreshChat = true
+    })
+  } else {
+    needsFreshChat = true
+  }
 }
 
 /** Startup liveness probe: load/reuse the hidden window and return true only if

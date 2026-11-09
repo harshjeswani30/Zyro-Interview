@@ -4,6 +4,7 @@ interface MinimalUpdateButtonProps {
   updateStatus: 'idle' | 'available' | 'downloading' | 'ready'
   updateInfo: { version: string } | null
   updateProgress: number
+  updateError?: string | null
   onDownload: () => void
   onInstall: () => void
   onDismiss: () => void
@@ -13,6 +14,7 @@ export default function MinimalUpdateButton({
   updateStatus,
   updateInfo,
   updateProgress,
+  updateError,
   onDownload,
   onInstall,
   onDismiss
@@ -30,6 +32,14 @@ export default function MinimalUpdateButton({
     }
   }
 
+  const tooltip = updateError && updateStatus === 'available'
+    ? `Update failed: ${updateError}. Click to retry.`
+    : isReady
+      ? `Zyro AI${updateInfo?.version ? ` v${updateInfo.version}` : ''} downloaded. Click to install and restart.`
+      : isDownloading
+        ? `Downloading update (${Math.round(updateProgress)}%)...`
+        : `Click to download Zyro AI${updateInfo?.version ? ` v${updateInfo.version}` : ''}`
+
   return (
     <div className="update-pill-container">
       <button
@@ -37,6 +47,7 @@ export default function MinimalUpdateButton({
         className={`update-pill-label ${isDownloading ? 'downloading' : ''} ${isReady ? 'ready' : ''}`}
         onClick={handleClick}
         disabled={isDownloading}
+        title={tooltip}
       >
         <span className="update-pill-circle">
           {!isDownloading && !isReady && (
@@ -80,9 +91,9 @@ export default function MinimalUpdateButton({
           />
         </span>
         <span className="update-pill-title">
-          {updateStatus === 'available' && (updateInfo?.version ? `Update v${updateInfo.version}` : 'Update')}
+          {updateStatus === 'available' && (updateError ? 'Retry Update' : (updateInfo?.version ? `Update v${updateInfo.version}` : 'Update'))}
           {isDownloading && 'Downloading...'}
-          {isReady && 'Restart'}
+          {isReady && 'Install Update'}
         </span>
       </button>
 
